@@ -3,6 +3,7 @@ import * as path from "node:path";
 import * as yaml from "js-yaml";
 import { createAudit, createEmptySpec, type Spec, type Audit, type DriftState } from "./signals.js";
 import { safeLoadYaml } from "./yaml.js";
+import { validateAudit, validateDriftState, validateSpec } from "./validate.js";
 
 const LEGACY_DIRNAME = "tack";
 const TACK_DIRNAME = ".tack";
@@ -33,6 +34,13 @@ function getLegacyTackDir(): string {
 
 function getTackDir(): string {
   return path.resolve(projectRoot(), TACK_DIRNAME);
+}
+
+function emitValidationWarnings(file: string, warnings: string[]): void {
+  if (warnings.length === 0) return;
+  for (const warning of warnings) {
+    console.warn(`[tack] ${file}: ${warning}`);
+  }
 }
 
 function migrateLegacyDirIfNeeded(): void {
@@ -261,8 +269,11 @@ export function readSpec(): Spec | null {
 
 export function readSpecWithError(): { spec: Spec | null; error: string | null } {
   migrateLegacyDirIfNeeded();
-  const { data, error } = safeLoadYaml<Spec | null>(specPath(), null);
-  return { spec: data, error };
+  const { data, error } = safeLoadYaml<unknown>(specPath(), null);
+  if (error) return { spec: null, error };
+  const validated = validateSpec(data, projectRoot());
+  emitValidationWarnings("spec.yaml", validated.warnings);
+  return { spec: validated.data, error: null };
 }
 
 export function writeSpec(spec: Spec): void {
@@ -288,7 +299,10 @@ export function auditPath(): string {
 export function readAudit(): Audit | null {
   migrateLegacyDirIfNeeded();
   migrateMachineFilesIfNeeded();
-  return readYaml<Audit>(auditPath());
+  const raw = readYaml<unknown>(auditPath());
+  const validated = validateAudit(raw);
+  emitValidationWarnings("_audit.yaml", validated.warnings);
+  return validated.data;
 }
 
 export function writeAudit(audit: Audit): void {
@@ -308,8 +322,10 @@ export function driftPath(): string {
 export function readDrift(): DriftState {
   migrateLegacyDirIfNeeded();
   migrateMachineFilesIfNeeded();
-  const state = readYaml<DriftState>(driftPath());
-  return state ?? { items: [] };
+  const raw = readYaml<unknown>(driftPath());
+  const validated = validateDriftState(raw);
+  emitValidationWarnings("_drift.yaml", validated.warnings);
+  return validated.data;
 }
 
 export function writeDrift(state: DriftState): void {

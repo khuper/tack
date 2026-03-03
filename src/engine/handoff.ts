@@ -25,6 +25,7 @@ import {
   getShortRef,
 } from "../lib/git.js";
 import { getProjectName } from "../lib/project.js";
+import { wrapUntrustedContext } from "../lib/promptSafety.js";
 export { getChangedFiles, filterChangedPaths } from "../lib/git.js";
 import type {
   ContextQuestion,
@@ -344,7 +345,7 @@ function toMarkdown(report: HandoffReport): string {
     );
   }
 
-  return `${lines.join("\n")}\n`;
+  return `${wrapUntrustedContext(lines.join("\n"), ".tack/handoffs/*.md")}\n`;
 }
 
 export function generateHandoff(): {

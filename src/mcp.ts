@@ -16,6 +16,7 @@ import {
   handoffsDirPath,
 } from "./lib/files.js";
 import { parseContextPack } from "./engine/contextPack.js";
+import { wrapUntrustedContext } from "./lib/promptSafety.js";
 
 function safeReadFile(filepath: string): string | null {
   try {
@@ -97,12 +98,13 @@ async function main(): Promise<void> {
         parts.length > 0
           ? parts.join("\n").trimEnd()
           : "No context docs found in .tack/.";
+      const wrapped = wrapUntrustedContext(text, "tack://context/intent");
 
       return {
         contents: [
           {
             uri: uri.href,
-            text,
+            text: wrapped,
           },
         ],
       };
@@ -135,12 +137,13 @@ async function main(): Promise<void> {
         parts.length > 0
           ? parts.join("\n").trimEnd()
           : "No implementation_status.md or spec.yaml found in .tack/.";
+      const wrapped = wrapUntrustedContext(text, "tack://context/facts");
 
       return {
         contents: [
           {
             uri: uri.href,
-            text,
+            text: wrapped,
           },
         ],
       };
@@ -198,11 +201,15 @@ async function main(): Promise<void> {
       const pack = parseContextPack();
       const recent = pack.decisions.slice(-10);
       if (recent.length === 0) {
+        const wrappedEmpty = wrapUntrustedContext(
+          "No decisions recorded yet in .tack/decisions.md.",
+          "tack://context/decisions_recent"
+        );
         return {
           contents: [
             {
               uri: uri.href,
-              text: "No decisions recorded yet in .tack/decisions.md.",
+              text: wrappedEmpty,
             },
           ],
         };
@@ -213,11 +220,12 @@ async function main(): Promise<void> {
         lines.push(`- [${d.date}] ${d.decision} — ${d.reasoning}`);
       }
 
+      const wrapped = wrapUntrustedContext(lines.join("\n"), "tack://context/decisions_recent");
       return {
         contents: [
           {
             uri: uri.href,
-            text: lines.join("\n"),
+            text: wrapped,
           },
         ],
       };
@@ -250,12 +258,13 @@ async function main(): Promise<void> {
         parts.length > 0
           ? parts.join("\n").trimEnd()
           : "No _audit.yaml or _drift.yaml found in .tack/.";
+      const wrapped = wrapUntrustedContext(text, "tack://context/machine_state");
 
       return {
         contents: [
           {
             uri: uri.href,
-            text,
+            text: wrapped,
           },
         ],
       };
@@ -268,4 +277,3 @@ async function main(): Promise<void> {
 
 // eslint-disable-next-line @typescript-eslint/no-floating-promises
 main();
-

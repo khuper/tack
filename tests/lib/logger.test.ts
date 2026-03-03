@@ -22,13 +22,14 @@ describe("logger", () => {
   });
 
   it("appends ndjson events", () => {
-    log({ event: "init", project: "demo" });
-    log({ event: "spec_updated", changes: "x" });
+    log({ event: "init", spec_seeded: true, systems_detected: 1 });
+    log({ event: "spec:updated", field: "allowed_systems", diff: "added auth" });
 
     const lines = fs.readFileSync(logsPath(), "utf-8").trim().split("\n");
     expect(lines.length).toBe(2);
     const first = JSON.parse(lines[0]!);
     expect(first.event).toBe("init");
+    expect(first.spec_seeded).toBeTrue();
     expect(typeof first.ts).toBe("string");
   });
 });

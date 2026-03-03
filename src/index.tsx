@@ -4,36 +4,200 @@ import React from "react";
 import { render } from "ink";
 import minimist from "minimist";
 import { App } from "./App.js";
+import { usePlainOutput } from "./lib/tty.js";
+import { runStatusScan } from "./engine/status.js";
+import { printStatusPlain } from "./plain/status.js";
+import { generateHandoff } from "./engine/handoff.js";
+import { printHandoffPlain } from "./plain/handoff.js";
+import { runInitPlain } from "./plain/init.js";
+import { runWatchPlain } from "./plain/watch.js";
+import { log } from "./lib/logger.js";
+import { appendDecision, normalizeDecisionActor, readDecisionsMarkdown } from "./engine/decisions.js";
+import { ensureTackIntegrity } from "./lib/files.js";
+import { fileExists } from "./lib/files.js";
+import { readSpecWithError, specExists } from "./lib/files.js";
+
+const ASCII_LOGO = `
+ ████████╗ █████╗  ██████╗██╗  ██╗
+ ╚══██╔══╝██╔══██╗██╔════╝██║ ██╔╝
+    ██║   ███████║██║     █████╔╝
+    ██║   ██╔══██║██║     ██╔═██╗
+    ██║   ██║  ██║╚██████╗██║  ██╗
+    ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝
+`;
 
 const args = minimist(process.argv.slice(2));
-const command = args._[0] as string | undefined;
+const rawCommand = args._[0] as string | undefined;
+const command = rawCommand ?? (fileExists(".tack") ? "watch" : "init");
 
-const VALID_COMMANDS = ["init", "status", "watch", "help"];
+const VALID_COMMANDS = ["init", "status", "watch", "handoff", "log", "help"] as const;
+type Command = (typeof VALID_COMMANDS)[number];
 
-if (!command || command === "help" || args.help) {
+function isValidCommand(value: string): value is Command {
+  return (VALID_COMMANDS as readonly string[]).includes(value);
+}
+
+if (command === "help" || args.help) {
   // eslint-disable-next-line no-console
   console.log(`
+${ASCII_LOGO}
   tack — Architecture drift guard
 
   Usage:
-    npx tack init      Set up spec.yaml from detected architecture
-    npx tack status    Run a scan and show current state
-    npx tack watch     Persistent watcher with live drift alerts
+    npx tack init [--ink]     Set up spec.yaml from detected architecture
+    npx tack status [--ink]   Run a scan and show current state
+    npx tack watch [--plain]  Persistent watcher with live drift alerts
+    npx tack handoff [--ink]  Generate agent handoff artifacts
+    npx tack log              View or append decisions
     npx tack help      Show this help text
 
-  Files (all in /tack/):
+  Output mode:
+    default: plain output for all commands except watch
+    --ink: force Ink UI for init/status/handoff
+    --plain or TACK_PLAIN=1: force plain output (including watch)
+
+  Files (all in .tack/):
     spec.yaml     Your declared architecture contract
-    audit.yaml    Latest detector sweep results
-    drift.yaml    Current unresolved drift items
-    logs.ndjson   Append-only event log
+    _audit.yaml   Latest detector sweep results
+    _drift.yaml   Current unresolved drift items
+    _logs.ndjson  Append-only event log
+    context.md, goals.md, assumptions.md, open_questions.md
+    handoffs/<ts>.md, handoffs/<ts>.json
   `);
   process.exit(0);
 }
 
-if (!VALID_COMMANDS.includes(command)) {
+if (!isValidCommand(command)) {
   // eslint-disable-next-line no-console
   console.error(`Unknown command: "${command}". Run "npx tack help" for usage.`);
   process.exit(1);
 }
 
-render(<App command={command as "init" | "status" | "watch"} />);
+const normalizedCommand = command;
+const forcePlain = usePlainOutput();
+const forceInk = Boolean(args.ink || process.argv.includes("--ink"));
+
+const shouldUseInk =
+  normalizedCommand === "watch" ? !forcePlain : forceInk && !forcePlain;
+
+function printFatal(err: unknown): never {
+  const message = err instanceof Error ? err.message : String(err);
+  // eslint-disable-next-line no-console
+  console.error(`✗ ${message}`);
+  process.exit(1);
+}
+
+if (normalizedCommand === "status" || normalizedCommand === "watch" || normalizedCommand === "handoff") {
+  if (specExists()) {
+    const { error } = readSpecWithError();
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error(`⚠ ${error}`);
+      // eslint-disable-next-line no-console
+      console.error("Fix .tack/spec.yaml syntax and run again.");
+      process.exit(1);
+    }
+  }
+  let repaired: string[] = [];
+  try {
+    repaired = ensureTackIntegrity().repaired;
+  } catch (err) {
+    printFatal(err);
+  }
+  if (repaired.length > 0) {
+    log({ event: "repair", files: repaired });
+    // eslint-disable-next-line no-console
+    console.log(`Repaired .tack integrity: ${repaired.join(", ")}`);
+  }
+}
+
+if (normalizedCommand === "log") {
+  const sub = args._[1] as string | undefined;
+  if (!sub) {
+    // eslint-disable-next-line no-console
+    console.log(readDecisionsMarkdown());
+    process.exit(0);
+  }
+
+  if (sub !== "decision") {
+    // eslint-disable-next-line no-console
+    console.error(`Unknown log subcommand: "${sub}". Use "tack log" or "tack log decision".`);
+    process.exit(1);
+  }
+
+  const decisionText = args._.slice(2).join(" ").trim();
+  const reasonText = String(args.reason ?? "").trim();
+  if (!decisionText) {
+    // eslint-disable-next-line no-console
+    console.error('Missing decision text. Usage: tack log decision "Decision" --reason "Reason"');
+    process.exit(1);
+  }
+  if (!reasonText) {
+    // eslint-disable-next-line no-console
+    console.error('Missing reason. Usage: tack log decision "Decision" --reason "Reason"');
+    process.exit(1);
+  }
+
+  try {
+    appendDecision(decisionText, reasonText);
+    log({
+      event: "decision",
+      decision: decisionText,
+      reasoning: reasonText,
+      actor: normalizeDecisionActor(typeof args.actor === "string" ? args.actor : undefined),
+    });
+  } catch (err) {
+    printFatal(err);
+  }
+
+  // eslint-disable-next-line no-console
+  console.log("Decision logged.");
+  process.exit(0);
+}
+
+if (!shouldUseInk) {
+  if (normalizedCommand === "init") {
+    try {
+      process.exit(runInitPlain() ? 0 : 1);
+    } catch (err) {
+      printFatal(err);
+    }
+  }
+
+  if (normalizedCommand === "status") {
+    const result = runStatusScan();
+    if (!result) {
+      // eslint-disable-next-line no-console
+      console.error("No spec.yaml found. Run 'tack init' first.");
+      process.exit(1);
+    }
+    printStatusPlain(result.status);
+    process.exit(0);
+  }
+
+  if (normalizedCommand === "handoff") {
+    try {
+      const generated = generateHandoff();
+      log({
+        event: "handoff",
+        markdown_path: generated.markdownPath,
+        json_path: generated.jsonPath,
+      });
+      printHandoffPlain(generated.markdownPath, generated.jsonPath, generated.report.generated_at);
+      process.exit(0);
+    } catch (err) {
+      printFatal(err);
+    }
+  }
+
+  if (normalizedCommand === "watch") {
+    try {
+      await runWatchPlain();
+      process.exit(0);
+    } catch (err) {
+      printFatal(err);
+    }
+  }
+}
+
+render(<App command={normalizedCommand as "init" | "status" | "watch" | "handoff"} />);

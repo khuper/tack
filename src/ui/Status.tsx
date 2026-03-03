@@ -2,11 +2,10 @@ import React, { useState } from "react";
 import { Text, Box, useApp } from "ink";
 import { DetectorSweep } from "./DetectorSweep.js";
 import { SpecSummary } from "./SpecSummary.js";
-import { readSpec, readDrift, writeAudit } from "../lib/files.js";
-import { createAudit, type Signal } from "../lib/signals.js";
+import type { Signal } from "../lib/signals.js";
+import { readDrift, readSpec } from "../lib/files.js";
 import { compareSpec } from "../engine/compareSpec.js";
-import { computeDrift } from "../engine/computeDrift.js";
-import { log } from "../lib/logger.js";
+import { computeStatusFromSignals } from "../engine/status.js";
 
 type Phase = "check" | "sweep" | "summary" | "error";
 
@@ -33,28 +32,15 @@ export function Status() {
   }, [phase, exit]);
 
   function handleSweepComplete(signals: Signal[]) {
-    const spec = readSpec();
-    if (!spec) {
+    const computed = computeStatusFromSignals(signals);
+    if (!computed) {
       setError("No spec.yaml found. Run 'tack init' first.");
       setPhase("error");
       setTimeout(() => exit(), 500);
       return;
     }
 
-    const audit = createAudit(signals);
-    writeAudit(audit);
-
-    const diff = compareSpec(signals, spec);
-    const { state } = computeDrift(diff);
-
-    log({
-      event: "scan",
-      systems: diff.aligned.length,
-      scope_signals: signals.filter((s) => s.category === "scope").length,
-      risks: diff.risks.length,
-    });
-
-    setSummaryData({ spec, diff, drift: state });
+    setSummaryData({ spec: computed.spec, diff: computed.diff, drift: computed.drift });
     setPhase("summary");
 
     setTimeout(() => exit(), 100);

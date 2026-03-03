@@ -3,27 +3,34 @@
   "version": "0.1.0",
   "description": "Architecture drift guard. Declare your spec. Tack enforces it.",
   "type": "module",
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
     "tack": "./dist/index.js"
   },
   "scripts": {
     "dev": "bun run src/index.tsx",
-    "build": "bun build src/index.tsx --outdir dist --target node && cp node_modules/yoga-wasm-web/dist/yoga.wasm dist/yoga.wasm",
-    "typecheck": "tsc --noEmit"
+    "build": "bun build src/index.tsx --outdir dist --target node && cp node_modules/yoga-wasm-web/dist/yoga.wasm dist/yoga.wasm && mkdir -p dist/detectors/rules && cp src/detectors/rules/*.yaml dist/detectors/rules/",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build && npm pack --dry-run"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "chokidar": "^3.6.0",
+    "glob": "^10.3.10",
     "ink": "^4.4.1",
-    "ink-text-input": "^5.0.1",
     "ink-select-input": "^5.0.0",
     "ink-spinner": "^5.0.0",
+    "ink-text-input": "^5.0.1",
+    "js-yaml": "^4.1.0",
+    "minimist": "^1.2.8",
+    "node-notifier": "^10.0.1",
     "react": "^18.2.0",
     "react-devtools-core": "^4.28.5",
-    "tasuku": "^2.0.1",
-    "chokidar": "^3.6.0",
-    "node-notifier": "^10.0.1",
-    "js-yaml": "^4.1.0",
-    "glob": "^10.3.10",
-    "minimist": "^1.2.8"
+    "tasuku": "^2.0.1"
   },
   "devDependencies": {
     "@types/react": "^18.2.0",

@@ -1,0 +1,24 @@
+name: auth
+displayName: "Detecting auth"
+signalId: auth
+category: system
+systems:
+  - id: clerk
+    packages: ["@clerk/nextjs", "@clerk/clerk-react", "@clerk/express"]
+    routePatterns: ["clerkMiddleware", "ClerkProvider", "useAuth", "useUser"]
+  - id: nextauth
+    packages: ["next-auth", "@auth/core"]
+    configFiles: ["auth.ts", "auth.config.ts", "src/auth.ts"]
+    routePatterns: ["NextAuth", "getServerSession", "useSession"]
+  - id: auth0
+    packages: ["@auth0/nextjs-auth0", "@auth0/auth0-react", "auth0"]
+    routePatterns: ["Auth0Provider", "useUser", "withPageAuthRequired"]
+  - id: supabase-auth
+    packages: ["@supabase/auth-helpers-nextjs", "@supabase/ssr"]
+    routePatterns: ["createClientComponentClient", "createServerComponentClient"]
+  - id: lucia
+    packages: ["lucia", "@lucia-auth/adapter-prisma", "@lucia-auth/adapter-drizzle"]
+    routePatterns: ["Lucia", "validateSessionCookie"]
+  - id: passport
+    packages: ["passport", "passport-local", "passport-google-oauth20"]
+    routePatterns: ["passport\\.authenticate", "passport\\.use"]

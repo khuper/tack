@@ -1,0 +1,26 @@
+name: framework
+displayName: "Detecting framework"
+signalId: framework
+category: system
+systems:
+  - id: nextjs
+    packages: ["next"]
+    configFiles: ["next.config.js", "next.config.mjs", "next.config.ts"]
+  - id: remix
+    packages: ["@remix-run/node", "@remix-run/react"]
+    configFiles: ["remix.config.js"]
+  - id: sveltekit
+    packages: ["@sveltejs/kit"]
+    configFiles: ["svelte.config.js"]
+  - id: vite
+    packages: ["vite"]
+    configFiles: ["vite.config.ts", "vite.config.js"]
+  - id: express
+    packages: ["express"]
+  - id: fastify
+    packages: ["fastify"]
+  - id: hono
+    packages: ["hono"]
+  - id: astro
+    packages: ["astro"]
+    configFiles: ["astro.config.mjs", "astro.config.ts"]

@@ -97,23 +97,141 @@ export type SpecDiff = {
   risks: Signal[];
 };
 
-export type LogEvent =
-  | { ts: string; event: "init"; project: string }
-  | { ts: string; event: "scan"; systems: number; scope_signals: number; risks: number }
-  | { ts: string; event: "drift"; id: string; type: DriftItem["type"]; system?: string; risk?: string }
-  | { ts: string; event: "resolve"; id: string; action: string; note?: string }
-  | { ts: string; event: "spec_updated"; changes: string };
+export type SourceRef =
+  | { file: string; line?: number }
+  | { derived_from: string[] };
 
-export type LogEventInput =
-  | { event: "init"; project: string }
-  | { event: "scan"; systems: number; scope_signals: number; risks: number }
-  | { event: "drift"; id: string; type: DriftItem["type"]; system?: string; risk?: string }
-  | { event: "resolve"; id: string; action: string; note?: string }
-  | { event: "spec_updated"; changes: string };
+export type DecisionActor = "user" | `agent:${string}`;
+
+export type DecisionEntry = {
+  date: string;
+  decision: string;
+  reasoning: string;
+  source: SourceRef;
+};
+
+export type LogEvent =
+  | { ts: string; event: "init"; spec_seeded: boolean; systems_detected: number }
+  | { ts: string; event: "repair"; files: string[] }
+  | { ts: string; event: "scan"; systems_detected: number; drift_items: number; duration_ms: number }
+  | { ts: string; event: "drift:detected"; system: string; message: string; source: string }
+  | { ts: string; event: "drift:resolved"; system: string; message: string; source: string }
+  | { ts: string; event: "spec:updated"; field: string; diff: string }
+  | { ts: string; event: "decision"; decision: string; reasoning: string; actor: DecisionActor }
+  | { ts: string; event: "handoff"; markdown_path: string; json_path: string }
+  | { ts: string; event: "compaction:archive_handoffs"; archived_count: number; kept_count: number };
+
+type StripTs<T> = T extends { ts: string } ? Omit<T, "ts"> : never;
+export type LogEventInput = StripTs<LogEvent>;
 
 export type DetectorResult = {
   name: string;
   signals: Signal[];
+};
+
+export type ContextLineRef = {
+  file: string;
+  line: number;
+};
+
+export type ContextBullet = {
+  text: string;
+  source: ContextLineRef;
+};
+
+export type ContextQuestionStatus = "open" | "resolved" | "unknown";
+
+export type ContextQuestion = {
+  text: string;
+  status: ContextQuestionStatus;
+  source: ContextLineRef;
+};
+
+export type ImplementationStatus = "implemented" | "pending" | "unknown";
+
+export type ImplementationStatusEntry = {
+  key: string;
+  status: ImplementationStatus;
+  anchors: string[];
+  source: ContextLineRef;
+};
+
+export type ContextPack = {
+  north_star: ContextBullet[];
+  goals: ContextBullet[];
+  non_goals: ContextBullet[];
+  assumptions: ContextQuestion[];
+  open_questions: ContextQuestion[];
+  implementation_status: ImplementationStatusEntry[];
+  decisions: DecisionEntry[];
+};
+
+export type HandoffActionItem = {
+  text: string;
+  source: SourceRef;
+};
+
+export type HandoffDetectedSystem = {
+  id: string;
+  detail?: string;
+  confidence: number;
+  source: SourceRef;
+};
+
+export type HandoffDriftItem = {
+  id: string;
+  type: DriftItem["type"];
+  system?: string;
+  risk?: string;
+  message: string;
+  source: SourceRef;
+};
+
+export type HandoffChangedFile = {
+  path: string;
+  source: SourceRef;
+};
+
+export type HandoffReport = {
+  schema_version: "1.0.0";
+  generated_at: string;
+  project: {
+    name: string;
+    root: string;
+    git_ref: string;
+    git_branch: string;
+  };
+  summary: string;
+  north_star: ContextBullet[];
+  implementation_status: ImplementationStatusEntry[];
+  guardrails: {
+    allowed_systems: string[];
+    forbidden_systems: string[];
+    constraints: Record<string, string>;
+    source: SourceRef;
+  };
+  detected_systems: HandoffDetectedSystem[];
+  open_drift_items: HandoffDriftItem[];
+  changed_files: HandoffChangedFile[];
+  open_questions: ContextQuestion[];
+  assumptions: ContextQuestion[];
+  recent_decisions: DecisionEntry[];
+  next_steps: HandoffActionItem[];
+};
+
+export type ProjectStatusItem = {
+  system: string;
+  message: string;
+};
+
+export type ProjectHealth = "aligned" | "drift";
+
+export type ProjectStatus = {
+  name: string;
+  health: ProjectHealth;
+  driftCount: number;
+  driftItems: ProjectStatusItem[];
+  lastScan: string | null;
 };
 
 export const KNOWN_SYSTEM_IDS = [

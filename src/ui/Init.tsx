@@ -4,7 +4,15 @@ import SelectInput from "ink-select-input";
 import TextInput from "ink-text-input";
 import { Logo } from "./Logo.js";
 import { DetectorSweep } from "./DetectorSweep.js";
-import { ensureTackDir, specExists, writeSpec, writeAudit, writeDrift } from "../lib/files.js";
+import {
+  ensureTackIntegrity,
+  ensureTackDir,
+  ensureContextTemplates,
+  specExists,
+  writeSpec,
+  writeAudit,
+  writeDrift,
+} from "../lib/files.js";
 import { createAudit, createEmptySpec, type Signal, type Spec } from "../lib/signals.js";
 import { log } from "../lib/logger.js";
 
@@ -29,12 +37,20 @@ export function Init() {
   React.useEffect(() => {
     if (phase === "check") {
       if (specExists()) {
-        // eslint-disable-next-line no-console
-        console.log("\n⚠ /tack/spec.yaml already exists. Run 'tack status' instead.\n");
+        const { repaired } = ensureTackIntegrity();
+        if (repaired.length > 0) {
+          log({ event: "repair", files: repaired });
+          // eslint-disable-next-line no-console
+          console.log(`\n✓ Repaired .tack integrity (${repaired.length} file(s)): ${repaired.join(", ")}\n`);
+        } else {
+          // eslint-disable-next-line no-console
+          console.log("\n⚠ .tack already initialized. Run 'tack status' instead.\n");
+        }
         exit();
         return;
       }
       ensureTackDir();
+      ensureContextTemplates();
       setPhase("sweep");
     }
   }, [phase, exit]);
@@ -100,7 +116,11 @@ export function Init() {
     writeSpec(finalSpec);
     writeAudit(createAudit(signals));
     writeDrift({ items: [] });
-    log({ event: "init", project: name });
+    log({
+      event: "init",
+      spec_seeded: true,
+      systems_detected: signals.filter((s) => s.category === "system").length,
+    });
 
     setPhase("done");
     setTimeout(() => exit(), 1000);
@@ -172,12 +192,13 @@ export function Init() {
       {phase === "done" && (
         <Box flexDirection="column" marginTop={1}>
           <Text color="green" bold>
-            ✓ Initialized /tack/
+            ✓ Initialized /.tack/
           </Text>
           <Text>  spec.yaml — your architecture contract</Text>
-          <Text>  audit.yaml — detector sweep results</Text>
-          <Text>  drift.yaml — drift tracking (empty)</Text>
-          <Text>  logs.ndjson — event log</Text>
+          <Text>  _audit.yaml — detector sweep results</Text>
+          <Text>  _drift.yaml — drift tracking (empty)</Text>
+          <Text>  _logs.ndjson — event log</Text>
+          <Text>  context.md/goals.md/assumptions.md/open_questions.md — context templates</Text>
           <Text dimColor>{"\n"}Run "tack status" for a scan or "tack watch" for live monitoring.</Text>
         </Box>
       )}

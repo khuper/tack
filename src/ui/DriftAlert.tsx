@@ -20,6 +20,7 @@ export function DriftAlert({ item, onResolved }: Props) {
 
   const options = [
     { label: "[a] Accept — add to allowed_systems", value: "accept" },
+    { label: "[d] Deny — add to forbidden_systems", value: "deny" },
     { label: "[i] Investigate — show referencing files", value: "investigate" },
     { label: "[g] Generate cleanup plan", value: "cleanup" },
     { label: "[s] Skip for now", value: "skip" },
@@ -30,15 +31,59 @@ export function DriftAlert({ item, onResolved }: Props) {
       case "accept": {
         const spec = readSpec();
         if (spec && item.system) {
+          let changed = false;
           if (!spec.allowed_systems.includes(item.system)) {
             spec.allowed_systems.push(item.system);
+            changed = true;
           }
           spec.forbidden_systems = spec.forbidden_systems.filter((s) => s !== item.system);
+          if (changed) {
+            log({
+              event: "spec:updated",
+              field: "allowed_systems",
+              diff: `added ${item.system}`,
+            });
+          }
           writeSpec(spec);
         }
         resolveDriftItem(item.id, "accepted", "Accepted via tack watch");
-        log({ event: "resolve", id: item.id, action: "accepted" });
+        log({
+          event: "decision",
+          decision: `Accepted drift item ${item.id}`,
+          reasoning: "Added detected system to allowed_systems from watch flow",
+          actor: "user",
+        });
         setResolutionLabel("Accepted — spec updated");
+        setView("resolved");
+        onResolved();
+        break;
+      }
+      case "deny": {
+        const spec = readSpec();
+        if (spec && item.system) {
+          let changed = false;
+          if (!spec.forbidden_systems.includes(item.system)) {
+            spec.forbidden_systems.push(item.system);
+            changed = true;
+          }
+          spec.allowed_systems = spec.allowed_systems.filter((s) => s !== item.system);
+          if (changed) {
+            log({
+              event: "spec:updated",
+              field: "forbidden_systems",
+              diff: `added ${item.system}`,
+            });
+          }
+          writeSpec(spec);
+        }
+        resolveDriftItem(item.id, "rejected", "Rejected via tack watch");
+        log({
+          event: "decision",
+          decision: `Rejected drift item ${item.id}`,
+          reasoning: "Added detected system to forbidden_systems from watch flow",
+          actor: "user",
+        });
+        setResolutionLabel("Denied — spec updated");
         setView("resolved");
         onResolved();
         break;
@@ -50,7 +95,12 @@ export function DriftAlert({ item, onResolved }: Props) {
       }
       case "skip": {
         resolveDriftItem(item.id, "skipped");
-        log({ event: "resolve", id: item.id, action: "skipped" });
+        log({
+          event: "decision",
+          decision: `Skipped drift item ${item.id}`,
+          reasoning: "Deferred action from watch flow",
+          actor: "user",
+        });
         setResolutionLabel("Skipped — will remind on next scan");
         setView("resolved");
         onResolved();

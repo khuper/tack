@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Text, Box, useApp, useInput } from "ink";
+import { Text, Box, Static, useApp, useInput } from "ink";
+import * as path from "node:path";
 import { Logo } from "./Logo.js";
 import { DriftAlert } from "./DriftAlert.js";
 import { readSpec, readDrift, writeAudit } from "../lib/files.js";
@@ -15,7 +16,7 @@ import chokidar from "chokidar";
 const IGNORE_PATTERNS = [
   "**/node_modules/**",
   "**/.git/**",
-  "**/tack/**",
+  "**/.tack/**",
   "**/dist/**",
   "**/build/**",
   "**/.next/**",
@@ -28,6 +29,14 @@ const IGNORE_PATTERNS = [
   "**/site-packages/**",
 ];
 
+type HistoryLevel = "good" | "bad" | "update";
+
+type HistoryEvent = {
+  id: number;
+  level: HistoryLevel;
+  text: string;
+};
+
 export function Watch() {
   const { exit } = useApp();
   const [systemCount, setSystemCount] = useState(0);
@@ -35,10 +44,21 @@ export function Watch() {
   const [lastScan, setLastScan] = useState<string>("never");
   const [pendingAlerts, setPendingAlerts] = useState<DriftItem[]>([]);
   const [projectName, setProjectName] = useState("unknown");
+  const [history, setHistory] = useState<HistoryEvent[]>([]);
   const watcherRef = useRef<chokidar.FSWatcher | null>(null);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const historySeq = useRef(0);
 
-  function runScan() {
+  function pushHistory(level: HistoryLevel, text: string): void {
+    historySeq.current += 1;
+    setHistory((prev) => {
+      const next = [...prev, { id: historySeq.current, level, text }];
+      return next.slice(-40);
+    });
+  }
+
+  function runScan(reason = "scan") {
+    const startedAt = Date.now();
     const spec = readSpec();
     if (!spec) return;
 
@@ -50,32 +70,37 @@ export function Watch() {
 
     const diff = compareSpec(signals, spec);
     const { newItems, state } = computeDrift(diff);
+    const unresolvedCount = state.items.filter((i) => i.status === "unresolved").length;
 
     setSystemCount(diff.aligned.filter((s) => s.category === "system").length);
-    setDriftCount(state.items.filter((i) => i.status === "unresolved").length);
+    setDriftCount(unresolvedCount);
     setLastScan(new Date().toLocaleTimeString());
+
+    const scanTs = new Date().toLocaleTimeString();
+    if (unresolvedCount === 0) {
+      pushHistory("good", `[${scanTs}] ${reason}: scan clean (0 drift)`);
+    } else {
+      pushHistory("bad", `[${scanTs}] ${reason}: ${unresolvedCount} unresolved drift item(s)`);
+    }
 
     log({
       event: "scan",
-      systems: diff.aligned.length,
-      scope_signals: signals.filter((s) => s.category === "scope").length,
-      risks: diff.risks.length,
+      systems_detected: signals.filter((s) => s.category === "system").length,
+      drift_items: unresolvedCount,
+      duration_ms: Date.now() - startedAt,
     });
 
     const alertable = newItems.filter(
-      (i) => i.type === "forbidden_system_detected" || i.type === "constraint_mismatch" || i.type === "risk"
+      (i) =>
+        i.type === "forbidden_system_detected" ||
+        i.type === "constraint_mismatch" ||
+        i.type === "risk" ||
+        i.type === "undeclared_system"
     );
 
     if (alertable.length > 0) {
       for (const item of alertable) {
         notify("⚠ Tack: Drift Detected", `${item.system ?? item.risk}: ${item.signal}`);
-        log({
-          event: "drift",
-          id: item.id,
-          type: item.type,
-          system: item.system,
-          risk: item.risk,
-        });
       }
 
       setPendingAlerts((prev) => [...prev, ...alertable]);
@@ -103,10 +128,13 @@ export function Watch() {
       },
     });
 
-    watcher.on("all", () => {
+    watcher.on("all", (event, filepath) => {
+      if (filepath.includes(`${path.sep}.tack${path.sep}`)) return;
+      if (filepath.startsWith(".tack/") || filepath.startsWith(".tack\\")) return;
+      pushHistory("update", "Filesystem change detected. Running scan...");
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
       debounceTimer.current = setTimeout(() => {
-        runScan();
+        runScan(`change (${event})`);
       }, 300);
     });
 
@@ -143,16 +171,52 @@ export function Watch() {
           {"  "}
           {driftCount > 0 ? <Text color="yellow">{driftCount} drift</Text> : <Text color="green">0 drift</Text>}
         </Text>
-        <Text dimColor>Last scan: {lastScan} • q to quit</Text>
+        <Text dimColor>Last scan: {lastScan}</Text>
       </Box>
 
       {pendingAlerts.length > 0 && pendingAlerts[0] && <DriftAlert item={pendingAlerts[0]} onResolved={handleAlertResolved} />}
 
       {pendingAlerts.length === 0 && (
         <Box marginTop={1}>
-          <Text dimColor>Watching for changes...</Text>
+          <Text dimColor>Watching for changes... (q to quit)</Text>
         </Box>
       )}
+
+      <Box marginTop={1} flexDirection="column">
+        <Static items={history}>
+          {(item: HistoryEvent) => (
+            <Text color={item.level === "good" ? "green" : item.level === "bad" ? "red" : "blue"}>
+              {item.text}
+            </Text>
+          )}
+        </Static>
+      </Box>
+
+      <Box marginTop={1}>
+        <Text dimColor>─── Run in another terminal ───────────</Text>
+      </Box>
+      <Box flexDirection="column" paddingLeft={2}>
+        <Text>
+          <Text color="green">tack status</Text>
+          <Text dimColor>     Project health snapshot</Text>
+        </Text>
+        <Text>
+          <Text color="green">tack handoff</Text>
+          <Text dimColor>    Generate handoff for agents</Text>
+        </Text>
+        <Text>
+          <Text color="green">tack check-in</Text>
+          <Text dimColor>   Morning/evening pulse</Text>
+        </Text>
+        <Text>
+          <Text color="green">tack log</Text>
+          <Text dimColor>        View or append decisions</Text>
+        </Text>
+        <Text>
+          <Text color="green">tack help</Text>
+          <Text dimColor>       All commands and options</Text>
+        </Text>
+      </Box>
     </Box>
   );
 }

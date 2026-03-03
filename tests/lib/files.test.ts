@@ -2,7 +2,15 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ensureTackDir, writeSafe, readYaml, readJson, readFile, listProjectFiles } from "../../src/lib/files.js";
+import {
+  ensureTackDir,
+  writeSafe,
+  readYaml,
+  readJson,
+  readFile,
+  listProjectFiles,
+  readSpecWithError,
+} from "../../src/lib/files.js";
 
 let originalCwd = "";
 let tmpDir = "";
@@ -20,18 +28,18 @@ describe("files", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("allows write inside tack dir", () => {
-    writeSafe(path.join(tmpDir, "tack/spec.yaml"), "ok: true\n");
-    expect(fs.existsSync(path.join(tmpDir, "tack/spec.yaml"))).toBeTrue();
+  it("allows write inside .tack dir", () => {
+    writeSafe(path.join(tmpDir, ".tack/spec.yaml"), "ok: true\n");
+    expect(fs.existsSync(path.join(tmpDir, ".tack/spec.yaml"))).toBeTrue();
   });
 
-  it("blocks write outside tack dir", () => {
+  it("blocks write outside .tack dir", () => {
     expect(() => writeSafe(path.join(tmpDir, "../evil.txt"), "hack")).toThrow();
     expect(() => writeSafe("/etc/passwd", "hack")).toThrow();
   });
 
   it("blocks path traversal", () => {
-    expect(() => writeSafe(path.join(tmpDir, "tack/../package.json"), "hack")).toThrow();
+    expect(() => writeSafe(path.join(tmpDir, ".tack/../package.json"), "hack")).toThrow();
   });
 
   it("safe reads return null on missing/corrupt", () => {
@@ -42,16 +50,24 @@ describe("files", () => {
     expect(readYaml("bad.yaml")).toBeNull();
   });
 
-  it("listProjectFiles ignores tack and node_modules", () => {
+  it("readSpecWithError reports malformed YAML", () => {
+    writeSafe(path.join(tmpDir, ".tack/spec.yaml"), "project: bad\nallowed_systems: [\n");
+    const { spec, error } = readSpecWithError();
+    expect(spec).toBeNull();
+    expect(error).not.toBeNull();
+    expect(error!).toContain("Failed to parse");
+  });
+
+  it("listProjectFiles ignores .tack and node_modules", () => {
     fs.mkdirSync("src", { recursive: true });
     fs.mkdirSync("node_modules/pkg", { recursive: true });
     fs.writeFileSync("src/a.ts", "", "utf-8");
     fs.writeFileSync("node_modules/pkg/a.js", "", "utf-8");
-    fs.writeFileSync("tack/a.txt", "", "utf-8");
+    fs.writeFileSync(".tack/a.txt", "", "utf-8");
 
     const files = listProjectFiles();
     expect(files.includes("src/a.ts")).toBeTrue();
     expect(files.some((f) => f.includes("node_modules"))).toBeFalse();
-    expect(files.some((f) => f.startsWith("tack/"))).toBeFalse();
+    expect(files.some((f) => f.startsWith(".tack/"))).toBeFalse();
   });
 });

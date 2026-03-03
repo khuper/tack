@@ -1,6 +1,6 @@
+import { join } from "node:path";
 import type { Signal, DetectorResult } from "../lib/signals.js";
-import { detectFramework } from "./framework.js";
-import { detectAuth } from "./auth.js";
+import { createDetectorFromYaml, getRulesDir } from "./yamlRunner.js";
 import { detectPayments } from "./payments.js";
 import { detectDatabase } from "./database.js";
 import { detectMultiuser } from "./multiuser.js";
@@ -15,9 +15,11 @@ export type DetectorEntry = {
   run: () => DetectorResult;
 };
 
+const rulesDir = getRulesDir();
+
 export const PRIMARY_DETECTORS: DetectorEntry[] = [
-  { name: "framework", displayName: "Detecting framework", run: detectFramework },
-  { name: "auth", displayName: "Detecting auth", run: detectAuth },
+  createDetectorFromYaml(join(rulesDir, "framework.yaml")),
+  createDetectorFromYaml(join(rulesDir, "auth.yaml")),
   { name: "database", displayName: "Detecting database", run: detectDatabase },
   { name: "payments", displayName: "Detecting payments", run: detectPayments },
   { name: "multiuser", displayName: "Scanning for multi-tenant patterns", run: detectMultiuser },

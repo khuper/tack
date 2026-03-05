@@ -64,7 +64,8 @@ Tack treats LLM agents as **clients of a deterministic engine**. Agents should r
 
 ### MCP (Model Context Protocol)
 
-Run the MCP server:
+CLI build/run is Node-native (`npm run build` + `node dist/index.js ...`).  
+MCP currently runs from TypeScript source with Bun:
 
 ```bash
 bun run src/mcp.ts
@@ -101,6 +102,22 @@ Agents without MCP should:
   - Or append NDJSON lines manually to `.tack/_notes.ndjson` if the CLI is not available
 
 Do **not** modify `.tack/_drift.yaml`, `.tack/_audit.yaml`, or `.tack/_logs.ndjson` directly; they are machine-managed.
+
+## Detectors and YAML rules
+
+Detection is **YAML-driven**. Bundled rules live in `src/detectors/rules/*.yaml` and are shipped with the CLI. At runtime we also load any `*.yaml` from `.tack/detectors/` (optional project extension).
+
+Each rule file uses this schema:
+
+- **Top-level:** `name`, `displayName`, `signalId`, `category` (`system` | `scope` | `risk`).
+- **`systems`:** list of entries, each with:
+  - `id` — system identifier (e.g. `nextjs`, `prisma`, `stripe`)
+  - `packages` — npm package names that imply this system
+  - `configFiles` — paths to look for (e.g. `next.config.js`)
+  - `directories` — optional dirs (e.g. `src/jobs`)
+  - `routePatterns` — optional regex strings to grep in project files
+
+If any of packages/configFiles/directories/routePatterns match for a system, one signal is emitted (confidence 1). Invalid YAML or bad regex is skipped without failing the scan. The only detectors still implemented in TypeScript are `multiuser`, `admin`, and `duplicates`; all other primary systems (framework, auth, db, payments, background_jobs, exports) are defined in YAML.
 
 ## Commands
 
@@ -154,6 +171,12 @@ Optional Bun fast path for build contributors:
 
 ```bash
 npm run build:bun
+```
+
+Node-only watch fallback (build then run plain watcher):
+
+```bash
+npm run dev:node
 ```
 
 ## Notes

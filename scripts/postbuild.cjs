@@ -14,6 +14,12 @@ function ensureFileExists(filePath) {
   }
 }
 
+function ensureDirExists(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    throw new Error(`Missing required directory: ${dirPath}`);
+  }
+}
+
 function copyFile(src, dest) {
   ensureFileExists(src);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -21,6 +27,7 @@ function copyFile(src, dest) {
 }
 
 function copyYamlRules(srcDir, destDir) {
+  ensureDirExists(srcDir);
   fs.mkdirSync(destDir, { recursive: true });
   const files = fs
     .readdirSync(srcDir, { withFileTypes: true })

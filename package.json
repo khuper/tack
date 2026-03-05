@@ -13,6 +13,7 @@
   },
   "scripts": {
     "dev": "bun run src/index.tsx",
+    "dev:node": "npm run build && node dist/index.js watch --plain",
     "build": "tsc && node scripts/postbuild.cjs",
     "build:bun": "bun build src/index.tsx --outdir dist --target node && node scripts/postbuild.cjs",
     "typecheck": "tsc --noEmit",

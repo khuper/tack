@@ -5,7 +5,7 @@ const rootDir = path.resolve(__dirname, "..");
 const distDir = path.join(rootDir, "dist");
 const rulesSrcDir = path.join(rootDir, "src", "detectors", "rules");
 const rulesDestDir = path.join(distDir, "detectors", "rules");
-const wasmSrc = path.join(rootDir, "node_modules", "yoga-wasm-web", "dist", "yoga.wasm");
+const wasmSrc = require.resolve("yoga-wasm-web/dist/yoga.wasm", { paths: [rootDir] });
 const wasmDest = path.join(distDir, "yoga.wasm");
 
 function ensureFileExists(filePath) {

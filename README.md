@@ -70,8 +70,7 @@ node /absolute/path/to/tack/dist/index.js init
 node /absolute/path/to/tack/dist/index.js status
 node /absolute/path/to/tack/dist/index.js watch
 node /absolute/path/to/tack/dist/index.js handoff
-node /absolute/path/to/tack/dist/index.js log
-node /absolute/path/to/tack/dist/index.js note
+node /absolute/path/to/tack/dist/index.js mcp
 ```
 
 Within the `tack` repo itself:
@@ -107,12 +106,15 @@ Tack treats LLM agents as **clients of a deterministic engine**. Agents should r
 
 ### MCP (Model Context Protocol)
 
-CLI build/run is Node-native (`npm run build` + `node dist/index.js ...`).  
-MCP currently runs from TypeScript source with Bun:
+**Run the MCP server:** From a project that has `.tack/`, run:
 
 ```bash
-bun run src/mcp.ts
+tack mcp
 ```
+
+If `tack` is on your PATH (e.g. `npm link` from the tack clone), that’s all you need. Or: `node /path/to/tack/dist/index.js mcp`. The server reads `.tack/` from the current working directory, so run it from your **project root**.
+
+**Cursor MCP:** Add an MCP server in Cursor (Settings → Tools & MCP) with command `tack`, args `["mcp"]`, and **cwd** = your project root (the directory that contains `.tack/`). If `tack` isn’t on PATH, use command `node`, args `["/path/to/tack/dist/index.js", "mcp"]`, cwd = project root. Restart Cursor after changing MCP config.
 
 The server (`tack-mcp`) exposes these key resources:
 
@@ -207,7 +209,7 @@ In selection prompts (`init`, drift options):
 ```bash
 npm run typecheck
 bun test
-npm run build
+npm run dev
 ```
 
 Optional Bun fast path for build contributors:
@@ -216,10 +218,10 @@ Optional Bun fast path for build contributors:
 npm run build:bun
 ```
 
-Node-only watch fallback (build then run plain watcher):
+Optional Bun source-run for contributors who have Bun:
 
 ```bash
-npm run dev:node
+npm run dev:bun
 ```
 
 ## Notes

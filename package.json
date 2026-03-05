@@ -12,8 +12,8 @@
     "tack": "./dist/index.js"
   },
   "scripts": {
-    "dev": "bun run src/index.tsx",
-    "dev:node": "npm run build && node dist/index.js watch --plain",
+    "dev": "npm run build && node dist/index.js watch --plain",
+    "dev:bun": "bun run src/index.tsx",
     "build": "tsc && node scripts/postbuild.cjs",
     "build:bun": "bun build src/index.tsx --outdir dist --target node && node scripts/postbuild.cjs",
     "typecheck": "tsc --noEmit",
@@ -31,10 +31,11 @@
     "minimist": "^1.2.8",
     "node-notifier": "^10.0.1",
     "react": "^18.2.0",
-    "react-devtools-core": "^4.28.5",
-    "tasuku": "^2.0.1"
+    "tasuku": "^2.0.1",
+    "yoga-wasm-web": "~0.3.3"
   },
   "devDependencies": {
+    "react-devtools-core": "^4.28.5",
     "@types/react": "^18.2.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node-notifier": "^8.0.5",

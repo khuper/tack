@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import * as path from "node:path";
-import { Server } from "@modelcontextprotocol/sdk/server";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import {
   contextPath,
@@ -54,7 +54,7 @@ function latestHandoffJsonPath(): string | null {
 }
 
 async function main(): Promise<void> {
-  const server = new Server(
+  const server = new McpServer(
     {
       name: "tack-mcp",
       version: "0.1.0",

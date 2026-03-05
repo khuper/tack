@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import React from "react";
 import { render } from "ink";
 import minimist from "minimist";
@@ -33,7 +37,7 @@ const args = minimist(process.argv.slice(2));
 const rawCommand = args._[0] as string | undefined;
 const command = rawCommand ?? (fileExists(".tack") ? "watch" : "init");
 
-const VALID_COMMANDS = ["init", "status", "watch", "handoff", "log", "note", "diff", "help"] as const;
+const VALID_COMMANDS = ["init", "status", "watch", "handoff", "log", "note", "diff", "mcp", "help"] as const;
 type Command = (typeof VALID_COMMANDS)[number];
 
 function isValidCommand(value: string): value is Command {
@@ -55,6 +59,7 @@ ${ASCII_LOGO}
     npx tack log events [N]        Show last N log events (default 50)
     npx tack note                  View/add agent notes
     npx tack diff <base-branch>    Compare architecture vs base branch (plain)
+    npx tack mcp                   Start MCP server (for Cursor / agent integrations)
     npx tack help                  Show this help text
 
   Output mode:
@@ -80,6 +85,27 @@ if (!isValidCommand(command)) {
 }
 
 const normalizedCommand = command;
+
+// tack mcp: start the MCP server (stdio). Run from a project root that has .tack/
+if (normalizedCommand === "mcp") {
+  const cwdTack = path.join(process.cwd(), ".tack");
+  if (!existsSync(cwdTack)) {
+    // eslint-disable-next-line no-console
+    console.error("Run `tack mcp` from a project root that contains a .tack/ directory.");
+    process.exit(1);
+  }
+  const dir = path.dirname(fileURLToPath(import.meta.url));
+  const mcpHere = path.join(dir, "mcp.js");
+  const mcpInDist = path.join(dir, "..", "dist", "mcp.js");
+  const mcpPath = existsSync(mcpHere) ? mcpHere : mcpInDist;
+  if (!existsSync(mcpPath)) {
+    // eslint-disable-next-line no-console
+    console.error("MCP server not found. Run `npm run build` in the tack repo first.");
+    process.exit(1);
+  }
+  const result = spawnSync(process.execPath, [mcpPath], { stdio: "inherit", cwd: process.cwd() });
+  process.exit(result.status ?? 1);
+}
 const forcePlain = usePlainOutput();
 const forceInk = Boolean(args.ink || process.argv.includes("--ink"));
 

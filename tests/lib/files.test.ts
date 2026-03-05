@@ -66,8 +66,9 @@ describe("files", () => {
     fs.writeFileSync(".tack/a.txt", "", "utf-8");
 
     const files = listProjectFiles();
-    expect(files.includes("src/a.ts")).toBeTrue();
-    expect(files.some((f) => f.includes("node_modules"))).toBeFalse();
-    expect(files.some((f) => f.startsWith(".tack/"))).toBeFalse();
+    const expectedSrc = path.normalize(path.join("src", "a.ts"));
+    expect(files.some((f) => path.normalize(f) === expectedSrc)).toBeTrue();
+    expect(files.some((f) => path.normalize(f).includes("node_modules"))).toBeFalse();
+    expect(files.some((f) => path.normalize(f).startsWith(".tack" + path.sep))).toBeFalse();
   });
 });

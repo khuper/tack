@@ -1,0 +1,21 @@
+# Decisions
+
+- [YYYY-MM-DD] Decision title — reason
+- [2026-03-02] Use Bun runtime — Fast TS workflow
+- [2026-03-02] MCP transport uses stdio in v1 — native support in Cursor/Claude Code, offline-first, no infra overhead
+- [2026-03-02] MCP implementation uses @modelcontextprotocol/sdk — avoid custom protocol framing and reduce integration risk
+- [2026-03-02] Handoff remains in Tack core — product-defining capability, not optional skill/plugin
+- [2026-03-02] Skill system deferred for v1 shipping — keep core stable first, add opt-in packages later
+- [2026-03-02] Handoff naming is fully automatic — branch/commit slug fallback chain, no user prompts
+- [2026-03-03] Tack has two product modes — power mode now, conversational mode later, both on same deterministic engine
+- [2026-03-03] Bare `tack` defaults to init if `.tack/` missing, otherwise watch — reduce command friction
+- [2026-03-03] Integrity repair runs automatically when spec exists but support files are missing — partial deletes recover automatically
+- [2026-03-03] [deferred] Migrate detectors from TS modules to YAML registry — current TS detectors are fine for v1; revisit for new ecosystems and community rules
+- [2026-03-03] Framework and auth detectors moved to YAML (src/detectors/rules/*.yaml + yamlRunner) — data-driven rules, binary detection, getRulesDir for dev and dist; database/payments/jobs/etc remain TS
+- [2026-03-03] Handoff JSON and markdown schemas are enforced via tests — hardened handoff tests assert AgentSafety/AgentGuide shapes and the ordered 1–11 markdown sections to keep downstream agents robust
+- [2026-03-03] Define baseline guardrails in spec.yaml — encode Tack's offline-first, git+filesystem-only architecture and explicitly forbid payments for now
+- [2026-03-04] Add Validation/Verification section to handoffs (NOW-1) — `.tack/verification.md` + handoff section 10; suggestions only (no execution); PRP-style validation gates for humans or external tools
+ - [2026-03-05] YAML detectors auto-load user rules — Core YAML detectors now load all bundled rules plus optional .tack/detectors/*.yaml files via yamlRunner, keeping detection deterministic while allowing project-specific extensions.
+ - [2026-03-05] Legacy TS detectors removed after YAML migration — Framework/auth/database/payments/jobs/exports detectors now live exclusively in YAML rules, with tests hitting runAllDetectors/yamlRunner instead of per-detector TS modules.
+- [2026-03-05] Tighten verification handoff behavior — parse bullets/numbered lines from `.tack/verification.md` into `HandoffReport.verification.steps`, always attach `.tack/verification.md` as source, and sanitize steps only at markdown-render time to keep JSON canonical
+- [2026-03-05] Start versioning .tack contents — removed `.tack/` from `.gitignore` so spec, context, decisions, and verification docs can be tracked alongside code; machine-managed files remain contractually machine-owned even if tracked.

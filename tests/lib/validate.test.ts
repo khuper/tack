@@ -21,6 +21,69 @@ describe("validateSpec", () => {
     expect(data?.constraints).toEqual({ framework: "nextjs" });
     expect(warnings.length).toBeGreaterThan(0);
   });
+
+  it("parses domains map with labels, systems, and constraints", () => {
+    const { data, warnings } = validateSpec(
+      {
+        project: "demo",
+        allowed_systems: ["auth", "db", "payments"],
+        forbidden_systems: [],
+        constraints: { db: "postgres-only", auth: "sso-required" },
+        domains: {
+          auth: {
+            label: "Authentication & Identity",
+            systems: ["auth"],
+            constraints: ["auth"],
+          },
+          data: {
+            label: "Data & Persistence",
+            systems: ["db"],
+            constraints: ["db"],
+          },
+          billing: {
+            label: "Billing & Revenue",
+            systems: ["payments"],
+            constraints: [],
+          },
+        },
+      },
+      "/tmp/demo"
+    );
+
+    expect(data).not.toBeNull();
+    expect(data?.domains).toBeDefined();
+    expect(Object.keys(data!.domains!)).toEqual(["auth", "data", "billing"]);
+    expect(data!.domains!.auth).toEqual({
+      label: "Authentication & Identity",
+      systems: ["auth"],
+      constraints: ["auth"],
+    });
+    expect(data!.domains!.data?.systems).toEqual(["db"]);
+    expect(data!.domains!.billing?.constraints).toBeUndefined();
+    expect(warnings.length).toBe(0);
+  });
+
+  it("warns and drops invalid domains shapes", () => {
+    const { data, warnings } = validateSpec(
+      {
+        project: "demo",
+        domains: {
+          badRoot: "not-an-object",
+          empty: {},
+          mixed: {
+            label: 42,
+            systems: ["db", 123],
+            constraints: ["unknown_key"],
+          },
+        },
+      },
+      "/tmp/demo"
+    );
+
+    expect(data).not.toBeNull();
+    expect(data?.domains).toBeUndefined();
+    expect(warnings.length).toBeGreaterThan(0);
+  });
 });
 
 describe("validateAudit", () => {

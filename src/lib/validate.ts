@@ -1,10 +1,10 @@
 import * as path from "node:path";
-import type { Audit, DriftItem, DriftState, Signal, Spec } from "./signals.js";
+import type { Audit, DriftItem, DriftState, Signal, Spec, SpecDomain } from "./signals.js";
 import { KNOWN_CONSTRAINT_KEYS } from "./signals.js";
 
 const MAX_FIELD_LENGTH = 200;
 const MAX_SOURCE_LENGTH = 500;
-const SPEC_KEYS = new Set(["project", "allowed_systems", "forbidden_systems", "constraints"]);
+const SPEC_KEYS = new Set(["project", "allowed_systems", "forbidden_systems", "constraints", "domains"]);
 const DRIFT_TYPES = new Set([
   "forbidden_system_detected",
   "constraint_mismatch",
@@ -103,12 +103,78 @@ export function validateSpec(raw: unknown, projectRoot: string): ValidationResul
     }
   }
 
+  let domains: Spec["domains"];
+  if (raw.domains !== undefined) {
+    if (!isRecord(raw.domains)) {
+      warnings.push("domains must be an object map and was ignored");
+    } else {
+      const domainEntries: Record<string, SpecDomain> = {};
+      for (const [rawId, rawDomain] of Object.entries(raw.domains)) {
+        const id = cleanString(String(rawId), "domains.key", warnings);
+        if (!id) {
+          warnings.push("Empty domain key after sanitization was skipped");
+          continue;
+        }
+        if (!isRecord(rawDomain)) {
+          warnings.push(`Domain "${id}" must be an object and was skipped`);
+          continue;
+        }
+
+        const domain: SpecDomain = {};
+
+        if (typeof rawDomain.label === "string") {
+          const label = cleanString(rawDomain.label, `domains.${id}.label`, warnings);
+          if (label) domain.label = label;
+        }
+
+        if (rawDomain.systems !== undefined) {
+          const systems = sanitizeStringArray(
+            rawDomain.systems,
+            `domains.${id}.systems`,
+            warnings
+          );
+          if (systems.length > 0) domain.systems = systems;
+        }
+
+        if (rawDomain.constraints !== undefined) {
+          const rawList = sanitizeStringArray(
+            rawDomain.constraints,
+            `domains.${id}.constraints`,
+            warnings
+          );
+          const filtered = rawList.filter((c) => {
+            if (!KNOWN_CONSTRAINTS.has(c)) {
+              warnings.push(
+                `Unknown constraint key "${c}" in domains.${id}.constraints ignored`
+              );
+              return false;
+            }
+            return true;
+          });
+          if (filtered.length > 0) domain.constraints = filtered;
+        }
+
+        if (Object.keys(domain).length === 0) {
+          warnings.push(`Domain "${id}" was empty after sanitization and removed`);
+          continue;
+        }
+
+        domainEntries[id] = domain;
+      }
+
+      if (Object.keys(domainEntries).length > 0) {
+        domains = domainEntries;
+      }
+    }
+  }
+
   return {
     data: {
       project: project || fallbackProject,
       allowed_systems: allowed,
       forbidden_systems: forbidden,
       constraints,
+      ...(domains ? { domains } : {}),
     },
     warnings,
   };

@@ -1,0 +1,319 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-03-03T15:50:54.874Z",
+  "project": {
+    "name": "tack",
+    "root": "/Users/cooper/tack",
+    "git_ref": "a26727c",
+    "git_branch": "main"
+  },
+  "summary": "Project has no detected systems or open drift. Guardrails/context are present but architecture state is still sparse.",
+  "north_star": [
+    {
+      "text": "Keep Tack as an offline-first architecture guardrail and deterministic handoff engine.",
+      "source": {
+        "file": ".tack/context.md",
+        "line": 4
+      }
+    },
+    {
+      "text": "Reduce hallucination risk by enforcing file-grounded state and explicit constraints.",
+      "source": {
+        "file": ".tack/context.md",
+        "line": 5
+      }
+    },
+    {
+      "text": "Preserve continuity across agents through structured context docs and canonical handoff JSON.",
+      "source": {
+        "file": ".tack/context.md",
+        "line": 6
+      }
+    },
+    {
+      "text": "Keep power mode and conversational mode on the same deterministic core functions.",
+      "source": {
+        "file": ".tack/context.md",
+        "line": 7
+      }
+    }
+  ],
+  "implementation_status": [
+    {
+      "key": "log_rotation",
+      "status": "implemented",
+      "anchors": [
+        "src/lib/logger.ts",
+        "src/lib/ndjson.ts"
+      ],
+      "source": {
+        "file": ".tack/implementation_status.md",
+        "line": 8
+      }
+    },
+    {
+      "key": "compaction_engine",
+      "status": "pending",
+      "anchors": [],
+      "source": {
+        "file": ".tack/implementation_status.md",
+        "line": 9
+      }
+    },
+    {
+      "key": "some_feature",
+      "status": "unknown",
+      "anchors": [],
+      "source": {
+        "file": ".tack/implementation_status.md",
+        "line": 10
+      }
+    }
+  ],
+  "guardrails": {
+    "allowed_systems": [],
+    "forbidden_systems": [],
+    "constraints": {},
+    "source": {
+      "derived_from": [
+        ".tack/spec.yaml"
+      ]
+    }
+  },
+  "detected_systems": [],
+  "open_drift_items": [],
+  "changed_files": [
+    {
+      "path": "src/engine/handoff.ts",
+      "source": {
+        "derived_from": [
+          "git diff",
+          "filesystem"
+        ]
+      }
+    },
+    {
+      "path": "src/lib/files.ts",
+      "source": {
+        "derived_from": [
+          "git diff",
+          "filesystem"
+        ]
+      }
+    },
+    {
+      "path": "src/lib/git.ts",
+      "source": {
+        "derived_from": [
+          "git diff",
+          "filesystem"
+        ]
+      }
+    },
+    {
+      "path": "src/lib/promptSafety.ts",
+      "source": {
+        "derived_from": [
+          "git diff",
+          "filesystem"
+        ]
+      }
+    },
+    {
+      "path": "src/lib/validate.ts",
+      "source": {
+        "derived_from": [
+          "git diff",
+          "filesystem"
+        ]
+      }
+    },
+    {
+      "path": "src/mcp.ts",
+      "source": {
+        "derived_from": [
+          "git diff",
+          "filesystem"
+        ]
+      }
+    },
+    {
+      "path": "tests/lib/validate.test.ts",
+      "source": {
+        "derived_from": [
+          "git diff",
+          "filesystem"
+        ]
+      }
+    }
+  ],
+  "open_questions": [
+    {
+      "status": "open",
+      "text": "Should `tack check-in` ship in v1 or stay deferred behind MCP resources?",
+      "source": {
+        "file": ".tack/open_questions.md",
+        "line": 7
+      }
+    },
+    {
+      "status": "open",
+      "text": "Where should domain tags be defined in spec schema without breaking v1 compatibility?",
+      "source": {
+        "file": ".tack/open_questions.md",
+        "line": 8
+      }
+    },
+    {
+      "status": "open",
+      "text": "What exact compaction thresholds should trigger before handoff generation?",
+      "source": {
+        "file": ".tack/open_questions.md",
+        "line": 9
+      }
+    },
+    {
+      "status": "open",
+      "text": "Should resolved assumptions auto-convert into dated decisions during compaction?",
+      "source": {
+        "file": ".tack/open_questions.md",
+        "line": 10
+      }
+    }
+  ],
+  "assumptions": [
+    {
+      "status": "open",
+      "text": "Users run Tack from the target project root so `/.tack/` aligns to intended scope.",
+      "source": {
+        "file": ".tack/assumptions.md",
+        "line": 3
+      }
+    },
+    {
+      "status": "open",
+      "text": "Detectors remain deterministic and file-system based (no external APIs).",
+      "source": {
+        "file": ".tack/assumptions.md",
+        "line": 4
+      }
+    },
+    {
+      "status": "open",
+      "text": "Handoff consumers prioritize JSON output as canonical over markdown formatting.",
+      "source": {
+        "file": ".tack/assumptions.md",
+        "line": 5
+      }
+    },
+    {
+      "status": "open",
+      "text": "Conversational mode will call existing deterministic functions instead of writing direct engine outputs.",
+      "source": {
+        "file": ".tack/assumptions.md",
+        "line": 6
+      }
+    },
+    {
+      "status": "open",
+      "text": "LLM usage remains optional; core flows work without API keys.",
+      "source": {
+        "file": ".tack/assumptions.md",
+        "line": 7
+      }
+    },
+    {
+      "status": "open",
+      "text": "Watch mode occupies one terminal and users run one-shot commands in a second terminal.",
+      "source": {
+        "file": ".tack/assumptions.md",
+        "line": 8
+      }
+    }
+  ],
+  "recent_decisions": [
+    {
+      "date": "2026-03-03",
+      "decision": "Tack has two product modes",
+      "reasoning": "power mode now, conversational mode later, both on same deterministic engine",
+      "source": {
+        "file": ".tack/decisions.md",
+        "line": 10
+      }
+    },
+    {
+      "date": "2026-03-03",
+      "decision": "Bare `tack` defaults to init if `.tack/` missing, otherwise watch",
+      "reasoning": "reduce command friction",
+      "source": {
+        "file": ".tack/decisions.md",
+        "line": 11
+      }
+    },
+    {
+      "date": "2026-03-03",
+      "decision": "Integrity repair runs automatically when spec exists but support files are missing",
+      "reasoning": "partial deletes recover automatically",
+      "source": {
+        "file": ".tack/decisions.md",
+        "line": 12
+      }
+    },
+    {
+      "date": "2026-03-03",
+      "decision": "[deferred] Migrate detectors from TS modules to YAML registry",
+      "reasoning": "current TS detectors are fine for v1; revisit for new ecosystems and community rules",
+      "source": {
+        "file": ".tack/decisions.md",
+        "line": 13
+      }
+    },
+    {
+      "date": "2026-03-03",
+      "decision": "Framework and auth detectors moved to YAML (src/detectors/rules/*.yaml + yamlRunner)",
+      "reasoning": "data-driven rules, binary detection, getRulesDir for dev and dist; database/payments/jobs/etc remain TS",
+      "source": {
+        "file": ".tack/decisions.md",
+        "line": 14
+      }
+    }
+  ],
+  "next_steps": [
+    {
+      "text": "Review 7 changed file(s) for spec compliance",
+      "source": {
+        "derived_from": [
+          "git diff",
+          "spec.yaml"
+        ]
+      }
+    },
+    {
+      "text": "Configure guardrails in spec.yaml — currently empty",
+      "source": {
+        "file": ".tack/spec.yaml"
+      }
+    },
+    {
+      "text": "Should `tack check-in` ship in v1 or stay deferred behind MCP resources?",
+      "source": {
+        "file": ".tack/open_questions.md",
+        "line": 7
+      }
+    },
+    {
+      "text": "Where should domain tags be defined in spec schema without breaking v1 compatibility?",
+      "source": {
+        "file": ".tack/open_questions.md",
+        "line": 8
+      }
+    },
+    {
+      "text": "What exact compaction thresholds should trigger before handoff generation?",
+      "source": {
+        "file": ".tack/open_questions.md",
+        "line": 9
+      }
+    }
+  ]
+}

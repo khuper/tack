@@ -1,0 +1,28 @@
+name: exports
+displayName: "Detecting export/PDF systems"
+signalId: exports
+category: system
+systems:
+  - id: jspdf
+    packages: ["jspdf"]
+  - id: pdfkit
+    packages: ["pdfkit"]
+  - id: react-pdf
+    packages: ["@react-pdf/renderer"]
+  - id: puppeteer
+    packages: ["puppeteer"]
+  - id: playwright
+    packages: ["playwright"]
+  - id: html2canvas
+    packages: ["html2canvas"]
+  - id: exceljs
+    packages: ["exceljs"]
+  - id: sheetjs
+    packages: ["xlsx"]
+  - id: csv-writer
+    packages: ["csv-writer"]
+  - id: csv-stringify
+    packages: ["csv-stringify"]
+  - id: json2csv
+    packages: ["json2csv"]
+

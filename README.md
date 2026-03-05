@@ -8,7 +8,7 @@ Architecture drift guard. Declare your spec. Tack enforces it.
 
 All tool state lives in `./.tack/`:
 
-- `spec.yaml` — declared architecture contract
+- `spec.yaml` — declared architecture contract (allowed/forbidden systems, constraints, optional `domains` map for grouping systems and constraints)
 - `_audit.yaml` — latest scan result
 - `_drift.yaml` — unresolved/accepted/rejected drift items
 - `_logs.ndjson` — append-only event log

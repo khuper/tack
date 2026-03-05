@@ -1,12 +1,9 @@
+import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Signal, DetectorResult } from "../lib/signals.js";
 import { createDetectorFromYaml, getRulesDir } from "./yamlRunner.js";
-import { detectPayments } from "./payments.js";
-import { detectDatabase } from "./database.js";
 import { detectMultiuser } from "./multiuser.js";
 import { detectAdmin } from "./admin.js";
-import { detectJobs } from "./jobs.js";
-import { detectExports } from "./exports.js";
 import { detectDuplicates } from "./duplicates.js";
 
 export type DetectorEntry = {
@@ -17,15 +14,56 @@ export type DetectorEntry = {
 
 const rulesDir = getRulesDir();
 
+function listYamlFiles(dir: string): string[] {
+  try {
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir)
+      .filter((f) => f.toLowerCase().endsWith(".yaml"))
+      .map((f) => join(dir, f));
+  } catch {
+    return [];
+  }
+}
+
+function loadYamlDetectors(): DetectorEntry[] {
+  const detectors: DetectorEntry[] = [];
+  const seen = new Set<string>();
+
+  const coreRuleNames = ["framework", "auth", "database", "payments", "jobs", "exports"];
+
+  for (const base of coreRuleNames) {
+    const rulePath = join(rulesDir, `${base}.yaml`);
+    if (!existsSync(rulePath)) continue;
+    const key = rulePath.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    detectors.push(createDetectorFromYaml(rulePath));
+  }
+
+  for (const file of listYamlFiles(rulesDir)) {
+    const key = file.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    detectors.push(createDetectorFromYaml(file));
+  }
+
+  const tackDetectorsDir = join(process.cwd(), ".tack", "detectors");
+  for (const file of listYamlFiles(tackDetectorsDir)) {
+    const key = file.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    detectors.push(createDetectorFromYaml(file));
+  }
+
+  return detectors;
+}
+
+const YAML_DETECTORS: DetectorEntry[] = loadYamlDetectors();
+
 export const PRIMARY_DETECTORS: DetectorEntry[] = [
-  createDetectorFromYaml(join(rulesDir, "framework.yaml")),
-  createDetectorFromYaml(join(rulesDir, "auth.yaml")),
-  { name: "database", displayName: "Detecting database", run: detectDatabase },
-  { name: "payments", displayName: "Detecting payments", run: detectPayments },
+  ...YAML_DETECTORS,
   { name: "multiuser", displayName: "Scanning for multi-tenant patterns", run: detectMultiuser },
   { name: "admin", displayName: "Scanning for admin routes", run: detectAdmin },
-  { name: "jobs", displayName: "Detecting background jobs", run: detectJobs },
-  { name: "exports", displayName: "Detecting export/PDF systems", run: detectExports },
 ];
 
 export function runAllDetectors(): { results: DetectorResult[]; signals: Signal[] } {

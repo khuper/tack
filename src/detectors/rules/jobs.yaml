@@ -1,0 +1,23 @@
+name: jobs
+displayName: "Detecting background jobs"
+signalId: background_jobs
+category: system
+systems:
+  - id: bullmq
+    packages: ["bullmq", "bull"]
+    directories: ["src/jobs", "src/workers", "workers", "jobs", "src/queues", "queues"]
+  - id: agenda
+    packages: ["agenda"]
+    directories: ["src/jobs", "jobs"]
+  - id: cron
+    packages: ["node-cron", "cron"]
+    directories: ["src/cron", "cron"]
+  - id: temporal
+    packages: ["@temporalio/client", "@temporalio/worker"]
+    directories: ["src/workflows", "src/activities"]
+  - id: inngest
+    packages: ["inngest"]
+  - id: trigger
+    packages: ["@trigger.dev/sdk"]
+    directories: ["src/trigger", "trigger"]
+

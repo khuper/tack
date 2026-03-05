@@ -1,0 +1,10 @@
+project: tack
+allowed_systems:
+  - framework
+forbidden_systems:
+  - payments
+constraints:
+  framework: bun+node+ink-cli
+  db: none (git+filesystem state only)
+  auth: none (no accounts or login; local CLI only)
+  hosting: local_cli_only (no SaaS control plane)

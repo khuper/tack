@@ -1,0 +1,27 @@
+name: database
+displayName: "Detecting database"
+signalId: db
+category: system
+systems:
+  - id: prisma
+    packages: ["prisma", "@prisma/client"]
+    configFiles: ["prisma/schema.prisma"]
+  - id: drizzle
+    packages: ["drizzle-orm", "drizzle-kit"]
+    configFiles: ["drizzle.config.ts", "drizzle.config.js"]
+  - id: typeorm
+    packages: ["typeorm"]
+    configFiles: ["ormconfig.json", "ormconfig.ts", "ormconfig.js"]
+  - id: mongoose
+    packages: ["mongoose"]
+  - id: knex
+    packages: ["knex"]
+    configFiles: ["knexfile.js", "knexfile.ts"]
+  - id: postgres
+    packages: ["pg", "@neondatabase/serverless"]
+  - id: mysql
+    packages: ["mysql2", "@planetscale/database"]
+  - id: sqlite
+    packages: ["better-sqlite3", "@libsql/client"]
+  - id: mongodb
+    packages: ["mongodb"]

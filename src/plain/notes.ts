@@ -15,7 +15,7 @@ export function printNotes(opts?: { limit?: number; type?: string }): void {
     if (!isValidNoteType(rawType)) {
       // eslint-disable-next-line no-console
       console.error(
-        `Unknown note type: "${rawType}". Allowed types: ${NOTE_TYPES.join(", ")}.`
+        `Unknown note type: "${rawType}". Allowed types: ${AGENT_NOTE_TYPES.join(", ")}.`
       );
       return;
     }
@@ -43,7 +43,7 @@ export function addNotePlain(type: string, message: string, actor?: string): boo
   if (!isValidNoteType(type)) {
     // eslint-disable-next-line no-console
     console.error(
-      `Unknown note type: "${type}". Allowed types: ${NOTE_TYPES.join(", ")}.`
+      `Unknown note type: "${type}". Allowed types: ${AGENT_NOTE_TYPES.join(", ")}.`
     );
     return false;
   }

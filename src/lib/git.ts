@@ -47,6 +47,17 @@ export function getLatestCommitSubject(): string {
   return result.ok && result.value ? result.value : "";
 }
 
+export function getMergeBase(refA: string, refB = "HEAD"): string | null {
+  const result = gitExec(["merge-base", refB, refA]);
+  return result.ok && result.value ? result.value : null;
+}
+
+export function readFileAtRef(ref: string, filepath: string): string | null {
+  const normalizedPath = filepath.replace(/\\/g, "/");
+  const result = gitExec(["show", `${ref}:${normalizedPath}`]);
+  return result.ok && result.value ? result.value : null;
+}
+
 function dedupeAndFilter(lines: string[]): string[] {
   const seen = new Set<string>();
   const root = projectRoot();

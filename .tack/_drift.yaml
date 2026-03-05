@@ -1,0 +1,7 @@
+items:
+  - id: drift-20260303-905
+    type: undeclared_system
+    signal: 'stripe: package.json (stripe)'
+    detected: '2026-03-03T02:48:19.983Z'
+    status: rejected
+    system: payments

@@ -1,0 +1,22 @@
+name: payments
+displayName: "Detecting payments"
+signalId: payments
+category: system
+systems:
+  - id: stripe
+    packages: ["stripe", "@stripe/stripe-js", "@stripe/react-stripe-js"]
+    routePatterns:
+      - "stripe\\.webhooks\\.constructEvent"
+      - "webhook.*stripe"
+      - "stripe.*webhook"
+  - id: paddle
+    packages: ["@paddle/paddle-js", "@paddle/paddle-node-sdk"]
+    routePatterns:
+      - "paddle.*webhook"
+      - "webhook.*paddle"
+  - id: lemonsqueezy
+    packages: ["@lemonsqueezy/lemonsqueezy.js"]
+    routePatterns:
+      - "lemonsqueezy.*webhook"
+      - "webhook.*lemonsqueezy"
+

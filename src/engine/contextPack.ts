@@ -86,9 +86,7 @@ function parseQuestionBullets(content: string, file: string): ContextQuestion[] 
   return out;
 }
 
-function parseDecisionsFile(): DecisionEntry[] {
-  const file = ".tack/decisions.md";
-  const content = readFile(decisionsPath());
+export function parseDecisionsMarkdown(content: string, file = ".tack/decisions.md"): DecisionEntry[] {
   if (!content) return [];
 
   const lines = content.split("\n");
@@ -110,6 +108,12 @@ function parseDecisionsFile(): DecisionEntry[] {
   }
 
   return out;
+}
+
+function parseDecisionsFile(): DecisionEntry[] {
+  const content = readFile(decisionsPath());
+  if (!content) return [];
+  return parseDecisionsMarkdown(content, ".tack/decisions.md");
 }
 
 function parseContextFile(): ContextBullet[] {

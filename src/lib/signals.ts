@@ -21,11 +21,18 @@ export function createSignal(
   return { category, id, source, confidence, ...(detail ? { detail } : {}) };
 }
 
+export type SpecDomain = {
+  label?: string;
+  systems?: string[];
+  constraints?: string[];
+};
+
 export type Spec = {
   project: string;
   allowed_systems: string[];
   forbidden_systems: string[];
   constraints: Record<string, string>;
+  domains?: Record<string, SpecDomain>;
 };
 
 export function createEmptySpec(projectName: string): Spec {

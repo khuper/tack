@@ -11,13 +11,14 @@ import { generateHandoff } from "./engine/handoff.js";
 import { printHandoffPlain } from "./plain/handoff.js";
 import { runInitPlain } from "./plain/init.js";
 import { runWatchPlain } from "./plain/watch.js";
-import { log } from "./lib/logger.js";
+import { log, readRecentLogs } from "./lib/logger.js";
 import { appendDecision, normalizeDecisionActor, readDecisionsMarkdown } from "./engine/decisions.js";
 import { ensureTackIntegrity } from "./lib/files.js";
 import { fileExists } from "./lib/files.js";
 import { readSpecWithError, specExists } from "./lib/files.js";
 import { printNotes, addNotePlain } from "./plain/notes.js";
 import { compactNotes } from "./lib/notes.js";
+import { runDiffPlain } from "./plain/diff.js";
 
 const ASCII_LOGO = `
  ████████╗ █████╗  ██████╗██╗  ██╗
@@ -32,7 +33,7 @@ const args = minimist(process.argv.slice(2));
 const rawCommand = args._[0] as string | undefined;
 const command = rawCommand ?? (fileExists(".tack") ? "watch" : "init");
 
-const VALID_COMMANDS = ["init", "status", "watch", "handoff", "log", "note", "help"] as const;
+const VALID_COMMANDS = ["init", "status", "watch", "handoff", "log", "note", "diff", "help"] as const;
 type Command = (typeof VALID_COMMANDS)[number];
 
 function isValidCommand(value: string): value is Command {
@@ -46,13 +47,15 @@ ${ASCII_LOGO}
   tack — Architecture drift guard
 
   Usage:
-    npx tack init [--ink]     Set up spec.yaml from detected architecture
-    npx tack status [--ink]   Run a scan and show current state
-    npx tack watch [--plain]  Persistent watcher with live drift alerts
-    npx tack handoff [--ink]  Generate agent handoff artifacts
-    npx tack log              View or append decisions
-    npx tack note             View/add agent notes
-    npx tack help      Show this help text
+    npx tack init [--ink]          Set up spec.yaml from detected architecture
+    npx tack status [--ink]        Run a scan and show current state
+    npx tack watch [--plain]       Persistent watcher with live drift alerts
+    npx tack handoff [--ink]       Generate agent handoff artifacts
+    npx tack log                   View or append decisions
+    npx tack log events [N]        Show last N log events (default 50)
+    npx tack note                  View/add agent notes
+    npx tack diff <base-branch>    Compare architecture vs base branch (plain)
+    npx tack help                  Show this help text
 
   Output mode:
     default: plain output for all commands except watch
@@ -122,9 +125,35 @@ if (normalizedCommand === "log") {
     process.exit(0);
   }
 
+  if (sub === "events") {
+    const rawLimit = args._[2] as string | undefined;
+    let limit = 50;
+    if (typeof rawLimit === "string") {
+      const parsed = Number.parseInt(rawLimit, 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        limit = parsed;
+      }
+    }
+
+    const events = readRecentLogs(limit);
+    if (!events.length) {
+      // eslint-disable-next-line no-console
+      console.log("No log events recorded.");
+      process.exit(0);
+    }
+
+    for (const event of events) {
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify(event));
+    }
+    process.exit(0);
+  }
+
   if (sub !== "decision") {
     // eslint-disable-next-line no-console
-    console.error(`Unknown log subcommand: "${sub}". Use "tack log" or "tack log decision".`);
+    console.error(
+      `Unknown log subcommand: "${sub}". Use "tack log", "tack log decision", or "tack log events [N]".`
+    );
     process.exit(1);
   }
 
@@ -245,6 +274,16 @@ if (!shouldUseInk) {
     try {
       await runWatchPlain();
       process.exit(0);
+    } catch (err) {
+      printFatal(err);
+    }
+  }
+
+  if (normalizedCommand === "diff") {
+    try {
+      const baseBranch = args._[1] as string | undefined;
+      const ok = runDiffPlain(baseBranch);
+      process.exit(ok ? 0 : 1);
     } catch (err) {
       printFatal(err);
     }

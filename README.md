@@ -13,6 +13,7 @@ All tool state lives in `./.tack/`:
 - `_drift.yaml` — unresolved/accepted/rejected drift items
 - `_logs.ndjson` — append-only event log
 - `context.md` / `goals.md` / `assumptions.md` / `open_questions.md` — context templates
+- `verification.md` — validation/verification steps to run after changes (tests, linters, health checks)
 
 Agents and tools consume this state via:
 
@@ -84,6 +85,7 @@ Agents without MCP should:
   - `.tack/context.md`, `.tack/goals.md`, `.tack/assumptions.md`, `.tack/open_questions.md`
   - `.tack/implementation_status.md`
   - `.tack/_audit.yaml`, `.tack/_drift.yaml`
+  - `.tack/verification.md` — validation/verification steps to run after changes
   - `.tack/handoffs/*.json`, `.tack/handoffs/*.md`
   - `.tack/_notes.ndjson` — agent working notes (NDJSON)
 - **Write back**:
@@ -121,6 +123,10 @@ Do **not** modify `.tack/_drift.yaml`, `.tack/_audit.yaml`, or `.tack/_logs.ndjs
 - Reads file-level git changes
 - Writes `./.tack/handoffs/<timestamp>.md`
 - Writes `./.tack/handoffs/<timestamp>.json` (canonical)
+- Includes a **Validation / Verification** section driven by `.tack/verification.md`:
+  - Each bullet/numbered item becomes a `verification.steps` entry in JSON and a markdown bullet
+  - Intended for humans or external tools to know which commands/checks to run after applying the handoff
+  - Tack does **not** execute these commands automatically
 
 ## Keyboard Controls
 

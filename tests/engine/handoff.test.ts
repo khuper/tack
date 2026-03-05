@@ -116,6 +116,81 @@ describe("handoff", () => {
     expect(typeof json.next_steps[0]?.source).toBe("object");
   });
 
+  it("propagates verification steps from .tack/verification.md into report and markdown", () => {
+    const verificationContent = [
+      "# Validation / Verification",
+      "",
+      "Commands or checks to run after applying changes.",
+      "",
+      "- bun test",
+      "- npm run lint",
+      "1. npx tsc --noEmit",
+      "2) echo done",
+      "",
+    ].join("\n");
+
+    const verificationFile = path.join(tmpDir, ".tack", "verification.md");
+    fs.writeFileSync(verificationFile, verificationContent, "utf-8");
+
+    const result = generateHandoff();
+    const json = JSON.parse(fs.readFileSync(result.jsonPath, "utf-8"));
+    const md = fs.readFileSync(result.markdownPath, "utf-8");
+
+    expect(json.verification.steps).toEqual([
+      "bun test",
+      "npm run lint",
+      "npx tsc --noEmit",
+      "echo done",
+    ]);
+
+    expect(md).toContain("## 10) Validation / Verification");
+    expect(md).toContain("- bun test");
+    expect(md).toContain("- npm run lint");
+    expect(md).toContain("- npx tsc --noEmit");
+    expect(md).toContain("- echo done");
+  });
+
+  it("handles empty or placeholder verification files gracefully", () => {
+    const verificationFile = path.join(tmpDir, ".tack", "verification.md");
+    fs.writeFileSync(
+      verificationFile,
+      ["# Validation / Verification", "", "Describe how to validate changes here.", ""].join("\n"),
+      "utf-8"
+    );
+
+    const result = generateHandoff();
+    const json = JSON.parse(fs.readFileSync(result.jsonPath, "utf-8"));
+    const md = fs.readFileSync(result.markdownPath, "utf-8");
+
+    expect(Array.isArray(json.verification.steps)).toBeTrue();
+    expect(json.verification.steps.length).toBe(0);
+
+    expect(md).toContain("## 10) Validation / Verification");
+    expect(md).toContain(
+      "No verification steps defined. Add bullets to `.tack/verification.md` (e.g. test commands, linters) for humans or external tools to run after changes."
+    );
+  });
+
+  it("sanitizes verification steps for markdown output without mutating JSON", () => {
+    const rawStep = "run script <dangerous [md] `code` (1)>";
+    const verificationFile = path.join(tmpDir, ".tack", "verification.md");
+    fs.writeFileSync(verificationFile, `- ${rawStep}\n`, "utf-8");
+
+    const result = generateHandoff();
+    const json = JSON.parse(fs.readFileSync(result.jsonPath, "utf-8"));
+    const md = fs.readFileSync(result.markdownPath, "utf-8");
+
+    expect(json.verification.steps).toEqual([rawStep]);
+
+    const expectedSanitized = rawStep
+      .replace(/[<>[\]()!`]/g, "_")
+      .replace(/[\r\n\t\x00-\x1f]/g, " ")
+      .trim();
+
+    expect(md).toContain(`- ${expectedSanitized}`);
+    expect(md).not.toContain(rawStep);
+  });
+
   it("includes safety header, agent guide, and ordered numbered sections in markdown", () => {
     const result = generateHandoff();
     const md = fs.readFileSync(result.markdownPath, "utf-8");

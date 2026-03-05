@@ -2,23 +2,43 @@
 
 Architecture drift guard. Declare your spec. Tack enforces it.
 
-## What It Does
+## Why Tack
 
-`tack` scans your codebase for architecture signals (framework, auth, DB, payments, scope patterns, risks), compares them against your declared contract, and tracks drift over time.
+`tack` is a context and change-tracking layer for agent-driven software work.
 
-All tool state lives in `./.tack/`:
+It gives agents and humans a shared project memory across sessions:
 
-- `spec.yaml` — declared architecture contract (allowed/forbidden systems, constraints, optional `domains` map for grouping systems and constraints)
-- `_audit.yaml` — latest scan result
-- `_drift.yaml` — unresolved/accepted/rejected drift items
-- `_logs.ndjson` — append-only event log
-- `context.md` / `goals.md` / `assumptions.md` / `open_questions.md` — context templates
-- `verification.md` — validation/verification steps to run after changes (tests, linters, health checks)
+- Captures architecture intent in `spec.yaml` and supporting context docs.
+- Detects architecture signals in code and tracks drift over time.
+- Generates handoff artifacts (`.md` + canonical `.json`) for the next agent/session.
+- Preserves machine history in append-only logs.
+- Supports explicit decision and note write-back for continuity.
+
+## Persistent Context in `.tack/`
+
+All state lives in `./.tack/` so work survives restarts, agent changes, and handoffs:
+
+- `context.md`, `goals.md`, `assumptions.md`, `open_questions.md` - human intent and constraints.
+- `decisions.md` - durable decision history with reasoning.
+- `_notes.ndjson` - timestamped agent notes between sessions.
+- `spec.yaml` - declared architecture contract (allowed/forbidden systems, constraints, optional `domains` map).
+- `_audit.yaml` - latest detector snapshot.
+- `_drift.yaml` - unresolved/accepted/rejected drift items.
+- `_logs.ndjson` - append-only machine event stream.
+- `handoffs/*.md` and `handoffs/*.json` - transfer artifacts for the next session.
+- `verification.md` - validation steps carried into handoffs.
 
 Agents and tools consume this state via:
 
-- The `tack-mcp` server (Model Context Protocol), which exposes read-only resources for context, guardrails, and the latest handoff JSON, plus tools for logging decisions and agent notes.
-- Direct file access to `.tack/`, where human-authored docs and handoffs live alongside machine-managed state.
+- The `tack-mcp` server (Model Context Protocol), which exposes context resources and write-back tools.
+- Direct file access to `.tack/`, where human-authored docs and machine-managed state live together.
+
+## Change Tracking Workflow
+
+- `tack status` updates `_audit.yaml` and computes drift against your spec.
+- `tack watch` continuously rescans and appends events to `_logs.ndjson`.
+- `tack handoff` packages context + machine state + git deltas for the next session.
+- `tack log` and `tack note` store decisions and notes that future agents can reuse.
 
 ## Install
 
@@ -50,12 +70,35 @@ node /absolute/path/to/tack/dist/index.js init
 node /absolute/path/to/tack/dist/index.js status
 node /absolute/path/to/tack/dist/index.js watch
 node /absolute/path/to/tack/dist/index.js handoff
+node /absolute/path/to/tack/dist/index.js log
+node /absolute/path/to/tack/dist/index.js note
 ```
 
 Within the `tack` repo itself:
 
 ```bash
 node dist/index.js help
+```
+
+## `tack watch` Preview
+
+![tack watch terminal preview](./tackpreview.png)
+
+## Typical Multi-Session Loop
+
+```bash
+# Session start
+tack status
+
+# During work
+tack watch
+
+# Record key intent changes
+tack log
+tack note
+
+# Session end
+tack handoff
 ```
 
 ## Using Tack with Agents
@@ -184,3 +227,4 @@ npm run dev:node
 - Offline-only (no network calls)
 - Writes are guarded to `./.tack/` only
 - Python virtual environments are ignored during scans (`venv`, `.venv`, `site-packages`) to avoid false positives
+

@@ -16,6 +16,8 @@ import { appendDecision, normalizeDecisionActor, readDecisionsMarkdown } from ".
 import { ensureTackIntegrity } from "./lib/files.js";
 import { fileExists } from "./lib/files.js";
 import { readSpecWithError, specExists } from "./lib/files.js";
+import { printNotes, addNotePlain } from "./plain/notes.js";
+import { compactNotes } from "./lib/notes.js";
 
 const ASCII_LOGO = `
  ████████╗ █████╗  ██████╗██╗  ██╗
@@ -30,7 +32,7 @@ const args = minimist(process.argv.slice(2));
 const rawCommand = args._[0] as string | undefined;
 const command = rawCommand ?? (fileExists(".tack") ? "watch" : "init");
 
-const VALID_COMMANDS = ["init", "status", "watch", "handoff", "log", "help"] as const;
+const VALID_COMMANDS = ["init", "status", "watch", "handoff", "log", "note", "help"] as const;
 type Command = (typeof VALID_COMMANDS)[number];
 
 function isValidCommand(value: string): value is Command {
@@ -49,6 +51,7 @@ ${ASCII_LOGO}
     npx tack watch [--plain]  Persistent watcher with live drift alerts
     npx tack handoff [--ink]  Generate agent handoff artifacts
     npx tack log              View or append decisions
+    npx tack note             View/add agent notes
     npx tack help      Show this help text
 
   Output mode:
@@ -153,6 +156,54 @@ if (normalizedCommand === "log") {
   // eslint-disable-next-line no-console
   console.log("Decision logged.");
   process.exit(0);
+}
+
+if (normalizedCommand === "note") {
+  const hasMessage = typeof args.message === "string" && args.message.trim().length > 0;
+  const hasClear = args.clear !== undefined;
+
+  if (hasMessage && hasClear) {
+    // eslint-disable-next-line no-console
+    console.error('Cannot use --message and --clear together. Use either "tack note --message ..." or "tack note --clear N".');
+    process.exit(1);
+  }
+
+  if (!hasMessage && !hasClear) {
+    const limit = typeof args.limit === "number" ? args.limit : undefined;
+    const type = typeof args.type === "string" ? args.type : undefined;
+    printNotes({ limit, type });
+    process.exit(0);
+  }
+
+  if (hasMessage) {
+    const type = typeof args.type === "string" ? args.type : "discovered";
+    const actor = typeof args.actor === "string" ? args.actor : "user";
+    const ok = addNotePlain(type, String(args.message), actor);
+    if (ok) {
+      // eslint-disable-next-line no-console
+      console.log("Note added.");
+    }
+    process.exit(ok ? 0 : 1);
+  }
+
+  if (hasClear) {
+    const raw = args.clear;
+    const days =
+      typeof raw === "number"
+        ? raw
+        : typeof raw === "string"
+          ? Number.parseInt(raw, 10)
+          : NaN;
+    if (!Number.isFinite(days) || days <= 0) {
+      // eslint-disable-next-line no-console
+      console.error('Invalid value for --clear. Expected a positive number of days, e.g. "tack note --clear 30".');
+      process.exit(1);
+    }
+    const archived = compactNotes(days);
+    // eslint-disable-next-line no-console
+    console.log(`Archived ${archived} notes older than ${days} days.`);
+    process.exit(0);
+  }
 }
 
 if (!shouldUseInk) {

@@ -244,13 +244,23 @@ export function grepFiles(
   const matches: Array<{ file: string; line: number; content: string }> = [];
   for (const file of files) {
     if (matches.length >= maxResults) break;
+
+    try {
+      const stat = fs.statSync(path.resolve(projectRoot(), file));
+      if (stat.size > 1024 * 1024) continue; // Skip files larger than 1MB
+    } catch {
+      continue;
+    }
+
     const content = readFile(file);
     if (!content) continue;
     const lines = content.split("\n");
     for (let i = 0; i < lines.length; i += 1) {
       if (matches.length >= maxResults) break;
-      if (pattern.test(lines[i]!)) {
-        matches.push({ file, line: i + 1, content: lines[i]!.trim() });
+      const line = lines[i]!;
+      if (line.length > 2000) continue; // Skip exceptionally long lines to prevent ReDoS
+      if (pattern.test(line)) {
+        matches.push({ file, line: i + 1, content: line.trim() });
       }
     }
   }
@@ -342,6 +352,11 @@ export function logsPath(): string {
   return path.join(getTackDir(), "_logs.ndjson");
 }
 
+export function notesPath(): string {
+  ensureTackDir();
+  return path.join(getTackDir(), "_notes.ndjson");
+}
+
 export function contextPath(): string {
   return path.join(getTackDir(), "context.md");
 }
@@ -368,6 +383,10 @@ export function implementationStatusPath(): string {
 
 export function contextIndexPath(): string {
   return path.join(getTackDir(), "context_index.md");
+}
+
+export function verificationPath(): string {
+  return path.join(getTackDir(), "verification.md");
 }
 
 export function handoffsDirPath(): string {
@@ -482,6 +501,19 @@ function contextTemplates(): Array<{ name: string; path: string; content: string
         "",
       ].join("\n"),
     },
+    {
+      name: "verification.md",
+      path: verificationPath(),
+      content: [
+        "# Validation / Verification",
+        "",
+        "Commands or checks to run after applying changes (e.g. tests, linters, health checks).",
+        "Tack does not execute these; they are suggestions for humans or external tools.",
+        "",
+        "- ",
+        "",
+      ].join("\n"),
+    },
   ];
 }
 
@@ -517,6 +549,11 @@ export function ensureTackIntegrity(): { repaired: string[] } {
   if (!fileExists(driftPath())) {
     writeDrift({ items: [] });
     repaired.push("_drift.yaml");
+  }
+
+  if (!fileExists(notesPath())) {
+    writeSafe(notesPath(), "");
+    repaired.push("_notes.ndjson");
   }
 
   if (!fileExists(logsPath())) {

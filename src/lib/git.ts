@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import * as path from "node:path";
 import { projectRoot } from "./files.js";
@@ -10,9 +10,9 @@ type GitResult = {
   value: string;
 };
 
-function gitExec(cmd: string): GitResult {
+function gitExec(args: string[]): GitResult {
   try {
-    const output = execSync(cmd, {
+    const output = execFileSync("git", args, {
       cwd: projectRoot(),
       encoding: "utf-8",
       timeout: GIT_TIMEOUT_MS,
@@ -25,25 +25,25 @@ function gitExec(cmd: string): GitResult {
 }
 
 export function isGitRepo(): boolean {
-  return gitExec("git rev-parse --is-inside-work-tree").ok;
+  return gitExec(["rev-parse", "--is-inside-work-tree"]).ok;
 }
 
 export function hasCommits(): boolean {
-  return gitExec("git rev-parse HEAD").ok;
+  return gitExec(["rev-parse", "HEAD"]).ok;
 }
 
 export function getCurrentBranch(): string {
-  const result = gitExec("git branch --show-current");
+  const result = gitExec(["branch", "--show-current"]);
   return result.ok && result.value ? result.value : "unknown";
 }
 
 export function getShortRef(): string {
-  const result = gitExec("git rev-parse --short HEAD");
+  const result = gitExec(["rev-parse", "--short", "HEAD"]);
   return result.ok && result.value ? result.value : "unknown";
 }
 
 export function getLatestCommitSubject(): string {
-  const result = gitExec("git log -1 --format=%s");
+  const result = gitExec(["log", "-1", "--format=%s"]);
   return result.ok && result.value ? result.value : "";
 }
 
@@ -80,9 +80,9 @@ export function getChangedFiles(base = "HEAD~1"): string[] {
   if (!isGitRepo()) return [];
 
   if (!hasCommits()) {
-    const staged = gitExec("git diff --cached --name-only");
-    const unstaged = gitExec("git diff --name-only");
-    const untracked = gitExec("git ls-files --others --exclude-standard");
+    const staged = gitExec(["diff", "--cached", "--name-only"]);
+    const unstaged = gitExec(["diff", "--name-only"]);
+    const untracked = gitExec(["ls-files", "--others", "--exclude-standard"]);
     const all = [
       ...(staged.ok ? staged.value.split("\n") : []),
       ...(unstaged.ok ? unstaged.value.split("\n") : []),
@@ -91,11 +91,11 @@ export function getChangedFiles(base = "HEAD~1"): string[] {
     return dedupeAndFilter(all);
   }
 
-  const diffResult = gitExec(`git diff --name-only ${base}`);
+  const diffResult = gitExec(["diff", "--name-only", base]);
   if (diffResult.ok) {
     return dedupeAndFilter(diffResult.value.split("\n"));
   }
 
-  const fallback = gitExec("git ls-files");
+  const fallback = gitExec(["ls-files"]);
   return fallback.ok ? dedupeAndFilter(fallback.value.split("\n")) : [];
 }

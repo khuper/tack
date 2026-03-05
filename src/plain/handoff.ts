@@ -5,4 +5,6 @@ export function printHandoffPlain(markdownPath: string, jsonPath: string, genera
   console.log(`${gray("Time:")}     ${blue(generatedAt)}`);
   console.log(`${bold("Markdown:")} ${markdownPath}`);
   console.log(`${bold("JSON:")}     ${jsonPath}`);
+  console.log("");
+  console.log("Includes agent guide for MCP and direct file access.");
 }

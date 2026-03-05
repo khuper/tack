@@ -110,6 +110,24 @@ export type DecisionEntry = {
   source: SourceRef;
 };
 
+export type AgentNoteType = "tried" | "unfinished" | "discovered" | "blocked" | "warning";
+
+export const AGENT_NOTE_TYPES: AgentNoteType[] = [
+  "tried",
+  "unfinished",
+  "discovered",
+  "blocked",
+  "warning",
+] as const;
+
+export type AgentNote = {
+  ts: string;
+  type: AgentNoteType;
+  message: string;
+  related_files?: string[];
+  actor: string;
+};
+
 export type LogEvent =
   | { ts: string; event: "init"; spec_seeded: boolean; systems_detected: number }
   | { ts: string; event: "repair"; files: string[] }
@@ -119,7 +137,9 @@ export type LogEvent =
   | { ts: string; event: "spec:updated"; field: string; diff: string }
   | { ts: string; event: "decision"; decision: string; reasoning: string; actor: DecisionActor }
   | { ts: string; event: "handoff"; markdown_path: string; json_path: string }
-  | { ts: string; event: "compaction:archive_handoffs"; archived_count: number; kept_count: number };
+  | { ts: string; event: "compaction:archive_handoffs"; archived_count: number; kept_count: number }
+  | { ts: string; event: "note:added"; type: AgentNoteType; actor: string }
+  | { ts: string; event: "note:archived"; type: AgentNoteType; actor: string };
 
 type StripTs<T> = T extends { ts: string } ? Omit<T, "ts"> : never;
 export type LogEventInput = StripTs<LogEvent>;
@@ -192,9 +212,31 @@ export type HandoffChangedFile = {
   source: SourceRef;
 };
 
+export type HandoffAgentNote = AgentNote & {
+  source: SourceRef;
+};
+
+export type AgentSafety = {
+  notice: string;
+  generated_by: string;
+  source_type: "deterministic";
+};
+
+export type AgentGuide = {
+  mcp_resources: Array<{ uri: string; description: string }>;
+  mcp_tools: Array<{ name: string; description: string }>;
+  direct_file_access: {
+    read: Array<{ path: string; description: string }>;
+    append: Array<{ path: string; format: string }>;
+    do_not_modify: string[];
+  };
+};
+
 export type HandoffReport = {
   schema_version: "1.0.0";
   generated_at: string;
+  agent_safety: AgentSafety;
+  agent_guide: AgentGuide;
   project: {
     name: string;
     root: string;
@@ -216,7 +258,12 @@ export type HandoffReport = {
   open_questions: ContextQuestion[];
   assumptions: ContextQuestion[];
   recent_decisions: DecisionEntry[];
+  verification: {
+    steps: string[];
+    source: SourceRef;
+  };
   next_steps: HandoffActionItem[];
+  agent_notes: HandoffAgentNote[];
 };
 
 export type ProjectStatusItem = {

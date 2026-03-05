@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server";
 // Bun's resolver currently has trouble with the `./server/stdio` export subpath,
 // so we import the concrete ESM file path instead.
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/dist/esm/server/stdio.js";
+import { z } from "zod";
 import {
   contextPath,
   goalsPath,
@@ -17,6 +18,11 @@ import {
 } from "./lib/files.js";
 import { parseContextPack } from "./engine/contextPack.js";
 import { wrapUntrustedContext } from "./lib/promptSafety.js";
+import { appendDecision, normalizeDecisionActor } from "./engine/decisions.js";
+import { log } from "./lib/logger.js";
+import { addNote } from "./lib/notes.js";
+import { AGENT_NOTE_TYPES } from "./lib/signals.js";
+import type { AgentNoteType } from "./lib/signals.js";
 
 function safeReadFile(filepath: string): string | null {
   try {
@@ -55,11 +61,7 @@ async function main(): Promise<void> {
       name: "tack-mcp",
       version: "0.1.0",
     },
-    {
-      capabilities: {
-        resources: {},
-      },
-    }
+    {}
   );
 
   // Intent: high-level purpose and goals, without architecture internals.
@@ -265,6 +267,77 @@ async function main(): Promise<void> {
           {
             uri: uri.href,
             text: wrapped,
+          },
+        ],
+      };
+    }
+  );
+
+  // Tools: write-back channels for agents.
+  server.registerTool(
+    "log_decision",
+    {
+      description: "Record a decision with reasoning into .tack/decisions.md and the Tack event log.",
+      inputSchema: z.object({
+        decision: z.string().min(1),
+        reasoning: z.string().min(1),
+        actor: z.string().optional(),
+      }),
+    },
+    async (args) => {
+      const decision = args.decision;
+      const reasoning = args.reasoning;
+      const actor = typeof args.actor === "string" ? args.actor : undefined;
+
+      appendDecision(decision, reasoning);
+      log({
+        event: "decision",
+        decision,
+        reasoning,
+        actor: normalizeDecisionActor(actor),
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Decision logged to .tack/decisions.md.",
+          },
+        ],
+      };
+    }
+  );
+
+  server.registerTool(
+    "log_agent_note",
+    {
+      description: "Append an agent note into .tack/_notes.ndjson for future handoffs.",
+      inputSchema: z.object({
+        type: z.enum(AGENT_NOTE_TYPES as [AgentNoteType, ...AgentNoteType[]]),
+        message: z.string().min(1),
+        actor: z.string().optional(),
+        related_files: z.array(z.string()).optional(),
+      }),
+    },
+    async (args) => {
+      const actor = args.actor && args.actor.trim().length > 0 ? args.actor : "user";
+
+      const ok = addNote({
+        type: args.type,
+        message: args.message,
+        actor,
+        related_files: args.related_files,
+      });
+
+      const text = ok
+        ? "Agent note appended to .tack/_notes.ndjson."
+        : "Failed to append agent note to .tack/_notes.ndjson.";
+
+      return {
+        content: [
+          {
+            type: "text",
+            text,
           },
         ],
       };

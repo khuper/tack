@@ -21,3 +21,4 @@
 - [2026-03-05] Start versioning .tack contents — removed `.tack/` from `.gitignore` so spec, context, decisions, and verification docs can be tracked alongside code; machine-managed files remain contractually machine-owned even if tracked.
 - [2026-03-05] Architecture diff uses _audit.yaml snapshots — `tack diff` treats `.tack/_audit.yaml` on each branch as the source of truth for detected systems and skips re-running detectors, favouring deterministic, fast comparisons between git refs.
  - [2026-03-05] Add domains map to spec schema — `spec.yaml` now supports an optional `domains` map grouping systems and constraint keys under named domains (with optional labels) for future compaction, archival, and reporting, without changing current enforcement behavior.
+- [2026-03-05] Default build is Node-native and cross-platform - npm run build now uses tsc plus a Node postbuild asset-copy step, while Bun is retained only as an optional build:bun fast path.

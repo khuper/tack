@@ -13,9 +13,10 @@
   },
   "scripts": {
     "dev": "bun run src/index.tsx",
-    "build": "bun build src/index.tsx --outdir dist --target node && cp node_modules/yoga-wasm-web/dist/yoga.wasm dist/yoga.wasm && mkdir -p dist/detectors/rules && cp src/detectors/rules/*.yaml dist/detectors/rules/",
+    "build": "tsc && node scripts/postbuild.cjs",
+    "build:bun": "bun build src/index.tsx --outdir dist --target node && node scripts/postbuild.cjs",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "bun run build && npm pack --dry-run"
+    "prepublishOnly": "npm run build && npm pack --dry-run"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",

@@ -23,11 +23,18 @@ Agents and tools consume this state via:
 ## Install
 
 ```bash
-bun install
-bun run build
+npm install
+npm run build
 ```
 
 Optional global/local CLI use:
+
+```bash
+npm link
+# now `tack` is available globally on this machine
+```
+
+Or package for use in another project:
 
 ```bash
 npm pack
@@ -39,16 +46,16 @@ npm pack
 From any project directory:
 
 ```bash
-bun run /absolute/path/to/tack/dist/index.js init
-bun run /absolute/path/to/tack/dist/index.js status
-bun run /absolute/path/to/tack/dist/index.js watch
-bun run /absolute/path/to/tack/dist/index.js handoff
+node /absolute/path/to/tack/dist/index.js init
+node /absolute/path/to/tack/dist/index.js status
+node /absolute/path/to/tack/dist/index.js watch
+node /absolute/path/to/tack/dist/index.js handoff
 ```
 
 Within the `tack` repo itself:
 
 ```bash
-bun run src/index.tsx help
+node dist/index.js help
 ```
 
 ## Using Tack with Agents
@@ -138,9 +145,15 @@ In selection prompts (`init`, drift options):
 ## Development
 
 ```bash
-bun run typecheck
+npm run typecheck
 bun test
-bun run build
+npm run build
+```
+
+Optional Bun fast path for build contributors:
+
+```bash
+npm run build:bun
 ```
 
 ## Notes

@@ -1,5 +1,5 @@
 {
-  "name": "tack",
+  "name": "tack-cli",
   "version": "0.1.0",
   "description": "Architecture drift guard. Declare your spec. Tack enforces it.",
   "type": "module",
@@ -9,7 +9,7 @@
     "LICENSE"
   ],
   "bin": {
-    "tack": "./dist/index.js"
+    "tack": "dist/index.js"
   },
   "scripts": {
     "dev": "npm run build && node dist/index.js watch --plain",
@@ -30,18 +30,21 @@
     "js-yaml": "^4.1.0",
     "minimist": "^1.2.8",
     "node-notifier": "^10.0.1",
+    "picocolors": "^1.1.1",
     "react": "^18.2.0",
     "tasuku": "^2.0.1",
+    "update-notifier": "^7.3.1",
     "yoga-wasm-web": "~0.3.3"
   },
   "devDependencies": {
-    "react-devtools-core": "^4.28.5",
-    "@types/react": "^18.2.0",
+    "@types/bun": "latest",
     "@types/js-yaml": "^4.0.9",
-    "@types/node-notifier": "^8.0.5",
     "@types/minimist": "^1.2.5",
-    "typescript": "^5.3.3",
-    "@types/bun": "latest"
+    "@types/node-notifier": "^8.0.5",
+    "@types/react": "^18.2.0",
+    "@types/update-notifier": "^6.0.8",
+    "react-devtools-core": "^4.28.5",
+    "typescript": "^5.3.3"
   },
   "license": "MIT"
 }

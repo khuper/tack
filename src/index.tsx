@@ -33,7 +33,21 @@ const ASCII_LOGO = `
     ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝
 `;
 
+import updateNotifier from "update-notifier";
+import { readFileSync } from "node:fs";
+
+const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+updateNotifier({ pkg }).notify();
+
 const args = minimist(process.argv.slice(2));
+
+if (args.version || args.v) {
+  // eslint-disable-next-line no-console
+  console.log(pkg.version);
+  process.exit(0);
+}
+
 const rawCommand = args._[0] as string | undefined;
 const command = rawCommand ?? (fileExists(".tack") ? "watch" : "init");
 
@@ -44,7 +58,7 @@ function isValidCommand(value: string): value is Command {
   return (VALID_COMMANDS as readonly string[]).includes(value);
 }
 
-if (command === "help" || args.help) {
+if (command === "help" || args.help || args.h) {
   // eslint-disable-next-line no-console
   console.log(`
 ${ASCII_LOGO}

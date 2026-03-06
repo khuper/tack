@@ -1,5 +1,7 @@
 # tack
 
+[![npm version](https://img.shields.io/npm/v/tack-cli.svg)](https://www.npmjs.com/package/tack-cli) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Architecture drift guard. Declare your spec. Tack enforces it.
 
 ## Why Tack
@@ -40,14 +42,35 @@ Agents and tools consume this state via:
 - `tack handoff` packages context + machine state + git deltas for the next session.
 - `tack log` and `tack note` store decisions and notes that future agents can reuse.
 
-## Install
+## Install from npm
+
+Use Tack in any project without cloning:
+
+```bash
+npx tack-cli init
+npx tack-cli status
+npx tack-cli handoff
+```
+
+Or install globally:
+
+```bash
+npm install -g tack-cli
+tack init
+tack status
+tack handoff
+```
+
+## Build from source
+
+To develop or contribute:
 
 ```bash
 npm install
 npm run build
 ```
 
-Optional global/local CLI use:
+Optional global link for local development:
 
 ```bash
 npm link

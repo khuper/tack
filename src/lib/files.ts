@@ -171,7 +171,7 @@ export function listProjectFiles(dir?: string): string[] {
   const base = projectRoot();
   const root = path.resolve(base, dir ?? ".");
   const pkg = readJson<{ name?: string }>("package.json");
-  const isTackRepo = pkg?.name === "tack";
+  const isTackRepo = pkg?.name === "tack" || pkg?.name === "tack-cli";
   const ignore = new Set([
     "node_modules",
     ".git",

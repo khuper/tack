@@ -48,6 +48,7 @@ export function Handoff() {
       <Text>  Time: {result.generatedAt}</Text>
       <Text>  Markdown: {result.markdownPath}</Text>
       <Text>  JSON: {result.jsonPath}</Text>
+      <Text dimColor>  Give to your agent: .md for chat/context, .json or tack://handoff/latest for structured (MCP).</Text>
     </Box>
   );
 }

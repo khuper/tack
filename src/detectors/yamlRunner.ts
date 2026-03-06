@@ -1,9 +1,9 @@
 import { readFileSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 import { createSignal, type DetectorResult, type Signal } from "../lib/signals.js";
-import { readJson, fileExists, grepFiles, listProjectFiles } from "../lib/files.js";
+import { readJson, fileExists, grepFiles, listProjectFiles, projectRoot } from "../lib/files.js";
 import type { SignalCategory } from "../lib/signals.js";
 
 type PkgJson = {
@@ -94,6 +94,18 @@ export function createDetectorFromYaml(yamlPath: string): {
         let projectFiles: string[] = [];
         try {
           projectFiles = listProjectFiles();
+          // Never search inside the directory that contains this rule file (avoids
+          // matching rule definitions as if they were project code; fixes false
+          // positives for the tack repo and any project that has rule YAML in-tree).
+          const base = projectRoot();
+          const ruleDirRel = relative(base, dirname(yamlPath)).replace(/\\/g, "/");
+          if (ruleDirRel && !ruleDirRel.startsWith("..")) {
+            const prefixWithSep = ruleDirRel.endsWith("/") ? ruleDirRel : `${ruleDirRel}/`;
+            projectFiles = projectFiles.filter((f) => {
+              const n = f.replace(/\\/g, "/");
+              return n !== ruleDirRel && !n.startsWith(prefixWithSep);
+            });
+          }
         } catch {
           // non-node or no project root
         }

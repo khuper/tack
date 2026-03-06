@@ -36,6 +36,11 @@ function getTackDir(): string {
   return path.resolve(projectRoot(), TACK_DIRNAME);
 }
 
+/** True when the .tack/ directory exists (used for default CLI behavior). */
+export function tackDirExists(): boolean {
+  return fs.existsSync(getTackDir());
+}
+
 function emitValidationWarnings(file: string, warnings: string[]): void {
   if (warnings.length === 0) return;
   for (const warning of warnings) {

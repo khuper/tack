@@ -1,7 +1,7 @@
 ---
 id: TASK-2
 title: Enforce intuitive default command behavior
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-03 23:19'
 labels: []
@@ -19,6 +19,6 @@ Ensure `tack` with no arguments behaves as: initialize when `.tack/` is missing,
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 No-arg CLI initializes when `.tack/` does not exist
-- [ ] #2 No-arg CLI starts watch when `.tack/` exists
+- [x] #1 No-arg CLI initializes when `.tack/` does not exist
+- [x] #2 No-arg CLI starts watch when `.tack/` exists
 <!-- AC:END -->

@@ -18,8 +18,8 @@ import { runWatchPlain } from "./plain/watch.js";
 import { log, readRecentLogs } from "./lib/logger.js";
 import { appendDecision, normalizeDecisionActor, readDecisionsMarkdown } from "./engine/decisions.js";
 import { ensureTackIntegrity } from "./lib/files.js";
-import { fileExists } from "./lib/files.js";
 import { readSpecWithError, specExists } from "./lib/files.js";
+import { getDefaultCommand } from "./lib/cli.js";
 import { printNotes, addNotePlain } from "./plain/notes.js";
 import { compactNotes } from "./lib/notes.js";
 import { runDiffPlain } from "./plain/diff.js";
@@ -49,7 +49,7 @@ if (args.version || args.v) {
 }
 
 const rawCommand = args._[0] as string | undefined;
-const command = rawCommand ?? (fileExists(".tack") ? "watch" : "init");
+const command = rawCommand ?? getDefaultCommand();
 
 const VALID_COMMANDS = ["init", "status", "watch", "handoff", "log", "note", "diff", "mcp", "help"] as const;
 type Command = (typeof VALID_COMMANDS)[number];

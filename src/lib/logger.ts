@@ -1,11 +1,9 @@
 import type { LogEvent, LogEventInput } from "./signals.js";
 import { appendSafe, logsPath } from "./files.js";
-import { rotateNdjsonFile, safeReadNdjson } from "./ndjson.js";
+import { createNdjsonTailReader, rotateNdjsonFile, safeReadNdjson } from "./ndjson.js";
 
 const LOG_MAX_BYTES = 5 * 1024 * 1024;
 const LOG_KEEP_LINES = 5000;
-const MCP_ACTIVITY_SEED_LIMIT = 50;
-const MCP_ACTIVITY_RECENT_LIMIT = 20;
 const MCP_ACTIVITY_SUPPRESS_MS = 1500;
 export type McpActivityEvent = Extract<LogEvent, { event: "mcp:resource" | "mcp:tool" }>;
 export type McpActivityNotice = {
@@ -60,13 +58,15 @@ export function formatMcpActivityEvent(event: McpActivityEvent): string {
 }
 
 export function createMcpActivityMonitor(): () => McpActivityNotice[] {
-  const seen = new Set(readRecentMcpActivity(MCP_ACTIVITY_SEED_LIMIT).map(mcpActivityEventKey));
+  const seen = new Set(safeReadNdjson<LogEvent>(logsPath()).filter(isMcpActivityEvent).map(mcpActivityEventKey));
   const lastShownAt = new Map<string, number>();
+  const readNewLogEvents = createNdjsonTailReader<LogEvent>(logsPath());
 
   return () => {
     const notices: McpActivityNotice[] = [];
 
-    for (const event of readRecentMcpActivity(MCP_ACTIVITY_RECENT_LIMIT)) {
+    for (const event of readNewLogEvents()) {
+      if (!isMcpActivityEvent(event)) continue;
       const key = mcpActivityEventKey(event);
       if (seen.has(key)) continue;
       seen.add(key);

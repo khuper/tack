@@ -151,6 +151,38 @@ If `tack` is on your PATH (for example after `npm install -g tack-cli` or `npm l
 
 **Cursor:** In Cursor (Settings → Tools & MCP), add an MCP server with command `tack`, args `["mcp"]`, and **cwd** set to your project root (the directory that contains `.tack/`). If `tack` isn’t on PATH, use command `node` with args `["/path/to/tack/dist/index.js", "mcp"]`, cwd = project root. Restart Cursor after changing MCP config.
 
+**Codex CLI:** Add the Tack MCP server to Codex:
+
+```bash
+# With tack-cli on PATH (for example after npm install -g tack-cli)
+codex mcp add tack -- tack mcp
+
+# With a local build of this repo
+codex mcp add tack -- node /path/to/tack/dist/index.js mcp
+```
+
+Then verify it:
+
+```bash
+codex mcp get tack
+codex mcp list
+```
+
+Tack reads `.tack/` from the current working directory, and Codex launches MCP servers relative to the Codex session cwd. Start Codex from your **project root** (the directory that contains `.tack/`), for example:
+
+```bash
+cd /path/to/your/project
+codex
+```
+
+Or:
+
+```bash
+codex -C /path/to/your/project
+```
+
+If you update Tack from source, rebuild it with `npm run build` so `dist/index.js` stays current.
+
 **Claude Code:** From your project root (the directory that contains `.tack/`), add the Tack MCP server:
 
 ```bash
@@ -282,4 +314,3 @@ npm run dev:bun
 - Offline-only (no network calls)
 - Writes are guarded to `./.tack/` only
 - Python virtual environments are ignored during scans (`venv`, `.venv`, `site-packages`) to avoid false positives
-

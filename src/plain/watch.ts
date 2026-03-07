@@ -1,6 +1,8 @@
 import chokidar from "chokidar";
 import * as path from "node:path";
+import { logsPath } from "../lib/files.js";
 import { runStatusScan } from "../engine/status.js";
+import { createMcpActivityMonitor } from "../lib/logger.js";
 import { blue, gray, green, red } from "./colors.js";
 
 const IGNORE_PATTERNS = [
@@ -46,7 +48,7 @@ export async function runWatchPlain(): Promise<void> {
   const ok = printSnapshot("initial");
   if (!ok) return;
 
-  console.log(`${gray("Watching for changes (plain mode). Press Ctrl+C to stop.")}`);
+  console.log(`${gray("Watching for changes and MCP activity (plain mode). Press Ctrl+C to stop.")}`);
 
   const watcher = chokidar.watch(".", {
     ignored: IGNORE_PATTERNS,
@@ -57,6 +59,15 @@ export async function runWatchPlain(): Promise<void> {
       pollInterval: 50,
     },
   });
+  const logsWatcher = chokidar.watch(logsPath(), {
+    persistent: true,
+    ignoreInitial: true,
+    awaitWriteFinish: {
+      stabilityThreshold: 100,
+      pollInterval: 50,
+    },
+  });
+  const readNewMcpActivity = createMcpActivityMonitor();
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   const shutdown = async (): Promise<void> => {
@@ -65,8 +76,15 @@ export async function runWatchPlain(): Promise<void> {
       debounceTimer = null;
     }
     await watcher.close();
+    await logsWatcher.close();
     console.log(gray("Stopped watch mode."));
   };
+
+  logsWatcher.on("change", () => {
+    for (const notice of readNewMcpActivity()) {
+      console.log(`${blue(`[${notice.event.ts}]`)} ${gray(notice.message)}`);
+    }
+  });
 
   watcher.on("all", (event, filepath) => {
     if (filepath.includes(`${path.sep}.tack${path.sep}`)) return;

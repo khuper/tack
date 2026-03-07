@@ -3,14 +3,14 @@ import { Text, Box, Static, useApp, useInput } from "ink";
 import * as path from "node:path";
 import { Logo } from "./Logo.js";
 import { DriftAlert } from "./DriftAlert.js";
-import { readSpec, readDrift, writeAudit } from "../lib/files.js";
+import { readSpec, readDrift, writeAudit, logsPath } from "../lib/files.js";
 import type { DriftItem } from "../lib/signals.js";
 import { createAudit } from "../lib/signals.js";
 import { runAllDetectors } from "../detectors/index.js";
 import { compareSpec } from "../engine/compareSpec.js";
 import { computeDrift } from "../engine/computeDrift.js";
 import { notify } from "../lib/notify.js";
-import { log } from "../lib/logger.js";
+import { log, createMcpActivityMonitor, type McpActivityNotice } from "../lib/logger.js";
 import chokidar from "chokidar";
 
 const IGNORE_PATTERNS = [
@@ -29,7 +29,7 @@ const IGNORE_PATTERNS = [
   "**/site-packages/**",
 ];
 
-type HistoryLevel = "good" | "bad" | "update";
+type HistoryLevel = "good" | "bad" | "update" | "mcp";
 
 type HistoryEvent = {
   id: number;
@@ -46,8 +46,10 @@ export function Watch() {
   const [projectName, setProjectName] = useState("unknown");
   const [history, setHistory] = useState<HistoryEvent[]>([]);
   const watcherRef = useRef<chokidar.FSWatcher | null>(null);
+  const logsWatcherRef = useRef<chokidar.FSWatcher | null>(null);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historySeq = useRef(0);
+  const readNewMcpActivityRef = useRef<(() => McpActivityNotice[]) | null>(null);
 
   function pushHistory(level: HistoryLevel, text: string): void {
     historySeq.current += 1;
@@ -117,6 +119,7 @@ export function Watch() {
     }
 
     runScan();
+    readNewMcpActivityRef.current = createMcpActivityMonitor();
 
     const watcher = chokidar.watch(".", {
       ignored: IGNORE_PATTERNS,
@@ -124,6 +127,14 @@ export function Watch() {
       ignoreInitial: true,
       awaitWriteFinish: {
         stabilityThreshold: 200,
+        pollInterval: 50,
+      },
+    });
+    const logsWatcher = chokidar.watch(logsPath(), {
+      persistent: true,
+      ignoreInitial: true,
+      awaitWriteFinish: {
+        stabilityThreshold: 100,
         pollInterval: 50,
       },
     });
@@ -137,11 +148,19 @@ export function Watch() {
         runScan(`change (${event})`);
       }, 300);
     });
+    logsWatcher.on("change", () => {
+      const notices = readNewMcpActivityRef.current?.() ?? [];
+      for (const notice of notices) {
+        pushHistory("mcp", `[${new Date(notice.event.ts).toLocaleTimeString()}] ${notice.message}`);
+      }
+    });
 
     watcherRef.current = watcher;
+    logsWatcherRef.current = logsWatcher;
 
     return () => {
       void watcher.close();
+      void logsWatcher.close();
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
     };
   }, [exit]);
@@ -155,6 +174,7 @@ export function Watch() {
   useInput((input) => {
     if (input === "q") {
       void watcherRef.current?.close();
+      void logsWatcherRef.current?.close();
       exit();
     }
   });
@@ -178,14 +198,14 @@ export function Watch() {
 
       {pendingAlerts.length === 0 && (
         <Box marginTop={1}>
-          <Text dimColor>Watching for changes... (q to quit)</Text>
+          <Text dimColor>Watching for changes and MCP activity... (q to quit)</Text>
         </Box>
       )}
 
       <Box marginTop={1} flexDirection="column">
         <Static items={history}>
           {(item: HistoryEvent) => (
-            <Text color={item.level === "good" ? "green" : item.level === "bad" ? "red" : "blue"}>
+            <Text color={item.level === "good" ? "green" : item.level === "bad" ? "red" : item.level === "mcp" ? "cyan" : "blue"}>
               {item.text}
             </Text>
           )}

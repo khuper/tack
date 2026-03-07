@@ -72,6 +72,7 @@ async function main(): Promise<void> {
       mimeType: "text/markdown",
     },
     async (uri: URL) => {
+      log({ event: "mcp:resource", resource: uri.href });
       const parts: string[] = [];
 
       const context = safeReadFile(contextPath());
@@ -121,6 +122,7 @@ async function main(): Promise<void> {
       mimeType: "text/markdown",
     },
     async (uri: URL) => {
+      log({ event: "mcp:resource", resource: uri.href });
       const parts: string[] = [];
 
       const impl = safeReadFile(implementationStatusPath());
@@ -160,6 +162,7 @@ async function main(): Promise<void> {
       mimeType: "application/json",
     },
     async (uri: URL) => {
+      log({ event: "mcp:resource", resource: uri.href });
       const jsonPath = latestHandoffJsonPath();
       if (!jsonPath) {
         return {
@@ -198,6 +201,7 @@ async function main(): Promise<void> {
       mimeType: "text/markdown",
     },
     async (uri: URL) => {
+      log({ event: "mcp:resource", resource: uri.href });
       const pack = parseContextPack();
       const recent = pack.decisions.slice(-10);
       if (recent.length === 0) {
@@ -242,6 +246,7 @@ async function main(): Promise<void> {
       mimeType: "text/markdown",
     },
     async (uri: URL) => {
+      log({ event: "mcp:resource", resource: uri.href });
       const parts: string[] = [];
 
       const audit = safeReadFile(auditPath());
@@ -287,6 +292,7 @@ async function main(): Promise<void> {
       reasoning: string;
       actor?: string;
     }) => {
+      log({ event: "mcp:tool", tool: "log_decision" });
       const decision = args.decision;
       const reasoning = args.reasoning;
       const actor = typeof args.actor === "string" ? args.actor : undefined;
@@ -327,6 +333,7 @@ async function main(): Promise<void> {
       actor?: string;
       related_files?: string[];
     }) => {
+      log({ event: "mcp:tool", tool: "log_agent_note" });
       const actor = args.actor && args.actor.trim().length > 0 ? args.actor : "user";
 
       const ok = addNote({

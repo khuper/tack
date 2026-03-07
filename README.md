@@ -135,6 +135,19 @@ tack note
 tack handoff
 ```
 
+## Project Root Rules
+
+Tack looks for the nearest ancestor directory that contains `.tack/` and treats that as the project root. This means you can run `tack status`, `tack watch`, `tack handoff`, `tack log`, `tack note`, and `tack diff` from subdirectories inside an initialized project.
+
+If no `.tack/` directory exists in the current directory or any parent, Tack will not try to guess a sibling project. Run Tack from the project root you actually want, or initialize a new project there:
+
+```bash
+cd /path/to/your/project
+tack init
+```
+
+Legacy migration from `./tack/` to `./.tack/` only happens when that directory looks like old Tack state, not when it is just a separate folder named `tack`.
+
 ## Using Tack with Agents
 
 Tack exposes a small, deterministic engine that agents call into (same inputs → same outputs, no hidden network calls). Agents should read context from `.tack/` and write back only through the documented channels instead of editing machine-managed files directly.

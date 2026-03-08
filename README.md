@@ -194,6 +194,8 @@ Or:
 codex -C /path/to/your/project
 ```
 
+> Troubleshooting: If Tack cannot find `.tack/` in Codex, you likely started Codex from the wrong directory. Restart Codex from the repo root, or use `codex -C /path/to/your/project`.
+
 If you update Tack from source, rebuild it with `npm run build` so `dist/index.js` stays current.
 
 **Claude Code:** From your project root (the directory that contains `.tack/`), add the Tack MCP server:

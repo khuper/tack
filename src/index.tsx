@@ -24,6 +24,7 @@ import { printNotes, addNotePlain } from "./plain/notes.js";
 import { compactNotes } from "./lib/notes.js";
 import { runDiffPlain } from "./plain/diff.js";
 import { formatMissingTackContextMessage, tackDirExists } from "./lib/files.js";
+import { resolveAnimationsEnabled } from "./lib/animation.js";
 
 const ASCII_LOGO = `
  ████████╗ █████╗  ██████╗██╗  ██╗
@@ -81,6 +82,7 @@ ${ASCII_LOGO}
     default: plain output for all commands except watch
     --ink: force Ink UI for init/status/handoff
     --plain or TACK_PLAIN=1: force plain output (including watch)
+    --no-animations or TACK_ANIMATIONS=off: start watch mascot in static mode
 
   Files (all in .tack/):
     spec.yaml     Your declared architecture contract
@@ -128,6 +130,7 @@ if (normalizedCommand === "mcp") {
 }
 const forcePlain = usePlainOutput();
 const forceInk = Boolean(args.ink || process.argv.includes("--ink"));
+const animationsEnabled = resolveAnimationsEnabled(args);
 
 const shouldUseInk =
   normalizedCommand === "watch" ? !forcePlain : forceInk && !forcePlain;
@@ -336,4 +339,4 @@ if (!shouldUseInk) {
   }
 }
 
-render(<App command={normalizedCommand as "init" | "status" | "watch" | "handoff"} />);
+render(<App command={normalizedCommand as "init" | "status" | "watch" | "handoff"} animationsEnabled={animationsEnabled} />);

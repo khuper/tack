@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Text, Box, Static, useApp, useInput } from "ink";
 import * as path from "node:path";
+import chokidar from "chokidar";
 import { Logo } from "./Logo.js";
 import { DriftAlert } from "./DriftAlert.js";
+import { MascotLane } from "./MascotLane.js";
 import { readSpec, readDrift, writeAudit, logsPath } from "../lib/files.js";
 import type { DriftItem } from "../lib/signals.js";
 import { createAudit } from "../lib/signals.js";
@@ -11,7 +13,6 @@ import { compareSpec } from "../engine/compareSpec.js";
 import { computeDrift } from "../engine/computeDrift.js";
 import { notify } from "../lib/notify.js";
 import { log, createMcpActivityMonitor, type McpActivityNotice } from "../lib/logger.js";
-import chokidar from "chokidar";
 
 const IGNORE_PATTERNS = [
   "**/node_modules/**",
@@ -37,6 +38,10 @@ type HistoryEvent = {
   text: string;
 };
 
+type WatchProps = {
+  animationsEnabled: boolean;
+};
+
 function renderHistoryBadge(level: HistoryLevel) {
   if (level === "mcp") {
     return (
@@ -57,7 +62,7 @@ function renderHistoryBadge(level: HistoryLevel) {
   return null;
 }
 
-export function Watch() {
+export function Watch({ animationsEnabled }: WatchProps) {
   const { exit } = useApp();
   const [systemCount, setSystemCount] = useState(0);
   const [driftCount, setDriftCount] = useState(0);
@@ -65,9 +70,14 @@ export function Watch() {
   const [pendingAlerts, setPendingAlerts] = useState<DriftItem[]>([]);
   const [projectName, setProjectName] = useState("unknown");
   const [history, setHistory] = useState<HistoryEvent[]>([]);
+  const [mascotMode, setMascotMode] = useState<"idle" | "scan" | "mcp">("idle");
+  const [mascotAnimated, setMascotAnimated] = useState(animationsEnabled);
+  const [cargoCount, setCargoCount] = useState(0);
   const watcherRef = useRef<chokidar.FSWatcher | null>(null);
   const logsWatcherRef = useRef<chokidar.FSWatcher | null>(null);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mascotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cargoTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const historySeq = useRef(0);
   const readNewMcpActivityRef = useRef<(() => McpActivityNotice[]) | null>(null);
 
@@ -79,11 +89,32 @@ export function Watch() {
     });
   }
 
+  function cueMascot(mode: "scan" | "mcp", durationMs: number): void {
+    setMascotMode(mode);
+    if (mascotTimerRef.current) {
+      clearTimeout(mascotTimerRef.current);
+    }
+    mascotTimerRef.current = setTimeout(() => {
+      setMascotMode("idle");
+      mascotTimerRef.current = null;
+    }, durationMs);
+  }
+
+  function addCargoPackage(): void {
+    setCargoCount((current) => Math.min(current + 1, 3));
+    const timer = setTimeout(() => {
+      setCargoCount((current) => Math.max(current - 1, 0));
+      cargoTimersRef.current = cargoTimersRef.current.filter((candidate) => candidate !== timer);
+    }, 4000);
+    cargoTimersRef.current.push(timer);
+  }
+
   function runScan(reason = "scan") {
     const startedAt = Date.now();
     const spec = readSpec();
     if (!spec) return;
 
+    cueMascot("scan", 1400);
     setProjectName(spec.project);
 
     const { signals } = runAllDetectors();
@@ -92,9 +123,9 @@ export function Watch() {
 
     const diff = compareSpec(signals, spec);
     const { newItems, state } = computeDrift(diff);
-    const unresolvedCount = state.items.filter((i) => i.status === "unresolved").length;
+    const unresolvedCount = state.items.filter((item) => item.status === "unresolved").length;
 
-    setSystemCount(diff.aligned.filter((s) => s.category === "system").length);
+    setSystemCount(diff.aligned.filter((signal) => signal.category === "system").length);
     setDriftCount(unresolvedCount);
     setLastScan(new Date().toLocaleTimeString());
 
@@ -107,22 +138,22 @@ export function Watch() {
 
     log({
       event: "scan",
-      systems_detected: signals.filter((s) => s.category === "system").length,
+      systems_detected: signals.filter((signal) => signal.category === "system").length,
       drift_items: unresolvedCount,
       duration_ms: Date.now() - startedAt,
     });
 
     const alertable = newItems.filter(
-      (i) =>
-        i.type === "forbidden_system_detected" ||
-        i.type === "constraint_mismatch" ||
-        i.type === "risk" ||
-        i.type === "undeclared_system"
+      (item) =>
+        item.type === "forbidden_system_detected" ||
+        item.type === "constraint_mismatch" ||
+        item.type === "risk" ||
+        item.type === "undeclared_system"
     );
 
     if (alertable.length > 0) {
       for (const item of alertable) {
-        notify("⚠ Tack: Drift Detected", `${item.system ?? item.risk}: ${item.signal}`);
+        notify("! Tack: Drift Detected", `${item.system ?? item.risk}: ${item.signal}`);
       }
 
       setPendingAlerts((prev) => [...prev, ...alertable]);
@@ -162,6 +193,7 @@ export function Watch() {
     watcher.on("all", (event, filepath) => {
       if (filepath.includes(`${path.sep}.tack${path.sep}`)) return;
       if (filepath.startsWith(".tack/") || filepath.startsWith(".tack\\")) return;
+      cueMascot("scan", 900);
       pushHistory("update", "Filesystem change detected. Running scan...");
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
       debounceTimer.current = setTimeout(() => {
@@ -171,6 +203,8 @@ export function Watch() {
     logsWatcher.on("change", () => {
       const notices = readNewMcpActivityRef.current?.() ?? [];
       for (const notice of notices) {
+        cueMascot("mcp", 1600);
+        addCargoPackage();
         pushHistory("mcp", `[${new Date(notice.event.ts).toLocaleTimeString()}] ${notice.message}`);
       }
     });
@@ -182,13 +216,18 @@ export function Watch() {
       void watcher.close();
       void logsWatcher.close();
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
+      if (mascotTimerRef.current) clearTimeout(mascotTimerRef.current);
+      for (const timer of cargoTimersRef.current) {
+        clearTimeout(timer);
+      }
+      cargoTimersRef.current = [];
     };
   }, [exit]);
 
   function handleAlertResolved() {
     setPendingAlerts((prev) => prev.slice(1));
     const drift = readDrift();
-    setDriftCount(drift.items.filter((i) => i.status === "unresolved").length);
+    setDriftCount(drift.items.filter((item) => item.status === "unresolved").length);
   }
 
   useInput((input) => {
@@ -196,6 +235,11 @@ export function Watch() {
       void watcherRef.current?.close();
       void logsWatcherRef.current?.close();
       exit();
+      return;
+    }
+
+    if (input === "a") {
+      setMascotAnimated((current) => !current);
     }
   });
 
@@ -214,11 +258,15 @@ export function Watch() {
         <Text dimColor>Last scan: {lastScan}</Text>
       </Box>
 
+      <MascotLane animate={mascotAnimated} mode={mascotMode} cargoCount={cargoCount} hasDrift={driftCount > 0} />
+
       {pendingAlerts.length > 0 && pendingAlerts[0] && <DriftAlert item={pendingAlerts[0]} onResolved={handleAlertResolved} />}
 
       {pendingAlerts.length === 0 && (
         <Box marginTop={1}>
-          <Text dimColor>Watching for changes and MCP activity... (q to quit)</Text>
+          <Text dimColor>
+            Watching for changes and MCP activity... (q to quit, a to {mascotAnimated ? "freeze" : "animate"} deckhand)
+          </Text>
         </Box>
       )}
 
@@ -237,7 +285,7 @@ export function Watch() {
       </Box>
 
       <Box marginTop={1}>
-        <Text dimColor>─── Run in another terminal ───────────</Text>
+        <Text dimColor>--- Run in another terminal -----------</Text>
       </Box>
       <Box flexDirection="column" paddingLeft={2}>
         <Text>

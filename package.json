@@ -46,6 +46,10 @@
     "typescript": "^5.3.3"
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/khuper/tack.git"
+  },
   "overrides": {
     "lodash.isequal": "npm:fast-deep-equal@^3.1.3"
   }

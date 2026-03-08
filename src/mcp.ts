@@ -53,6 +53,21 @@ function latestHandoffJsonPath(): string | null {
   return path.join(dir, jsonFiles[0]!);
 }
 
+function announceMcpReady(): void {
+  const lines = process.stderr.isTTY
+    ? [
+        "",
+        "tack-mcp ready",
+        `  cwd: ${process.cwd()}`,
+        "  transport: stdio",
+        "  waiting for MCP client requests...",
+        "",
+      ]
+    : [`tack-mcp ready (cwd: ${process.cwd()}, transport: stdio)\n`];
+
+  process.stderr.write(lines.join("\n"));
+}
+
 async function main(): Promise<void> {
   const server = new McpServer(
     {
@@ -360,6 +375,7 @@ async function main(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  announceMcpReady();
 }
 
 // eslint-disable-next-line @typescript-eslint/no-floating-promises

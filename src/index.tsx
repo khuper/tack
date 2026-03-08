@@ -40,9 +40,15 @@ import { readFileSync } from "node:fs";
 
 const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
 const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-updateNotifier({ pkg }).notify();
-
 const args = minimist(process.argv.slice(2));
+const rawCommand = args._[0] as string | undefined;
+const shouldCheckForUpdates =
+  rawCommand !== "mcp" &&
+  Boolean(process.stdout.isTTY && process.stderr.isTTY && !process.env.CI);
+
+if (shouldCheckForUpdates) {
+  updateNotifier({ pkg }).notify();
+}
 
 if (args.version || args.v) {
   // eslint-disable-next-line no-console
@@ -50,7 +56,6 @@ if (args.version || args.v) {
   process.exit(0);
 }
 
-const rawCommand = args._[0] as string | undefined;
 const command = rawCommand ?? getDefaultCommand();
 
 const VALID_COMMANDS = ["init", "status", "watch", "handoff", "log", "note", "diff", "mcp", "help"] as const;

@@ -28,6 +28,34 @@ test("formats MCP tool activity events", () => {
   assert.strictEqual(formatMcpActivityEvent(event), "MCP called log_agent_note");
 });
 
+test("keeps MCP activity labels stable across repeated resource reads and tool calls", () => {
+  const resourceReadA = {
+    ts: "2026-03-07T20:00:00.000Z",
+    event: "mcp:resource",
+    resource: "tack://context/intent",
+  };
+  const resourceReadB = {
+    ts: "2026-03-07T20:00:02.000Z",
+    event: "mcp:resource",
+    resource: "tack://context/intent",
+  };
+  const toolCallA = {
+    ts: "2026-03-07T20:00:00.000Z",
+    event: "mcp:tool",
+    tool: "log_agent_note",
+  };
+  const toolCallB = {
+    ts: "2026-03-07T20:00:02.000Z",
+    event: "mcp:tool",
+    tool: "log_agent_note",
+  };
+
+  assert.strictEqual(formatMcpActivityEvent(resourceReadA), "MCP read context/intent");
+  assert.strictEqual(formatMcpActivityEvent(resourceReadB), "MCP read context/intent");
+  assert.strictEqual(formatMcpActivityEvent(toolCallA), "MCP called log_agent_note");
+  assert.strictEqual(formatMcpActivityEvent(toolCallB), "MCP called log_agent_note");
+});
+
 test("ignores non-MCP log events", () => {
   const event = {
     ts: "2026-03-07T20:00:00.000Z",

@@ -18,11 +18,12 @@ import { runWatchPlain } from "./plain/watch.js";
 import { log, readRecentLogs } from "./lib/logger.js";
 import { appendDecision, normalizeDecisionActor, readDecisionsMarkdown } from "./engine/decisions.js";
 import { ensureTackIntegrity } from "./lib/files.js";
-import { fileExists } from "./lib/files.js";
 import { readSpecWithError, specExists } from "./lib/files.js";
+import { getDefaultCommand } from "./lib/cli.js";
 import { printNotes, addNotePlain } from "./plain/notes.js";
 import { compactNotes } from "./lib/notes.js";
 import { runDiffPlain } from "./plain/diff.js";
+import { formatMissingTackContextMessage, tackDirExists } from "./lib/files.js";
 
 const ASCII_LOGO = `
  ████████╗ █████╗  ██████╗██╗  ██╗
@@ -49,7 +50,7 @@ if (args.version || args.v) {
 }
 
 const rawCommand = args._[0] as string | undefined;
-const command = rawCommand ?? (fileExists(".tack") ? "watch" : "init");
+const command = rawCommand ?? getDefaultCommand();
 
 const VALID_COMMANDS = ["init", "status", "watch", "handoff", "log", "note", "diff", "mcp", "help"] as const;
 type Command = (typeof VALID_COMMANDS)[number];
@@ -88,6 +89,10 @@ ${ASCII_LOGO}
     _logs.ndjson  Append-only event log
     context.md, goals.md, assumptions.md, open_questions.md
     handoffs/<ts>.md, handoffs/<ts>.json
+
+  Project root:
+    Existing Tack project: nearest ancestor directory that contains .tack/
+    New project: cd to the intended project root, then run "tack init"
   `);
   process.exit(0);
 }
@@ -99,15 +104,16 @@ if (!isValidCommand(command)) {
 }
 
 const normalizedCommand = command;
+const commandsRequiringExistingTack = new Set<Command>(["status", "watch", "handoff", "log", "note", "diff", "mcp"]);
+
+if (commandsRequiringExistingTack.has(normalizedCommand) && !tackDirExists()) {
+  // eslint-disable-next-line no-console
+  console.error(formatMissingTackContextMessage(normalizedCommand));
+  process.exit(1);
+}
 
 // tack mcp: start the MCP server (stdio). Run from a project root that has .tack/
 if (normalizedCommand === "mcp") {
-  const cwdTack = path.join(process.cwd(), ".tack");
-  if (!existsSync(cwdTack)) {
-    // eslint-disable-next-line no-console
-    console.error("Run `tack mcp` from a project root that contains a .tack/ directory.");
-    process.exit(1);
-  }
   const dir = path.dirname(fileURLToPath(import.meta.url));
   const mcpHere = path.join(dir, "mcp.js");
   const mcpInDist = path.join(dir, "..", "dist", "mcp.js");

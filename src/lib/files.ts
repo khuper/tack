@@ -7,21 +7,83 @@ import { validateAudit, validateDriftState, validateSpec } from "./validate.js";
 
 const LEGACY_DIRNAME = "tack";
 const TACK_DIRNAME = ".tack";
+const LEGACY_TACK_MARKERS = [
+  "spec.yaml",
+  "audit.yaml",
+  "drift.yaml",
+  "logs.ndjson",
+  "context.md",
+  "goals.md",
+  "assumptions.md",
+  "open_questions.md",
+  "decisions.md",
+  "implementation_status.md",
+  "verification.md",
+  "handoffs",
+] as const;
+const PROJECT_MARKERS = [
+  ".git",
+  "package.json",
+  "README.md",
+  "src",
+  "node_modules",
+  "backlog",
+  "dist",
+] as const;
 
-export function projectRoot(): string {
-  const cwd = path.resolve(process.cwd());
-  let current = cwd;
-
-  while (true) {
-    if (path.basename(current) === TACK_DIRNAME) {
-      return path.dirname(current);
+function looksLikeLegacyTackDir(dir: string): boolean {
+  try {
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+      return false;
     }
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
+
+    const entries = new Set(fs.readdirSync(dir));
+    const hasLegacyMarkers = LEGACY_TACK_MARKERS.some((name) => entries.has(name));
+    if (!hasLegacyMarkers) {
+      return false;
+    }
+
+    const hasProjectMarkers = PROJECT_MARKERS.some((name) => entries.has(name));
+    return !hasProjectMarkers;
+  } catch {
+    return false;
+  }
+}
+
+function findNearestProjectRootWithContext(start = process.cwd()): string | null {
+  let current = path.resolve(start);
+
+  if (path.basename(current) === TACK_DIRNAME) {
+    current = path.dirname(current);
+  } else if (path.basename(current) === LEGACY_DIRNAME && looksLikeLegacyTackDir(current)) {
+    current = path.dirname(current);
   }
 
-  return cwd;
+  while (true) {
+    const tackDir = path.join(current, TACK_DIRNAME);
+    try {
+      if (fs.existsSync(tackDir) && fs.statSync(tackDir).isDirectory()) {
+        return current;
+      }
+    } catch {
+      // Ignore stat failures and keep walking upward.
+    }
+
+    const legacyDir = path.join(current, LEGACY_DIRNAME);
+    if (looksLikeLegacyTackDir(legacyDir)) {
+      return current;
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
+export function projectRoot(): string {
+  return findNearestProjectRootWithContext() ?? path.resolve(process.cwd());
 }
 
 export function findProjectRoot(): string {
@@ -36,6 +98,11 @@ function getTackDir(): string {
   return path.resolve(projectRoot(), TACK_DIRNAME);
 }
 
+/** True when the .tack/ directory exists (used for default CLI behavior). */
+export function tackDirExists(): boolean {
+  return findNearestProjectRootWithContext() !== null;
+}
+
 function emitValidationWarnings(file: string, warnings: string[]): void {
   if (warnings.length === 0) return;
   for (const warning of warnings) {
@@ -47,9 +114,17 @@ function migrateLegacyDirIfNeeded(): void {
   const legacyDir = getLegacyTackDir();
   const newDir = getTackDir();
 
-  if (!fs.existsSync(newDir) && fs.existsSync(legacyDir)) {
+  if (!fs.existsSync(newDir) && looksLikeLegacyTackDir(legacyDir)) {
     fs.renameSync(legacyDir, newDir);
   }
+}
+
+export function formatMissingTackContextMessage(command: string): string {
+  return [
+    `No .tack/ directory was found for \`${command}\`.`,
+    "Run Tack from your project root (the directory that contains .tack/).",
+    "If this is a new project, cd to the intended root and run `tack init` first.",
+  ].join(" ");
 }
 
 function migrateMachineFilesIfNeeded(): void {

@@ -139,6 +139,8 @@ export type LogEvent =
   | { ts: string; event: "init"; spec_seeded: boolean; systems_detected: number }
   | { ts: string; event: "repair"; files: string[] }
   | { ts: string; event: "scan"; systems_detected: number; drift_items: number; duration_ms: number }
+  | { ts: string; event: "mcp:resource"; resource: string }
+  | { ts: string; event: "mcp:tool"; tool: string }
   | { ts: string; event: "drift:detected"; system: string; message: string; source: string }
   | { ts: string; event: "drift:resolved"; system: string; message: string; source: string }
   | { ts: string; event: "spec:updated"; field: string; diff: string }

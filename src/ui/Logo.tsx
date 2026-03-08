@@ -14,7 +14,7 @@ export function Logo() {
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Text color="cyan">{LOGO}</Text>
-      <Text dimColor>  Architecture drift guard • v0.1.0</Text>
+      <Text dimColor>  Architecture drift guard • v0.1.2</Text>
     </Box>
   );
 }

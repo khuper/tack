@@ -1,6 +1,6 @@
 {
   "name": "tack-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Architecture drift guard. Declare your spec. Tack enforces it.",
   "type": "module",
   "files": [
@@ -12,6 +12,7 @@
     "tack": "dist/index.js"
   },
   "scripts": {
+    "test": "npm run build && node --test tests/cli-default-command.test.js tests/cli-context.test.js tests/logger-mcp.test.js tests/ndjson-tail.test.js",
     "dev": "npm run build && node dist/index.js watch --plain",
     "dev:bun": "bun run src/index.tsx",
     "build": "tsc && node scripts/postbuild.cjs",
@@ -22,7 +23,6 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
     "chokidar": "^3.6.0",
-    "glob": "^10.3.10",
     "ink": "^4.4.1",
     "ink-select-input": "^5.0.0",
     "ink-spinner": "^5.0.0",
@@ -32,7 +32,6 @@
     "node-notifier": "^10.0.1",
     "picocolors": "^1.1.1",
     "react": "^18.2.0",
-    "tasuku": "^2.0.1",
     "update-notifier": "^7.3.1",
     "yoga-wasm-web": "~0.3.3"
   },
@@ -46,5 +45,12 @@
     "react-devtools-core": "^4.28.5",
     "typescript": "^5.3.3"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/khuper/tack.git"
+  },
+  "overrides": {
+    "lodash.isequal": "npm:fast-deep-equal@^3.1.3"
+  }
 }

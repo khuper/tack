@@ -47,5 +47,9 @@ Review pass 2026-03-07 focused on MCP/watch behavior. Shipped work:
 - NDJSON monitoring was optimized from repeated recent-history rescans to an incremental tail reader
 - Node tests now cover MCP activity formatting/suppression and NDJSON tail behavior
 
-Remaining scope for this task: broader review of the non-watch plain command surface (`init`, `status`, `handoff`, `notes`, `diff`) and any additional MCP contract sharp edges outside the activity/logging path.
+Remaining scope for this task is narrower now:
+
+- review the non-watch plain command surface only (`init`, `status`, `handoff`, `notes`, `diff`) for operator-facing wording, defaults, and trust gaps
+- review MCP behavior outside the watch activity/logging path, especially startup/configuration friction and any contract edges still likely to confuse clients
+- split any newly found issues into focused follow-up tasks unless they are small enough to fix directly inside this review
 <!-- SECTION:NOTES:END -->

@@ -273,7 +273,7 @@ export function Watch({ animationsEnabled }: WatchProps) {
       <Box marginTop={1} flexDirection="column">
         <Static items={history}>
           {(item: HistoryEvent) => (
-            <Box>
+            <Box key={item.id}>
               {renderHistoryBadge(item.level)}
               <Text> </Text>
               <Text color={item.level === "good" ? "green" : item.level === "bad" ? "red" : item.level === "mcp" ? "cyan" : "yellow"}>

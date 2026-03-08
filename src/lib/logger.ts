@@ -5,7 +5,7 @@ import { createNdjsonTailReader, rotateNdjsonFile, safeReadNdjson } from "./ndjs
 const LOG_MAX_BYTES = 5 * 1024 * 1024;
 const LOG_KEEP_LINES = 5000;
 const MCP_ACTIVITY_SUPPRESS_MS = 1500;
-export type McpActivityEvent = Extract<LogEvent, { event: "mcp:resource" | "mcp:tool" }>;
+export type McpActivityEvent = Extract<LogEvent, { event: "mcp:ready" | "mcp:resource" | "mcp:tool" }>;
 export type McpActivityNotice = {
   event: McpActivityEvent;
   message: string;
@@ -30,7 +30,7 @@ export function readRecentLogs<T = LogEvent>(limit = 50): T[] {
 }
 
 export function isMcpActivityEvent(event: LogEvent): event is McpActivityEvent {
-  return event.event === "mcp:resource" || event.event === "mcp:tool";
+  return event.event === "mcp:ready" || event.event === "mcp:resource" || event.event === "mcp:tool";
 }
 
 export function readRecentMcpActivity(limit = 50): McpActivityEvent[] {
@@ -38,7 +38,15 @@ export function readRecentMcpActivity(limit = 50): McpActivityEvent[] {
 }
 
 export function mcpActivityEventKey(event: McpActivityEvent): string {
-  return `${event.ts}:${event.event}:${event.event === "mcp:resource" ? event.resource : event.tool}`;
+  if (event.event === "mcp:resource") {
+    return `${event.ts}:${event.event}:${event.resource}`;
+  }
+
+  if (event.event === "mcp:tool") {
+    return `${event.ts}:${event.event}:${event.tool}`;
+  }
+
+  return `${event.ts}:${event.event}:${event.transport}`;
 }
 
 function formatMcpResourceName(resource: string): string {
@@ -50,6 +58,10 @@ function formatMcpResourceName(resource: string): string {
 }
 
 export function formatMcpActivityEvent(event: McpActivityEvent): string {
+  if (event.event === "mcp:ready") {
+    return `MCP online (${event.transport})`;
+  }
+
   if (event.event === "mcp:resource") {
     return `MCP read ${formatMcpResourceName(event.resource)}`;
   }
@@ -71,7 +83,12 @@ export function createMcpActivityMonitor(): () => McpActivityNotice[] {
       if (seen.has(key)) continue;
       seen.add(key);
 
-      const kind = event.event === "mcp:resource" ? `resource:${event.resource}` : `tool:${event.tool}`;
+      const kind =
+        event.event === "mcp:resource"
+          ? `resource:${event.resource}`
+          : event.event === "mcp:tool"
+            ? `tool:${event.tool}`
+            : `ready:${event.transport}`;
       const tsMs = Date.parse(event.ts);
       const lastMs = lastShownAt.get(kind) ?? 0;
 

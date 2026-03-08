@@ -13,16 +13,32 @@ type Props = {
 const MIN_TRACK_WIDTH = 30;
 const MAX_TRACK_WIDTH = 58;
 const LEFT_MARGIN = 4;
+type CellColor = string;
+
+type TrackCell = {
+  text: string;
+  color?: CellColor;
+  backgroundColor?: CellColor;
+  dim?: boolean;
+  bold?: boolean;
+};
+
+type StyleOptions = {
+  color?: CellColor;
+  backgroundColor?: CellColor;
+  dim?: boolean;
+  bold?: boolean;
+};
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function place(buffer: string[], start: number, token: string): void {
+function place(buffer: TrackCell[], start: number, token: string, style?: StyleOptions): void {
   for (let index = 0; index < token.length; index += 1) {
     const target = start + index;
     if (target < 0 || target >= buffer.length) continue;
-    buffer[target] = token[index]!;
+    buffer[target] = { text: token[index]!, ...(style ?? {}) };
   }
 }
 
@@ -35,19 +51,31 @@ function buildCargoDock(cargoCount: number): string {
   return Array.from({ length: stack }, () => "[#]").join("");
 }
 
-function buildSprite(mode: MascotMode, direction: -1 | 1, frame: number): string {
+function buildSprite(mode: MascotMode, direction: -1 | 1, frame: number): { sprite: string; style: StyleOptions } {
   if (mode === "mcp") {
-    return direction === 1 ? "o>[#]" : "[#]<o";
+    return {
+      sprite: direction === 1 ? "o>[#]" : "[#]<o",
+      style: { color: "cyan", bold: true },
+    };
   }
 
   if (mode === "scan") {
     if (direction === 1) {
-      return frame % 2 === 0 ? "o/-" : "o\\-";
+      return {
+        sprite: frame % 2 === 0 ? "o/-" : "o\\-",
+        style: { color: "green", bold: true },
+      };
     }
-    return frame % 2 === 0 ? "-\\o" : "-/o";
+    return {
+      sprite: frame % 2 === 0 ? "-\\o" : "-/o",
+      style: { color: "green", bold: true },
+    };
   }
 
-  return frame % 12 === 0 ? "o_o" : "o|_";
+  return {
+    sprite: frame % 12 === 0 ? "o_o" : "o|_",
+    style: { color: "white", dim: true },
+  };
 }
 
 function buildCaption(mode: MascotMode, cargoCount: number, hasDrift: boolean, animate: boolean): string {
@@ -77,6 +105,7 @@ export function MascotLane({ animate, mode, cargoCount, hasDrift }: Props) {
   const [direction, setDirection] = useState<1 | -1>(1);
   const [frame, setFrame] = useState(0);
   const directionRef = useRef<1 | -1>(1);
+  const tickRef = useRef(0);
 
   useEffect(() => {
     if (position > maxPosition) {
@@ -93,9 +122,9 @@ export function MascotLane({ animate, mode, cargoCount, hasDrift }: Props) {
     const intervalMs = mode === "mcp" ? 140 : mode === "scan" ? 180 : 420;
     const timer = setInterval(() => {
       setFrame((previous) => previous + 1);
-      if (mode === "idle") {
-        return;
-      }
+      tickRef.current += 1;
+      const shouldStep = mode === "idle" ? tickRef.current % 2 === 0 : true;
+      if (!shouldStep) return;
 
       setPosition((previous) => {
         let next = previous + directionRef.current;
@@ -124,29 +153,56 @@ export function MascotLane({ animate, mode, cargoCount, hasDrift }: Props) {
   }, [mode]);
 
   const visibleMode = animate ? mode : "idle";
-  const sprite = buildSprite(visibleMode, direction, frame);
+  const { sprite, style: spriteStyle } = buildSprite(visibleMode, direction, frame);
   const bubble = visibleMode === "mcp" ? (frame % 6 < 4 ? "..." : " ..") : "";
-  const bubbleBuffer = Array.from({ length: trackWidth }, () => " ");
-  const deckBuffer = Array.from({ length: trackWidth }, () => "_");
+  const bubbleBuffer = Array.from({ length: trackWidth }, () => ({ text: " " } as TrackCell));
+  const deckBuffer = Array.from({ length: trackWidth }, () => ({ text: "_", color: "gray" } as TrackCell));
   const dockStart = trackWidth - cargoDock.length - 2;
 
-  place(deckBuffer, 0, "\\__/");
-  place(deckBuffer, dockStart, cargoDock);
-  place(deckBuffer, trackWidth - 1, hasDrift ? "!" : "*");
-  place(deckBuffer, position, sprite);
+  place(deckBuffer, 0, "\\__/", { color: "blue" });
+  place(deckBuffer, dockStart, cargoDock, { color: "yellow", bold: true });
+  place(deckBuffer, trackWidth - 1, hasDrift ? "!" : "*", { color: hasDrift ? "red" : "gray" });
   if (bubble) {
-    place(bubbleBuffer, position + (direction === 1 ? 1 : 0), bubble);
+    place(
+      bubbleBuffer,
+      position + (direction === 1 ? 1 : 0),
+      bubble,
+      direction === 1 ? { color: "green", bold: true } : { color: "magenta", bold: true }
+    );
+  }
+
+  place(deckBuffer, position, sprite, spriteStyle);
+  if (animate && cargoCount > 0 && visibleMode === "mcp") {
+    place(deckBuffer, clamp(position - 1, 0, trackWidth - 1), "#", { color: "magenta", bold: true });
   }
 
   const caption = buildCaption(mode, cargoCount, hasDrift, animate);
   const statusColor =
     hasDrift ? "yellow" : visibleMode === "mcp" ? "cyan" : visibleMode === "scan" ? "green" : "gray";
 
+  function renderRow(buffer: TrackCell[]) {
+    return (
+      <Text>
+        {buffer.map((cell, index) => (
+          <Text
+            key={index}
+            color={cell.color ?? undefined}
+            backgroundColor={cell.backgroundColor ?? undefined}
+            dimColor={cell.dim ?? false}
+            bold={cell.bold ?? false}
+          >
+            {cell.text}
+          </Text>
+        ))}
+      </Text>
+    );
+  }
+
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text dimColor>cargo deck</Text>
-      <Text color="cyan">{bubbleBuffer.join("")}</Text>
-      <Text>{deckBuffer.join("")}</Text>
+      {renderRow(bubbleBuffer)}
+      {renderRow(deckBuffer)}
       <Text color={statusColor}>{caption}</Text>
     </Box>
   );

@@ -375,6 +375,7 @@ async function main(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  log({ event: "mcp:ready", transport: "stdio" });
   announceMcpReady();
 }
 

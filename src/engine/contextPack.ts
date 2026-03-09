@@ -56,7 +56,8 @@ function parseQuestionStatus(line: string): { status: ContextQuestionStatus; tex
   }
 
   const rawStatus = (match[1] ?? "").toLowerCase();
-  const status: ContextQuestionStatus = rawStatus === "open" || rawStatus === "resolved" ? rawStatus : "unknown";
+  const status: ContextQuestionStatus =
+    rawStatus === "open" || rawStatus === "resolved" ? rawStatus : "unknown";
   return {
     status,
     text: (match[2] ?? "").trim(),
@@ -96,7 +97,8 @@ export function parseDecisionsMarkdown(content: string, file = ".tack/decisions.
     const line = (lines[i] ?? "").trim();
     if (!line.startsWith("- ")) continue;
 
-    const m = line.match(/^-\s*\[(\d{4}-\d{2}-\d{2})\]\s*(.+?)\s*—\s*(.+)$/);
+    const normalized = line.replaceAll("â€”", "—");
+    const m = normalized.match(/^-\s*\[(\d{4}-\d{2}-\d{2})\]\s*(.+?)\s*(?:-|—)\s*(.+)$/);
     if (!m) continue;
 
     out.push({
@@ -116,11 +118,14 @@ function parseDecisionsFile(): DecisionEntry[] {
   return parseDecisionsMarkdown(content, ".tack/decisions.md");
 }
 
-function parseContextFile(): ContextBullet[] {
+function parseContextFile(): { northStar: ContextBullet[]; currentFocus: ContextBullet[] } {
   const file = ".tack/context.md";
   const content = readFile(contextPath());
-  if (!content) return [];
-  return parseBulletsInSection(content, "North Star", file);
+  if (!content) return { northStar: [], currentFocus: [] };
+  return {
+    northStar: parseBulletsInSection(content, "North Star", file),
+    currentFocus: parseBulletsInSection(content, "Current Focus", file),
+  };
 }
 
 function parseGoalsFile(): { goals: ContextBullet[]; nonGoals: ContextBullet[] } {
@@ -193,11 +198,12 @@ function parseImplementationStatusFile(): ImplementationStatusEntry[] {
 }
 
 export function parseContextPack(): ContextPack {
-  const northStar = parseContextFile();
+  const context = parseContextFile();
   const goals = parseGoalsFile();
 
   return {
-    north_star: northStar,
+    north_star: context.northStar,
+    current_focus: context.currentFocus,
     goals: goals.goals,
     non_goals: goals.nonGoals,
     assumptions: parseAssumptionsFile(),

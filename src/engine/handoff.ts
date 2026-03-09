@@ -44,7 +44,7 @@ import type {
 import { archiveOldHandoffs } from "./compaction.js";
 import { contextRefToString, parseContextPack } from "./contextPack.js";
 import { readNotes, formatRelativeTime } from "../lib/notes.js";
-import { buildStartHereLines, getMemoryWarnings } from "./memory.js";
+import { getMemoryWarnings } from "./memory.js";
 
 function sourceFile(file: string, line?: number): SourceRef {
   return typeof line === "number" ? { file, line } : { file };
@@ -290,7 +290,7 @@ function toMarkdown(report: HandoffReport): string {
   lines.push("");
   lines.push("### Option A: MCP (recommended if available)");
   lines.push("Connect to the Tack MCP server for live project context:");
-  lines.push("  tack://context/start_here       Compact bootstrap and memory hygiene guidance");
+  lines.push("  tack://session                  Compact canonical project snapshot");
   lines.push(
     "  tack://context/intent           North star, current focus, goals/non-goals, open questions, decisions"
   );
@@ -300,11 +300,12 @@ function toMarkdown(report: HandoffReport): string {
   lines.push("  tack://handoff/latest           Latest handoff JSON (canonical)");
   lines.push("");
   lines.push("Write back using MCP tools:");
+  lines.push("  checkpoint_work      Record completed, partial, or blocked work in one call");
   lines.push("  log_decision          Record a decision with reasoning");
   lines.push("  log_agent_note        Leave context for the next agent");
   lines.push("");
-  lines.push("### Fast Start");
-  renderList(lines, buildStartHereLines(), 8);
+  lines.push("Fast start: read tack://session first, then tack://context/facts before changes that could affect guardrails.");
+  lines.push("Use tack://handoff/latest when you need the full structured project summary.");
   lines.push("");
   lines.push("### Option B: Direct File Access");
   lines.push("Read these files in .tack/ for project context:");
@@ -331,10 +332,10 @@ function toMarkdown(report: HandoffReport): string {
   lines.push("");
   lines.push("### When You Finish Working");
   lines.push("1. Record any decisions you made:");
-  lines.push("   - MCP: call log_decision for each decision");
+  lines.push("   - MCP: call checkpoint_work or log_decision");
   lines.push("   - File: append to .tack/decisions.md");
   lines.push("2. Leave notes for the next agent about anything important:");
-  lines.push("   - MCP: call log_agent_note for each note");
+  lines.push("   - MCP: call checkpoint_work or log_agent_note");
   lines.push("   - File: append to .tack/_notes.ndjson");
   lines.push("3. If possible, run `tack handoff` to generate an updated handoff");
   lines.push("");
@@ -602,8 +603,8 @@ export function generateHandoff(): {
     agent_guide: {
       mcp_resources: [
         {
-          uri: "tack://context/start_here",
-          description: "Compact bootstrap and memory hygiene guidance",
+          uri: "tack://session",
+          description: "Compact canonical project snapshot for agent orientation",
         },
         {
           uri: "tack://context/intent",
@@ -628,6 +629,7 @@ export function generateHandoff(): {
         },
       ],
       mcp_tools: [
+        { name: "checkpoint_work", description: "Record completed, partial, or blocked work in one call" },
         { name: "log_decision", description: "Record a decision with reasoning" },
         { name: "log_agent_note", description: "Leave context for the next agent" },
       ],
@@ -666,7 +668,7 @@ export function generateHandoff(): {
       git_branch: getCurrentBranch(),
     },
     summary: "",
-    memory_warnings: getMemoryWarnings(changedFiles),
+    memory_warnings: getMemoryWarnings(changedFiles.map((file) => file.path)),
     north_star: context.north_star,
     current_focus: context.current_focus,
     goals: context.goals,

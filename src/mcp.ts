@@ -11,7 +11,7 @@ import {
   handoffsDirPath,
 } from "./lib/files.js";
 import { contextRefToString, parseContextPack } from "./engine/contextPack.js";
-import { buildStartHereLines } from "./engine/memory.js";
+import { buildSessionLines } from "./engine/memory.js";
 import { wrapUntrustedContext } from "./lib/promptSafety.js";
 import { appendDecision, normalizeDecisionActor } from "./engine/decisions.js";
 import { log } from "./lib/logger.js";
@@ -144,17 +144,16 @@ async function main(): Promise<void> {
   );
 
   server.registerResource(
-    "start-here",
-    "tack://context/start_here",
+    "session",
+    "tack://session",
     {
-      title: "Tack Context - Start Here",
-      description: "Compact bootstrap instructions and memory hygiene guidance for agents.",
+      title: "Tack Session",
+      description: "Compact canonical project snapshot for agent orientation and write-back.",
       mimeType: "text/markdown",
     },
     async (uri: URL) => {
       log({ event: "mcp:resource", resource: uri.href });
-      const lines = ["# Start Here", "", ...buildStartHereLines()];
-      const wrapped = wrapUntrustedContext(lines.join("\n"), "tack://context/start_here");
+      const wrapped = wrapUntrustedContext(buildSessionLines().join("\n"), "tack://session");
 
       return {
         contents: [
@@ -332,6 +331,91 @@ async function main(): Promise<void> {
   );
 
   // Tools: write-back channels for agents.
+  server.registerTool(
+    "checkpoint_work",
+    {
+      description:
+        "Record completed, partial, or blocked work in one call by appending the right note(s) and decision(s).",
+      inputSchema: z.object({
+        status: z.enum(["completed", "partial", "blocked"]),
+        summary: z.string().min(1),
+        discoveries: z.array(z.string().min(1)).optional(),
+        decisions: z
+          .array(
+            z.object({
+              decision: z.string().min(1),
+              reasoning: z.string().min(1),
+            })
+          )
+          .optional(),
+        related_files: z.array(z.string()).optional(),
+        actor: z.string().optional(),
+      }),
+    },
+    async (args: {
+      status: "completed" | "partial" | "blocked";
+      summary: string;
+      discoveries?: string[];
+      decisions?: Array<{ decision: string; reasoning: string }>;
+      related_files?: string[];
+      actor?: string;
+    }) => {
+      log({ event: "mcp:tool", tool: "checkpoint_work" });
+
+      const actor = args.actor && args.actor.trim().length > 0 ? args.actor : "user";
+      const noteType: AgentNoteType =
+        args.status === "blocked" ? "blocked" : args.status === "partial" ? "unfinished" : "discovered";
+      const summaryPrefix =
+        args.status === "blocked" ? "Blocked" : args.status === "partial" ? "Partial" : "Completed";
+
+      const writes: string[] = [];
+      const summaryOk = addNote({
+        type: noteType,
+        message: `${summaryPrefix}: ${args.summary}`,
+        actor,
+        related_files: args.related_files,
+      });
+      if (summaryOk) {
+        writes.push("summary note");
+      }
+
+      for (const discovery of args.discoveries ?? []) {
+        const ok = addNote({
+          type: "discovered",
+          message: discovery,
+          actor,
+          related_files: args.related_files,
+        });
+        if (ok) {
+          writes.push("discovery note");
+        }
+      }
+
+      for (const entry of args.decisions ?? []) {
+        appendDecision(entry.decision, entry.reasoning);
+        log({
+          event: "decision",
+          decision: entry.decision,
+          reasoning: entry.reasoning,
+          actor: normalizeDecisionActor(actor),
+        });
+        writes.push("decision");
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              writes.length > 0
+                ? `Checkpoint recorded (${writes.join(", ")}).`
+                : "Checkpoint request completed, but no writes were recorded.",
+          },
+        ],
+      };
+    }
+  );
+
   server.registerTool(
     "log_decision",
     {

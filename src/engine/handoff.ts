@@ -269,6 +269,10 @@ function sanitizeMdList(values: string[]): string[] {
   return values.map((v) => sanitizeMd(v));
 }
 
+function renderGuideLine(lines: string[], label: string, description: string, width = 28): void {
+  lines.push(`  ${label.padEnd(width)} ${description}`);
+}
+
 function toMarkdown(report: HandoffReport): string {
   const lines: string[] = [];
 
@@ -302,9 +306,11 @@ function toMarkdown(report: HandoffReport): string {
   lines.push("  tack://handoff/latest           Latest handoff JSON (canonical)");
   lines.push("");
   lines.push("Write back using MCP tools:");
-  lines.push("  checkpoint_work      Record completed, partial, or blocked work in one call");
-  lines.push("  log_decision          Record a decision with reasoning");
-  lines.push("  log_agent_note        Leave context for the next agent");
+  for (const toolName of ["checkpoint_work", "check_rule", "log_decision", "log_agent_note"]) {
+    const tool = TACK_MCP_TOOLS.find((entry) => entry.name === toolName);
+    if (!tool) continue;
+    renderGuideLine(lines, tool.name, tool.description, 19);
+  }
   lines.push("");
   lines.push(
     "Fast start: read tack://session first, then tack://context/workspace, then tack://context/facts before changes that could affect guardrails."
@@ -335,12 +341,10 @@ function toMarkdown(report: HandoffReport): string {
   lines.push("  .tack/_logs.ndjson      Managed by tack internally");
   lines.push("");
   lines.push("### When You Finish Working");
-  lines.push("1. Record any decisions you made:");
-  lines.push("   - MCP: call checkpoint_work or log_decision");
-  lines.push("   - File: append to .tack/decisions.md");
-  lines.push("2. Leave notes for the next agent about anything important:");
-  lines.push("   - MCP: call checkpoint_work or log_agent_note");
-  lines.push("   - File: append to .tack/_notes.ndjson");
+  lines.push(
+    "1. Default to checkpoint_work before ending if you made a decision, discovered a constraint, hit a blocker, or left partial work."
+  );
+  lines.push("2. If MCP is unavailable, append decisions to .tack/decisions.md and notes to .tack/_notes.ndjson.");
   lines.push("3. If possible, run `tack handoff` to generate an updated handoff");
   lines.push("");
   lines.push("---");

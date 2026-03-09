@@ -63,27 +63,27 @@ export const TACK_MCP_TOOLS: TackMcpToolGuide[] = [
   {
     name: "get_briefing",
     description:
-      "Call this at session start before making changes. Returns a compact briefing with active architecture rules, current focus, recent decisions, and unresolved drift in a low-token summary.",
+      "Call this at session start before making changes. Returns a compact, low-token briefing with active rules, focus, recent decisions, unresolved drift, and brief write-back guidance.",
   },
   {
     name: "check_rule",
     description:
-      "Call this before introducing a dependency, pattern, storage choice, or architectural boundary change. Pass a short natural-language question such as 'Can I use SQLite here?' and it returns allowed, discouraged, forbidden, or unknown with a short reason and evidence.",
+      "Brief mid-task guardrail check before structural changes such as a new dependency, storage choice, pattern, or boundary.",
   },
   {
     name: "checkpoint_work",
     description:
-      "Primary low-friction write-back tool. Call after meaningful progress, a blocker, or when pausing work so the next session keeps the important outcome, discoveries, and decisions.",
+      "Default end-of-work write-back. Call this before finishing if you made a decision, discovered a constraint, hit a blocker, or left partial work.",
   },
   {
     name: "log_decision",
     description:
-      "Record a permanent project decision so later sessions do not reverse it. Use this when behavior, architecture, or guardrails intentionally changed and a full checkpoint is unnecessary.",
+      "Secondary write-back tool. Use only when you need to preserve a decision and a full checkpoint would be unnecessary.",
   },
   {
     name: "log_agent_note",
     description:
-      "Record a narrow discovery, blocker, warning, or partial result for the next session. Use this when you learned something useful but do not need a full checkpoint.",
+      "Secondary write-back tool. Use only for a narrow discovery or warning when a full checkpoint would be unnecessary.",
   },
 ];
 

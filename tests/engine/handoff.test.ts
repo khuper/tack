@@ -69,6 +69,20 @@ describe("handoff", () => {
       )
     ).toBeTrue();
     expect(Array.isArray(json.agent_guide.mcp_tools)).toBeTrue();
+    expect(
+      json.agent_guide.mcp_tools.some(
+        (tool: { name: string; description: string }) =>
+          tool.name === "checkpoint_work" &&
+          tool.description.includes("default end-of-work write-back")
+      )
+    ).toBeTrue();
+    expect(
+      json.agent_guide.mcp_tools.some(
+        (tool: { name: string; description: string }) =>
+          tool.name === "check_rule" &&
+          tool.description.includes("Brief mid-task guardrail check")
+      )
+    ).toBeTrue();
     expect(Array.isArray(json.agent_guide.direct_file_access.read)).toBeTrue();
     expect(Array.isArray(json.agent_guide.direct_file_access.append)).toBeTrue();
     expect(Array.isArray(json.agent_guide.direct_file_access.do_not_modify)).toBeTrue();
@@ -222,6 +236,11 @@ describe("handoff", () => {
 
     expect(md).toContain("tack://context/workspace");
     expect(md).toContain("Fast start: read tack://session first, then tack://context/workspace");
+    expect(md).toContain("checkpoint_work");
+    expect(md).toContain("default end-of-work write-back");
+    expect(md).toContain("check_rule");
+    expect(md).toContain("Brief mid-task guardrail check");
+    expect(md).toContain("Default to checkpoint_work before ending if you made a decision");
 
     // Section 10) Validation / Verification is present
     expect(md).toContain("## 10) Validation / Verification");

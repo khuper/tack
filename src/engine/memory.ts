@@ -283,6 +283,20 @@ function findMatchingConstraintKey(question: string, specConstraints: Record<str
   return null;
 }
 
+const CHECKPOINT_FINISH_CASES = "made a decision, discovered a constraint, hit a blocker, or left partial work";
+
+function checkpointDefaultLine(): string {
+  return `- checkpoint_work is the default end-of-work path. Call it before finishing if you ${CHECKPOINT_FINISH_CASES}.`;
+}
+
+function checkRuleLine(): string {
+  return "- Mid-task, use check_rule briefly before structural changes when guardrails might apply.";
+}
+
+function briefingWriteBackSummary(): string {
+  return "Write back: checkpoint_work is the default end-of-work path; call it before finishing for decisions, discovered constraints, blockers, or partial work; use check_rule mid-task before structural changes.";
+}
+
 export function buildSessionLines(): string[] {
   const spec = readSpec();
   const pack = parseContextPack();
@@ -342,10 +356,10 @@ export function buildSessionLines(): string[] {
   lines.push("");
 
   lines.push("## Write Back Triggers");
-  lines.push("- Use checkpoint_work after meaningful progress, a blocker, or when pausing mid-task.");
-  lines.push("- Use log_decision when you intentionally change behavior, guardrails, or architecture.");
-  lines.push("- Use log_agent_note for a narrow discovery, warning, or blocker that does not need a full checkpoint.");
-  lines.push("- If you changed files but left no memory updates, do that before ending the session.");
+  lines.push(checkpointDefaultLine());
+  lines.push(checkRuleLine());
+  lines.push("- Use log_decision only when you intentionally change behavior, guardrails, or architecture.");
+  lines.push("- Use log_agent_note only for a narrow discovery or warning that does not need a full checkpoint.");
 
   if (changedFiles.length > 0) {
     lines.push("");
@@ -411,6 +425,7 @@ export function buildBriefingResult(): BriefingResult {
     `Detected: ${detected}.`,
     `Recent decisions: ${decisions}.`,
     `Open drift: ${drift}.`,
+    briefingWriteBackSummary(),
   ];
 
   const summary = summaryParts.join(" ");

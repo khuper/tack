@@ -5,6 +5,8 @@ import { createNdjsonTailReader, rotateNdjsonFile, safeReadNdjson } from "./ndjs
 const LOG_MAX_BYTES = 5 * 1024 * 1024;
 const LOG_KEEP_LINES = 5000;
 const MCP_ACTIVITY_SUPPRESS_MS = 1500;
+const RECENT_WRITE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const MCP_WRITE_TOOLS = new Set(["checkpoint_work", "log_decision", "log_agent_note"]);
 export type McpActivityEvent = Extract<LogEvent, { event: "mcp:ready" | "mcp:resource" | "mcp:tool" }>;
 export type McpActivityNotice = {
   event: McpActivityEvent;
@@ -27,6 +29,19 @@ export function log(event: LogEventInput): void {
 
 export function readRecentLogs<T = LogEvent>(limit = 50): T[] {
   return safeReadNdjson<T>(logsPath(), limit);
+}
+
+export function hasRecentMcpWriteBack(windowMs = RECENT_WRITE_WINDOW_MS): boolean {
+  const now = Date.now();
+
+  return readRecentLogs<LogEvent>(200).some((event) => {
+    if (event.event !== "mcp:tool" || !MCP_WRITE_TOOLS.has(event.tool)) {
+      return false;
+    }
+
+    const tsMs = Date.parse(event.ts);
+    return Number.isFinite(tsMs) && now - tsMs <= windowMs;
+  });
 }
 
 export function isMcpActivityEvent(event: LogEvent): event is McpActivityEvent {

@@ -3,7 +3,13 @@ import assert from "node:assert";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createMcpActivityMonitor, formatMcpActivityEvent, isMcpActivityEvent, log } from "../dist/lib/logger.js";
+import {
+  createMcpActivityMonitor,
+  formatMcpActivityEvent,
+  hasRecentMcpWriteBack,
+  isMcpActivityEvent,
+  log,
+} from "../dist/lib/logger.js";
 import { ensureTackDir, logsPath } from "../dist/lib/files.js";
 
 test("formats MCP resource activity events", () => {
@@ -94,6 +100,24 @@ test("suppresses repeated MCP activity bursts for the same resource", () => {
     assert.strictEqual(notices[0].message, "briefed: 4 rules, 3 recent decisions");
     assert.strictEqual(notices[1].message, 'saved: "captured a useful note"');
     assert.strictEqual(monitor().length, 0);
+  } finally {
+    process.chdir(originalCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("detects recent MCP write-back from the primary and secondary save tools", () => {
+  const originalCwd = process.cwd();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tack-logger-writeback-"));
+
+  try {
+    process.chdir(tmpDir);
+    ensureTackDir();
+    fs.writeFileSync(logsPath(), "", "utf-8");
+
+    assert.strictEqual(hasRecentMcpWriteBack(), false);
+    log({ event: "mcp:tool", tool: "checkpoint_work", summary: 'saved: "captured work"' });
+    assert.strictEqual(hasRecentMcpWriteBack(), true);
   } finally {
     process.chdir(originalCwd);
     fs.rmSync(tmpDir, { recursive: true, force: true });

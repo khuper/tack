@@ -2,7 +2,8 @@ import chokidar from "chokidar";
 import * as path from "node:path";
 import { logsPath } from "../lib/files.js";
 import { runStatusScan } from "../engine/status.js";
-import { createMcpActivityMonitor } from "../lib/logger.js";
+import { createMcpActivityMonitor, hasRecentMcpWriteBack } from "../lib/logger.js";
+import { getChangedFiles } from "../lib/git.js";
 import { blue, checkBadge, gray, green, mcpBadge, red, yellow } from "./colors.js";
 
 const IGNORE_PATTERNS = [
@@ -68,6 +69,7 @@ export async function runWatchPlain(): Promise<void> {
     },
   });
   const readNewMcpActivity = createMcpActivityMonitor();
+  let missingWriteBackWarningActive = false;
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   const shutdown = async (): Promise<void> => {
@@ -91,6 +93,14 @@ export async function runWatchPlain(): Promise<void> {
     if (filepath.startsWith(".tack/") || filepath.startsWith(".tack\\")) return;
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
+      const changedFiles = getChangedFiles();
+      const missingWriteBack = changedFiles.length > 0 && !hasRecentMcpWriteBack();
+      if (missingWriteBack && !missingWriteBackWarningActive) {
+        console.log(`${mcpBadge()}  ${gray("no memory saved for this work yet")}`);
+        missingWriteBackWarningActive = true;
+      } else if (!missingWriteBack) {
+        missingWriteBackWarningActive = false;
+      }
       printSnapshot(`${event} ${filepath}`);
     }, 300);
   });

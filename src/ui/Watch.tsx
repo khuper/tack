@@ -14,7 +14,7 @@ import { computeDrift } from "../engine/computeDrift.js";
 import { getMemoryWarnings } from "../engine/memory.js";
 import { getChangedFiles } from "../lib/git.js";
 import { notify } from "../lib/notify.js";
-import { log, createMcpActivityMonitor, type McpActivityNotice } from "../lib/logger.js";
+import { log, createMcpActivityMonitor, hasRecentMcpWriteBack, type McpActivityNotice } from "../lib/logger.js";
 
 const IGNORE_PATTERNS = [
   "**/node_modules/**",
@@ -83,6 +83,7 @@ export function Watch({ animationsEnabled }: WatchProps) {
   const cargoTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const historySeq = useRef(0);
   const readNewMcpActivityRef = useRef<(() => McpActivityNotice[]) | null>(null);
+  const missingWriteBackWarningActiveRef = useRef(false);
 
   function pushHistory(level: HistoryLevel, text: string): void {
     historySeq.current += 1;
@@ -116,6 +117,7 @@ export function Watch({ animationsEnabled }: WatchProps) {
     const startedAt = Date.now();
     const spec = readSpec();
     if (!spec) return;
+    const changedFiles = getChangedFiles();
 
     cueMascot("scan", 1400);
     setProjectName(spec.project);
@@ -131,7 +133,16 @@ export function Watch({ animationsEnabled }: WatchProps) {
     setSystemCount(diff.aligned.filter((signal) => signal.category === "system").length);
     setDriftCount(unresolvedCount);
     setLastScan(new Date().toLocaleTimeString());
-    setMemoryWarnings(getMemoryWarnings(getChangedFiles()));
+    setMemoryWarnings(getMemoryWarnings(changedFiles));
+
+    const missingWriteBack = changedFiles.length > 0 && !hasRecentMcpWriteBack();
+    if (missingWriteBack && !missingWriteBackWarningActiveRef.current) {
+      cueMascot("mcp", 1500);
+      pushHistory("mcp", "no memory saved for this work yet");
+      missingWriteBackWarningActiveRef.current = true;
+    } else if (!missingWriteBack) {
+      missingWriteBackWarningActiveRef.current = false;
+    }
 
     const scanTs = new Date().toLocaleTimeString();
     if (unresolvedCount === 0) {

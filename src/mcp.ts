@@ -507,7 +507,7 @@ async function main(): Promise<void> {
           .string()
           .min(1)
           .describe(
-            'One- or two-sentence summary of the work outcome. Example: "Added MCP workspace snapshot resource and updated handoff guidance."'
+            'One- or two-sentence summary of the work outcome. This is the default write-back path before ending meaningful work. Example: "Added MCP workspace snapshot resource and updated handoff guidance."'
           ),
         discoveries: z
           .array(
@@ -519,7 +519,7 @@ async function main(): Promise<void> {
               )
           )
           .optional()
-          .describe("Optional list of concrete discoveries worth preserving for the next session."),
+          .describe("Optional list of concrete discoveries worth preserving for the next session. Prefer adding them here instead of using log_agent_note separately."),
         decisions: z
           .array(
             z.object({
@@ -538,7 +538,7 @@ async function main(): Promise<void> {
             })
           )
           .optional()
-          .describe("Optional decisions made during the work. Each entry is appended to .tack/decisions.md."),
+          .describe("Optional decisions made during the work. Prefer adding them here so the outcome and decision are saved together."),
         related_files: z
           .array(
             z
@@ -644,7 +644,7 @@ async function main(): Promise<void> {
         decision: z
           .string()
           .min(1)
-          .describe('Short decision statement. Example: "Keep machine_state as a raw debug resource."'),
+          .describe('Short decision statement. Use this only when a full checkpoint is unnecessary. Example: "Keep machine_state as a raw debug resource."'),
         reasoning: z
           .string()
           .min(1)
@@ -712,7 +712,7 @@ async function main(): Promise<void> {
           .string()
           .min(1)
           .describe(
-            'Short note for the next session. Example: "MCP workspace snapshot now summarizes unresolved drift before raw YAML."'
+            'Short note for the next session. Use this only when a full checkpoint is unnecessary. Example: "MCP workspace snapshot now summarizes unresolved drift before raw YAML."'
           ),
         actor: z
           .string()

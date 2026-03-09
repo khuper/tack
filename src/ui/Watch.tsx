@@ -47,8 +47,8 @@ type WatchProps = {
 function renderHistoryBadge(level: HistoryLevel) {
   if (level === "mcp") {
     return (
-      <Text backgroundColor="cyan" color="black" bold>
-        {" MCP "}
+      <Text color="cyan" bold>
+        {"⚡ tack"}
       </Text>
     );
   }
@@ -209,7 +209,7 @@ export function Watch({ animationsEnabled }: WatchProps) {
       for (const notice of notices) {
         cueMascot("mcp", 1600);
         addCargoPackage();
-        pushHistory("mcp", `[${new Date(notice.event.ts).toLocaleTimeString()}] ${notice.message}`);
+        pushHistory("mcp", notice.message);
       }
     });
 

@@ -6,5 +6,7 @@ export function printHandoffPlain(markdownPath: string, jsonPath: string, genera
   console.log(`${bold("Markdown:")} ${markdownPath}`);
   console.log(`${bold("JSON:")}     ${jsonPath}`);
   console.log("");
-  console.log("Give this to your agent: attach the .md file to your chat (or add it to context in Cursor). For structured use, start with tack://session, then use tack://handoff/latest (MCP).");
+  console.log(
+    "Give this to your agent: attach the .md file to your chat (or add it to context in Cursor). For structured use, start with tack://session, then tack://context/workspace, then tack://handoff/latest (MCP)."
+  );
 }

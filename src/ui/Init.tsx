@@ -15,8 +15,9 @@ import {
 } from "../lib/files.js";
 import { createAudit, createEmptySpec, type Signal, type Spec } from "../lib/signals.js";
 import { log } from "../lib/logger.js";
+import { ensureTelemetryState, setTelemetryPreference, telemetryPromptNeeded } from "../lib/telemetry.js";
 
-type Phase = "logo" | "check" | "sweep" | "classify" | "add_forbidden" | "project_name" | "done";
+type Phase = "logo" | "check" | "sweep" | "classify" | "add_forbidden" | "project_name" | "telemetry" | "done";
 
 export function Init() {
   const { exit } = useApp();
@@ -51,6 +52,7 @@ export function Init() {
       }
       ensureTackDir();
       ensureContextTemplates();
+      ensureTelemetryState();
       setPhase("sweep");
     }
   }, [phase, exit]);
@@ -108,11 +110,7 @@ export function Init() {
     setPhase("project_name");
   }
 
-  function handleProjectName(value: string) {
-    const name = value.trim() || "my-project";
-    const finalSpec = { ...spec, project: name };
-    setSpec(finalSpec);
-
+  function finalizeInit(finalSpec: Spec) {
     writeSpec(finalSpec);
     writeAudit(createAudit(signals));
     writeDrift({ items: [] });
@@ -126,10 +124,33 @@ export function Init() {
     setTimeout(() => exit(), 1000);
   }
 
+  function handleProjectName(value: string) {
+    const name = value.trim() || "my-project";
+    const finalSpec = { ...spec, project: name };
+    setSpec(finalSpec);
+
+    if (telemetryPromptNeeded()) {
+      setPhase("telemetry");
+      return;
+    }
+
+    finalizeInit(finalSpec);
+  }
+
+  function handleTelemetrySelect(opt: { value: string }) {
+    setTelemetryPreference(opt.value === "yes");
+    finalizeInit(spec);
+  }
+
   const classifyOptions = [
     { label: "Allowed — I want this", value: "allowed" },
     { label: "Forbidden — I don't want this", value: "forbidden" },
     { label: "Skip — decide later", value: "skip" },
+  ];
+
+  const telemetryOptions = [
+    { label: "Yes - anonymous counts only", value: "yes" },
+    { label: "No - local stats only", value: "no" },
   ];
 
   return (
@@ -185,6 +206,16 @@ export function Init() {
               onSubmit={handleProjectName}
               placeholder="my-project"
             />
+          </Box>
+        </Box>
+      )}
+
+      {phase === "telemetry" && (
+        <Box flexDirection="column">
+          <Text>Share anonymous usage stats to help improve Tack?</Text>
+          <Text dimColor>Only counts are shared. No project name, code, decisions, or notes leave the machine.</Text>
+          <Box marginTop={1}>
+            <SelectInput items={telemetryOptions} onSelect={handleTelemetrySelect} />
           </Box>
         </Box>
       )}

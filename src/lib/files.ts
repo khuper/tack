@@ -30,6 +30,7 @@ const PROJECT_MARKERS = [
   "backlog",
   "dist",
 ] as const;
+const PRIVATE_LOCAL_TACK_FILES = [".tack/_config.json", ".tack/_stats.json"] as const;
 
 function looksLikeLegacyTackDir(dir: string): boolean {
   try {
@@ -146,6 +147,33 @@ function migrateMachineFilesIfNeeded(): void {
   }
 }
 
+function ensurePrivateLocalStateIgnored(): void {
+  const excludePath = path.join(projectRoot(), ".git", "info", "exclude");
+  const excludeDir = path.dirname(excludePath);
+
+  try {
+    if (!fs.existsSync(excludeDir)) {
+      return;
+    }
+
+    const current = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, "utf-8") : "";
+    const normalized = current.replace(/\r\n/g, "\n");
+    const missingEntries = PRIVATE_LOCAL_TACK_FILES.filter(
+      (entry) => !normalized.split("\n").some((line) => line.trim() === entry)
+    );
+
+    if (missingEntries.length === 0) {
+      return;
+    }
+
+    const prefix = normalized.length > 0 && !normalized.endsWith("\n") ? "\n" : "";
+    const block = `${prefix}${missingEntries.join("\n")}\n`;
+    fs.appendFileSync(excludePath, block, "utf-8");
+  } catch {
+    // Ignore exclude-file failures. Telemetry stays local even if exclude setup fails.
+  }
+}
+
 function assertInsideTackDir(filepath: string): void {
   const resolved = path.resolve(filepath);
   const tackDir = getTackDir();
@@ -206,6 +234,7 @@ export function ensureTackDir(): void {
     fs.mkdirSync(tackDir, { recursive: true });
   }
   migrateMachineFilesIfNeeded();
+  ensurePrivateLocalStateIgnored();
 
   const handoffsDir = path.join(tackDir, "handoffs");
   if (!fs.existsSync(handoffsDir)) {
@@ -432,6 +461,16 @@ export function notesPath(): string {
   return path.join(getTackDir(), "_notes.ndjson");
 }
 
+export function configPath(): string {
+  ensureTackDir();
+  return path.join(getTackDir(), "_config.json");
+}
+
+export function statsPath(): string {
+  ensureTackDir();
+  return path.join(getTackDir(), "_stats.json");
+}
+
 export function contextPath(): string {
   return path.join(getTackDir(), "context.md");
 }
@@ -634,6 +673,48 @@ export function ensureTackIntegrity(): { repaired: string[] } {
   if (!fileExists(logsPath())) {
     writeSafe(logsPath(), "");
     repaired.push("_logs.ndjson");
+  }
+
+  if (!fileExists(configPath())) {
+    writeSafe(
+      configPath(),
+      `${JSON.stringify(
+        {
+          telemetry_prompted: false,
+          telemetry_enabled: false,
+          last_sent_at: null,
+          sent_totals: {
+            sessions: 0,
+            decisions_logged: 0,
+            notes_logged: 0,
+            briefings_served: 0,
+          },
+        },
+        null,
+        2
+      )}\n`
+    );
+    repaired.push("_config.json");
+  }
+
+  if (!fileExists(statsPath())) {
+    const today = new Date().toISOString().slice(0, 10);
+    writeSafe(
+      statsPath(),
+      `${JSON.stringify(
+        {
+          sessions: 0,
+          decisions_logged: 0,
+          notes_logged: 0,
+          briefings_served: 0,
+          first_seen: today,
+          last_seen: today,
+        },
+        null,
+        2
+      )}\n`
+    );
+    repaired.push("_stats.json");
   }
 
   if (!fileExists(auditPath())) {

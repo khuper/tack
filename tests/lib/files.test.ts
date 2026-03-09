@@ -83,6 +83,16 @@ describe("files", () => {
     expect(tackDirExists()).toBeTrue();
   });
 
+  it("adds local telemetry files to git exclude without touching project gitignore", () => {
+    fs.mkdirSync(path.join(tmpDir, ".git", "info"), { recursive: true });
+
+    ensureTackDir();
+
+    const exclude = fs.readFileSync(path.join(tmpDir, ".git", "info", "exclude"), "utf-8");
+    expect(exclude).toContain(".tack/_config.json");
+    expect(exclude).toContain(".tack/_stats.json");
+  });
+
   it("does not migrate an unrelated sibling directory named tack", () => {
     process.chdir(originalCwd);
     const workspaceDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tack-workspace-")));

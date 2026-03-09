@@ -29,6 +29,9 @@ describe("contextPack", () => {
         "## North Star",
         "- Keep architecture stable",
         "",
+        "## Current Focus",
+        "- Ship MCP intent shaping",
+        "",
         "## Notes",
         "- Extra",
         "",
@@ -52,6 +55,8 @@ describe("contextPack", () => {
 
     expect(pack.north_star.length).toBe(1);
     expect(pack.north_star[0]!.text).toBe("Keep architecture stable");
+    expect(pack.current_focus.length).toBe(1);
+    expect(pack.current_focus[0]!.text).toBe("Ship MCP intent shaping");
     expect(pack.goals.length).toBe(1);
     expect(pack.non_goals.length).toBe(1);
     expect(pack.assumptions[0]!.status).toBe("open");
@@ -64,6 +69,7 @@ describe("contextPack", () => {
   it("returns empty arrays when files are missing", () => {
     const pack = parseContextPack();
     expect(pack.north_star).toEqual([]);
+    expect(pack.current_focus).toEqual([]);
     expect(pack.goals).toEqual([]);
     expect(pack.non_goals).toEqual([]);
     expect(pack.assumptions).toEqual([]);

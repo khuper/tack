@@ -33,5 +33,5 @@ export function checkBadge(): string {
 }
 
 export function mcpBadge(): string {
-  return pc.bgCyan(pc.black(" MCP "));
+  return pc.bold(pc.cyan("⚡ tack"));
 }

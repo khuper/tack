@@ -11,13 +11,21 @@ import {
   handoffsDirPath,
 } from "./lib/files.js";
 import { contextRefToString, parseContextPack } from "./engine/contextPack.js";
-import { buildSessionLines } from "./engine/memory.js";
+import {
+  buildBriefingResult,
+  buildRuleCheckResult,
+  buildSessionLines,
+  buildWorkspaceSnapshotLines,
+} from "./engine/memory.js";
 import { wrapUntrustedContext } from "./lib/promptSafety.js";
 import { appendDecision, normalizeDecisionActor } from "./engine/decisions.js";
 import { log } from "./lib/logger.js";
 import { addNote } from "./lib/notes.js";
 import { AGENT_NOTE_TYPES } from "./lib/signals.js";
 import type { AgentNoteType } from "./lib/signals.js";
+import { getTackMcpResource, getTackMcpTool } from "./lib/mcpCatalog.js";
+import { readPackageMeta } from "./lib/packageMeta.js";
+import { ensureTelemetryState, recordTelemetryCounts } from "./lib/telemetry.js";
 
 function safeReadFile(filepath: string): string | null {
   try {
@@ -65,26 +73,86 @@ function announceMcpReady(): void {
   process.stderr.write(lines.join("\n"));
 }
 
+function jsonText(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+function clampSingleLine(value: string, maxLength = 80): string {
+  const collapsed = value.replace(/\s+/g, " ").trim();
+  if (collapsed.length <= maxLength) {
+    return collapsed;
+  }
+
+  return `${collapsed.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function formatSavedSummary(text: string): string {
+  return `saved: "${clampSingleLine(text)}"`;
+}
+
+function formatBriefingSummary(): string {
+  const briefing = buildBriefingResult();
+  return `briefed: ${briefing.rules_count} rules, ${briefing.recent_decisions_count} recent decisions`;
+}
+
+let telemetrySessionRecorded = false;
+let lastBriefingRecordedAt = 0;
+
+function noteMcpSessionActivity(): void {
+  if (telemetrySessionRecorded) {
+    return;
+  }
+
+  recordTelemetryCounts({ sessions: 1 });
+  telemetrySessionRecorded = true;
+}
+
+function noteBriefingServed(): void {
+  noteMcpSessionActivity();
+
+  const now = Date.now();
+  if (now - lastBriefingRecordedAt < 5000) {
+    return;
+  }
+
+  lastBriefingRecordedAt = now;
+  recordTelemetryCounts({ briefings_served: 1 });
+}
+
 async function main(): Promise<void> {
+  ensureTelemetryState();
+  const pkg = readPackageMeta();
+  const sessionResource = getTackMcpResource("tack://session");
+  const workspaceResource = getTackMcpResource("tack://context/workspace");
+  const factsResource = getTackMcpResource("tack://context/facts");
+  const intentResource = getTackMcpResource("tack://context/intent");
+  const decisionsResource = getTackMcpResource("tack://context/decisions_recent");
+  const machineStateResource = getTackMcpResource("tack://context/machine_state");
+  const handoffResource = getTackMcpResource("tack://handoff/latest");
+  const getBriefingTool = getTackMcpTool("get_briefing");
+  const checkRuleTool = getTackMcpTool("check_rule");
+  const checkpointWorkTool = getTackMcpTool("checkpoint_work");
+  const logDecisionTool = getTackMcpTool("log_decision");
+  const logAgentNoteTool = getTackMcpTool("log_agent_note");
+
   const server = new McpServer(
     {
       name: "tack-mcp",
-      version: "0.1.0",
+      version: pkg.version,
     },
     {}
   );
 
-  // Intent: high-level purpose and goals, without architecture internals.
   server.registerResource(
     "intent",
     "tack://context/intent",
     {
-      title: "Tack Context – Intent",
-      description:
-        "High-level North Star, Current Focus, Goals, Non-Goals, open questions, and decisions.",
-      mimeType: "text/markdown",
+      title: intentResource.title,
+      description: intentResource.description,
+      mimeType: intentResource.mimeType,
     },
     async (uri: URL) => {
+      noteMcpSessionActivity();
       log({ event: "mcp:resource", resource: uri.href });
       const pack = parseContextPack();
       const lines: string[] = ["# Intent Context", ""];
@@ -147,12 +215,17 @@ async function main(): Promise<void> {
     "session",
     "tack://session",
     {
-      title: "Tack Session",
-      description: "Compact canonical project snapshot for agent orientation and write-back.",
-      mimeType: "text/markdown",
+      title: sessionResource.title,
+      description: sessionResource.description,
+      mimeType: sessionResource.mimeType,
     },
     async (uri: URL) => {
-      log({ event: "mcp:resource", resource: uri.href });
+      noteBriefingServed();
+      log({
+        event: "mcp:resource",
+        resource: uri.href,
+        summary: formatBriefingSummary(),
+      });
       const wrapped = wrapUntrustedContext(buildSessionLines().join("\n"), "tack://session");
 
       return {
@@ -166,16 +239,47 @@ async function main(): Promise<void> {
     }
   );
 
-  // Facts: implementation status and architecture spec (guardrails).
+  server.registerResource(
+    "workspace",
+    "tack://context/workspace",
+    {
+      title: workspaceResource.title,
+      description: workspaceResource.description,
+      mimeType: workspaceResource.mimeType,
+    },
+    async (uri: URL) => {
+      noteBriefingServed();
+      log({
+        event: "mcp:resource",
+        resource: uri.href,
+        summary: formatBriefingSummary(),
+      });
+      const wrapped = wrapUntrustedContext(
+        buildWorkspaceSnapshotLines().join("\n"),
+        "tack://context/workspace"
+      );
+
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            text: wrapped,
+          },
+        ],
+      };
+    }
+  );
+
   server.registerResource(
     "facts",
     "tack://context/facts",
     {
-      title: "Tack Context – Facts",
-      description: "Binary, source-anchored implementation status and architecture spec.",
-      mimeType: "text/markdown",
+      title: factsResource.title,
+      description: factsResource.description,
+      mimeType: factsResource.mimeType,
     },
     async (uri: URL) => {
+      noteMcpSessionActivity();
       log({ event: "mcp:resource", resource: uri.href });
       const parts: string[] = [];
 
@@ -206,16 +310,16 @@ async function main(): Promise<void> {
     }
   );
 
-  // Latest handoff JSON: canonical machine-readable summary for agents.
   server.registerResource(
     "handoff-latest",
     "tack://handoff/latest",
     {
-      title: "Tack Handoff – Latest",
-      description: "Latest handoff JSON generated by `tack handoff`.",
-      mimeType: "application/json",
+      title: handoffResource.title,
+      description: handoffResource.description,
+      mimeType: handoffResource.mimeType,
     },
     async (uri: URL) => {
+      noteMcpSessionActivity();
       log({ event: "mcp:resource", resource: uri.href });
       const jsonPath = latestHandoffJsonPath();
       if (!jsonPath) {
@@ -245,16 +349,16 @@ async function main(): Promise<void> {
     }
   );
 
-  // Recent decisions: last N entries from the parsed context pack.
   server.registerResource(
     "decisions-recent",
     "tack://context/decisions_recent",
     {
-      title: "Tack Decisions – Recent",
-      description: "Recent architecture and product decisions driving this project.",
-      mimeType: "text/markdown",
+      title: decisionsResource.title,
+      description: decisionsResource.description,
+      mimeType: decisionsResource.mimeType,
     },
     async (uri: URL) => {
+      noteMcpSessionActivity();
       log({ event: "mcp:resource", resource: uri.href });
       const pack = parseContextPack();
       const recent = pack.decisions.slice(-10);
@@ -275,7 +379,7 @@ async function main(): Promise<void> {
 
       const lines: string[] = ["# Recent Decisions", ""];
       for (const d of recent) {
-        lines.push(`- [${d.date}] ${d.decision} — ${d.reasoning}`);
+        lines.push(`- [${d.date}] ${d.decision} - ${d.reasoning}`);
       }
 
       const wrapped = wrapUntrustedContext(lines.join("\n"), "tack://context/decisions_recent");
@@ -290,16 +394,16 @@ async function main(): Promise<void> {
     }
   );
 
-  // Machine state overview: audit and drift files, for engineering tasks.
   server.registerResource(
     "machine-state",
     "tack://context/machine_state",
     {
-      title: "Tack Machine State",
-      description: "Raw machine state from _audit.yaml and _drift.yaml.",
-      mimeType: "text/markdown",
+      title: machineStateResource.title,
+      description: machineStateResource.description,
+      mimeType: machineStateResource.mimeType,
     },
     async (uri: URL) => {
+      noteMcpSessionActivity();
       log({ event: "mcp:resource", resource: uri.href });
       const parts: string[] = [];
 
@@ -330,26 +434,123 @@ async function main(): Promise<void> {
     }
   );
 
-  // Tools: write-back channels for agents.
+  server.registerTool(
+    "get_briefing",
+    {
+      description: getBriefingTool.description,
+      inputSchema: z.object({}),
+    },
+    async () => {
+      const briefing = buildBriefingResult();
+      noteBriefingServed();
+      log({
+        event: "mcp:tool",
+        tool: "get_briefing",
+        summary: `briefed: ${briefing.rules_count} rules, ${briefing.recent_decisions_count} recent decisions`,
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: jsonText(briefing),
+          },
+        ],
+      };
+    }
+  );
+
+  server.registerTool(
+    "check_rule",
+    {
+      description: checkRuleTool.description,
+      inputSchema: z.object({
+        question: z
+          .string()
+          .min(1)
+          .describe(
+            'Short natural-language rule check. Example: "Can I use SQLite here?" or "Is it OK to add a second auth provider?"'
+          ),
+      }),
+    },
+    async (args: { question: string }) => {
+      const result = buildRuleCheckResult(args.question);
+      noteMcpSessionActivity();
+      log({
+        event: "mcp:tool",
+        tool: "check_rule",
+        summary: `checked guardrail: ${result.status}`,
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: jsonText(result),
+          },
+        ],
+      };
+    }
+  );
+
   server.registerTool(
     "checkpoint_work",
     {
-      description:
-        "Record completed, partial, or blocked work in one call by appending the right note(s) and decision(s).",
+      description: checkpointWorkTool.description,
       inputSchema: z.object({
-        status: z.enum(["completed", "partial", "blocked"]),
-        summary: z.string().min(1),
-        discoveries: z.array(z.string().min(1)).optional(),
+        status: z
+          .enum(["completed", "partial", "blocked"])
+          .describe(
+            'Overall outcome of the work so far. Use "completed" when the task is done, "partial" when work started but is not done, and "blocked" when progress stopped on an unresolved issue.'
+          ),
+        summary: z
+          .string()
+          .min(1)
+          .describe(
+            'One- or two-sentence summary of the work outcome. Example: "Added MCP workspace snapshot resource and updated handoff guidance."'
+          ),
+        discoveries: z
+          .array(
+            z
+              .string()
+              .min(1)
+              .describe(
+                'A specific fact learned during work. Example: "Agents were reading raw machine state before facts."'
+              )
+          )
+          .optional()
+          .describe("Optional list of concrete discoveries worth preserving for the next session."),
         decisions: z
           .array(
             z.object({
-              decision: z.string().min(1),
-              reasoning: z.string().min(1),
+              decision: z
+                .string()
+                .min(1)
+                .describe(
+                  'Short decision statement. Example: "Use tack://session as the primary MCP entrypoint."'
+                ),
+              reasoning: z
+                .string()
+                .min(1)
+                .describe(
+                  'Why the decision was made. Example: "It reduces agent prompting and gives a consistent read order."'
+                ),
             })
           )
-          .optional(),
-        related_files: z.array(z.string()).optional(),
-        actor: z.string().optional(),
+          .optional()
+          .describe("Optional decisions made during the work. Each entry is appended to .tack/decisions.md."),
+        related_files: z
+          .array(
+            z
+              .string()
+              .describe('Project-relative path related to the work. Example: "src/mcp.ts" or "README.md".')
+          )
+          .optional()
+          .describe("Optional project-relative files associated with the work."),
+        actor: z
+          .string()
+          .optional()
+          .describe('Optional actor label. Example: "agent:codex". Defaults to "user" if omitted.'),
       }),
     },
     async (args: {
@@ -360,8 +561,7 @@ async function main(): Promise<void> {
       related_files?: string[];
       actor?: string;
     }) => {
-      log({ event: "mcp:tool", tool: "checkpoint_work" });
-
+      noteMcpSessionActivity();
       const actor = args.actor && args.actor.trim().length > 0 ? args.actor : "user";
       const noteType: AgentNoteType =
         args.status === "blocked" ? "blocked" : args.status === "partial" ? "unfinished" : "discovered";
@@ -375,8 +575,9 @@ async function main(): Promise<void> {
         actor,
         related_files: args.related_files,
       });
+      let discoveryWrites = 0;
       if (summaryOk) {
-        writes.push("summary note");
+        writes.push("summary_note");
       }
 
       for (const discovery of args.discoveries ?? []) {
@@ -387,7 +588,8 @@ async function main(): Promise<void> {
           related_files: args.related_files,
         });
         if (ok) {
-          writes.push("discovery note");
+          writes.push("discovery_note");
+          discoveryWrites += 1;
         }
       }
 
@@ -402,14 +604,32 @@ async function main(): Promise<void> {
         writes.push("decision");
       }
 
+      const savedText =
+        args.decisions?.[0]?.decision ?? args.discoveries?.[0] ?? args.summary;
+      recordTelemetryCounts({
+        notes_logged: (summaryOk ? 1 : 0) + discoveryWrites,
+        decisions_logged: args.decisions?.length ?? 0,
+      });
+      log({
+        event: "mcp:tool",
+        tool: "checkpoint_work",
+        summary: formatSavedSummary(savedText),
+      });
+
       return {
         content: [
           {
             type: "text",
-            text:
-              writes.length > 0
-                ? `Checkpoint recorded (${writes.join(", ")}).`
-                : "Checkpoint request completed, but no writes were recorded.",
+            text: jsonText({
+              ok: writes.length > 0,
+              status: args.status,
+              saved: {
+                summary: args.summary,
+                discoveries: args.discoveries?.length ?? 0,
+                decisions: args.decisions?.length ?? 0,
+              },
+              writes,
+            }),
           },
         ],
       };
@@ -419,11 +639,24 @@ async function main(): Promise<void> {
   server.registerTool(
     "log_decision",
     {
-      description: "Record a decision with reasoning into .tack/decisions.md and the Tack event log.",
+      description: logDecisionTool.description,
       inputSchema: z.object({
-        decision: z.string().min(1),
-        reasoning: z.string().min(1),
-        actor: z.string().optional(),
+        decision: z
+          .string()
+          .min(1)
+          .describe('Short decision statement. Example: "Keep machine_state as a raw debug resource."'),
+        reasoning: z
+          .string()
+          .min(1)
+          .describe(
+            'Why the decision was made. Example: "Workspace summaries should stay compact while raw YAML remains available separately."'
+          ),
+        actor: z
+          .string()
+          .optional()
+          .describe(
+            'Optional actor label. Example: "agent:codex". Defaults to the standard decision actor normalization if omitted.'
+          ),
       }),
     },
     async (args: {
@@ -431,24 +664,34 @@ async function main(): Promise<void> {
       reasoning: string;
       actor?: string;
     }) => {
-      log({ event: "mcp:tool", tool: "log_decision" });
       const decision = args.decision;
       const reasoning = args.reasoning;
       const actor = typeof args.actor === "string" ? args.actor : undefined;
+      noteMcpSessionActivity();
 
       appendDecision(decision, reasoning);
+      recordTelemetryCounts({ decisions_logged: 1 });
       log({
         event: "decision",
         decision,
         reasoning,
         actor: normalizeDecisionActor(actor),
       });
+      log({
+        event: "mcp:tool",
+        tool: "log_decision",
+        summary: formatSavedSummary(decision),
+      });
 
       return {
         content: [
           {
             type: "text",
-            text: "Decision logged to .tack/decisions.md.",
+            text: jsonText({
+              ok: true,
+              saved: "decision",
+              decision,
+            }),
           },
         ],
       };
@@ -458,12 +701,31 @@ async function main(): Promise<void> {
   server.registerTool(
     "log_agent_note",
     {
-      description: "Append an agent note into .tack/_notes.ndjson for future handoffs.",
+      description: logAgentNoteTool.description,
       inputSchema: z.object({
-        type: z.enum(AGENT_NOTE_TYPES as [AgentNoteType, ...AgentNoteType[]]),
-        message: z.string().min(1),
-        actor: z.string().optional(),
-        related_files: z.array(z.string()).optional(),
+        type: z
+          .enum(AGENT_NOTE_TYPES as [AgentNoteType, ...AgentNoteType[]])
+          .describe(
+            'Kind of note to record. Use "discovered" for useful findings, "unfinished" for partial work, "blocked" for blockers, "warning" for hazards, and "tried" for attempted approaches.'
+          ),
+        message: z
+          .string()
+          .min(1)
+          .describe(
+            'Short note for the next session. Example: "MCP workspace snapshot now summarizes unresolved drift before raw YAML."'
+          ),
+        actor: z
+          .string()
+          .optional()
+          .describe('Optional actor label. Example: "agent:codex". Defaults to "user" if omitted.'),
+        related_files: z
+          .array(
+            z
+              .string()
+              .describe('Project-relative path related to the note. Example: "src/engine/memory.ts".')
+          )
+          .optional()
+          .describe("Optional project-relative files connected to the note."),
       }),
     },
     async (args: {
@@ -472,8 +734,8 @@ async function main(): Promise<void> {
       actor?: string;
       related_files?: string[];
     }) => {
-      log({ event: "mcp:tool", tool: "log_agent_note" });
       const actor = args.actor && args.actor.trim().length > 0 ? args.actor : "user";
+      noteMcpSessionActivity();
 
       const ok = addNote({
         type: args.type,
@@ -485,12 +747,26 @@ async function main(): Promise<void> {
       const text = ok
         ? "Agent note appended to .tack/_notes.ndjson."
         : "Failed to append agent note to .tack/_notes.ndjson.";
+      if (ok) {
+        recordTelemetryCounts({ notes_logged: 1 });
+      }
+      log({
+        event: "mcp:tool",
+        tool: "log_agent_note",
+        summary: ok ? formatSavedSummary(args.message) : "save failed",
+      });
 
       return {
         content: [
           {
             type: "text",
-            text,
+            text: jsonText({
+              ok,
+              saved: ok ? "note" : "none",
+              note_type: args.type,
+              message: args.message,
+              detail: text,
+            }),
           },
         ],
       };

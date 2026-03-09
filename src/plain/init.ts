@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import * as readline from "node:readline/promises";
 import { runAllDetectors } from "../detectors/index.js";
 import {
   ensureTackIntegrity,
@@ -13,8 +14,40 @@ import {
 import { log } from "../lib/logger.js";
 import { createAudit, createEmptySpec } from "../lib/signals.js";
 import { getProjectName } from "../lib/project.js";
+import { ensureTelemetryState, setTelemetryPreference, telemetryPromptNeeded } from "../lib/telemetry.js";
 
-export function runInitPlain(): boolean {
+async function promptForTelemetryOptIn(): Promise<void> {
+  ensureTelemetryState();
+  if (!telemetryPromptNeeded()) {
+    return;
+  }
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    setTelemetryPreference(false);
+    console.log("Telemetry: local stats enabled, remote sharing disabled by default in non-interactive init.");
+    return;
+  }
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    const answer = await rl.question("Share anonymous usage stats to help improve Tack? (y/n) ");
+    const enabled = answer.trim().toLowerCase().startsWith("y");
+    setTelemetryPreference(enabled);
+    console.log(
+      enabled
+        ? "Telemetry: enabled anonymous aggregate sharing. No project content leaves the machine."
+        : "Telemetry: local stats only. No usage data will be sent."
+    );
+  } finally {
+    rl.close();
+  }
+}
+
+export async function runInitPlain(): Promise<boolean> {
   if (specExists()) {
     const { repaired } = ensureTackIntegrity();
     if (repaired.length > 0) {
@@ -29,6 +62,7 @@ export function runInitPlain(): boolean {
 
   ensureTackDir();
   ensureContextTemplates();
+  ensureTelemetryState();
 
   const { signals } = runAllDetectors();
   const projectName = getProjectName() || path.basename(projectRoot()) || "my-project";
@@ -42,6 +76,7 @@ export function runInitPlain(): boolean {
   writeSpec(spec);
   writeAudit(createAudit(signals));
   writeDrift({ items: [] });
+  await promptForTelemetryOptIn();
   log({
     event: "init",
     spec_seeded: true,

@@ -63,6 +63,11 @@ describe("handoff", () => {
     expect(typeof json.agent_guide).toBe("object");
     expect(Array.isArray(json.agent_guide.mcp_resources)).toBeTrue();
     expect(json.agent_guide.mcp_resources.length).toBeGreaterThanOrEqual(4);
+    expect(
+      json.agent_guide.mcp_resources.some(
+        (resource: { uri: string }) => resource.uri === "tack://context/workspace"
+      )
+    ).toBeTrue();
     expect(Array.isArray(json.agent_guide.mcp_tools)).toBeTrue();
     expect(Array.isArray(json.agent_guide.direct_file_access.read)).toBeTrue();
     expect(Array.isArray(json.agent_guide.direct_file_access.append)).toBeTrue();
@@ -91,6 +96,9 @@ describe("handoff", () => {
     // Collections that should always be arrays in the report
     const arrayFields = [
       "north_star",
+      "current_focus",
+      "goals",
+      "non_goals",
       "implementation_status",
       "detected_systems",
       "open_drift_items",
@@ -122,10 +130,15 @@ describe("handoff", () => {
       "",
       "Commands or checks to run after applying changes.",
       "",
+      "## Steps",
       "- bun test",
       "- npm run lint",
       "1. npx tsc --noEmit",
       "2) echo done",
+      "",
+      "## Examples",
+      "- not-a-real-step",
+      "1. also-not-a-real-step",
       "",
     ].join("\n");
 
@@ -206,6 +219,9 @@ describe("handoff", () => {
     // Summary and Agent Priorities sections follow in order
     expect(summaryIndex).toBeGreaterThan(workingIndex);
     expect(prioritiesIndex).toBeGreaterThan(summaryIndex);
+
+    expect(md).toContain("tack://context/workspace");
+    expect(md).toContain("Fast start: read tack://session first, then tack://context/workspace");
 
     // Section 10) Validation / Verification is present
     expect(md).toContain("## 10) Validation / Verification");

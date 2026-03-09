@@ -82,7 +82,7 @@ export async function runWatchPlain(): Promise<void> {
 
   logsWatcher.on("change", () => {
     for (const notice of readNewMcpActivity()) {
-      console.log(`${mcpBadge()} ${blue(`[${notice.event.ts}]`)} ${gray(notice.message)}`);
+      console.log(`${mcpBadge()}  ${gray(notice.message)}`);
     }
   });
 

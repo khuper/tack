@@ -39,34 +39,34 @@ export function readRecentMcpActivity(limit = 50): McpActivityEvent[] {
 
 export function mcpActivityEventKey(event: McpActivityEvent): string {
   if (event.event === "mcp:resource") {
-    return `${event.ts}:${event.event}:${event.resource}`;
+    return `${event.ts}:${event.event}:${event.resource}:${event.summary ?? ""}`;
   }
 
   if (event.event === "mcp:tool") {
-    return `${event.ts}:${event.event}:${event.tool}`;
+    return `${event.ts}:${event.event}:${event.tool}:${event.summary ?? ""}`;
   }
 
   return `${event.ts}:${event.event}:${event.transport}`;
 }
 
-function formatMcpResourceName(resource: string): string {
-  if (!resource.startsWith("tack://")) {
-    return resource;
-  }
-
-  return resource.replace(/^tack:\/\//, "");
-}
-
 export function formatMcpActivityEvent(event: McpActivityEvent): string {
   if (event.event === "mcp:ready") {
-    return `MCP online (${event.transport})`;
+    return "agent connected";
+  }
+
+  if (event.summary && event.summary.trim().length > 0) {
+    return event.summary;
   }
 
   if (event.event === "mcp:resource") {
-    return `MCP read ${formatMcpResourceName(event.resource)}`;
+    return "read context";
   }
 
-  return `MCP called ${event.tool}`;
+  if (event.tool === "check_rule") {
+    return "checked guardrail";
+  }
+
+  return "saved project memory";
 }
 
 export function createMcpActivityMonitor(): () => McpActivityNotice[] {
@@ -85,9 +85,13 @@ export function createMcpActivityMonitor(): () => McpActivityNotice[] {
 
       const kind =
         event.event === "mcp:resource"
-          ? `resource:${event.resource}`
+          ? event.resource === "tack://session" || event.resource === "tack://context/workspace"
+            ? "briefing"
+            : `resource:${event.resource}`
           : event.event === "mcp:tool"
-            ? `tool:${event.tool}`
+            ? event.tool === "get_briefing"
+              ? "briefing"
+              : `tool:${event.tool}:${event.summary ?? ""}`
             : `ready:${event.transport}`;
       const tsMs = Date.parse(event.ts);
       const lastMs = lastShownAt.get(kind) ?? 0;

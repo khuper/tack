@@ -45,6 +45,7 @@ import { archiveOldHandoffs } from "./compaction.js";
 import { contextRefToString, parseContextPack } from "./contextPack.js";
 import { readNotes, formatRelativeTime } from "../lib/notes.js";
 import { getMemoryWarnings } from "./memory.js";
+import { TACK_MCP_RESOURCES, TACK_MCP_TOOLS } from "../lib/mcpCatalog.js";
 
 function sourceFile(file: string, line?: number): SourceRef {
   return typeof line === "number" ? { file, line } : { file };
@@ -290,13 +291,14 @@ function toMarkdown(report: HandoffReport): string {
   lines.push("");
   lines.push("### Option A: MCP (recommended if available)");
   lines.push("Connect to the Tack MCP server for live project context:");
-  lines.push("  tack://session                  Compact canonical project snapshot");
+  lines.push("  tack://session                  Read this first; compact canonical snapshot with write-back guidance");
+  lines.push("  tack://context/workspace        Compact guardrails, detected systems, drift, and changed files");
   lines.push(
     "  tack://context/intent           North star, current focus, goals/non-goals, open questions, decisions"
   );
   lines.push("  tack://context/facts            Implementation status and spec guardrails");
-  lines.push("  tack://context/machine_state    Raw _audit.yaml and _drift.yaml");
   lines.push("  tack://context/decisions_recent Recent decisions summary");
+  lines.push("  tack://context/machine_state    Raw _audit.yaml and _drift.yaml for deep inspection");
   lines.push("  tack://handoff/latest           Latest handoff JSON (canonical)");
   lines.push("");
   lines.push("Write back using MCP tools:");
@@ -304,7 +306,9 @@ function toMarkdown(report: HandoffReport): string {
   lines.push("  log_decision          Record a decision with reasoning");
   lines.push("  log_agent_note        Leave context for the next agent");
   lines.push("");
-  lines.push("Fast start: read tack://session first, then tack://context/facts before changes that could affect guardrails.");
+  lines.push(
+    "Fast start: read tack://session first, then tack://context/workspace, then tack://context/facts before changes that could affect guardrails."
+  );
   lines.push("Use tack://handoff/latest when you need the full structured project summary.");
   lines.push("");
   lines.push("### Option B: Direct File Access");
@@ -601,38 +605,14 @@ export function generateHandoff(): {
       source_type: "deterministic",
     },
     agent_guide: {
-      mcp_resources: [
-        {
-          uri: "tack://session",
-          description: "Compact canonical project snapshot for agent orientation",
-        },
-        {
-          uri: "tack://context/intent",
-          description:
-            "North star, current focus, goals/non-goals, open questions, decisions",
-        },
-        {
-          uri: "tack://context/facts",
-          description: "Implementation status and spec guardrails",
-        },
-        {
-          uri: "tack://context/machine_state",
-          description: "Raw _audit.yaml and _drift.yaml",
-        },
-        {
-          uri: "tack://context/decisions_recent",
-          description: "Recent decisions summary",
-        },
-        {
-          uri: "tack://handoff/latest",
-          description: "Latest handoff JSON (canonical summary for agents)",
-        },
-      ],
-      mcp_tools: [
-        { name: "checkpoint_work", description: "Record completed, partial, or blocked work in one call" },
-        { name: "log_decision", description: "Record a decision with reasoning" },
-        { name: "log_agent_note", description: "Leave context for the next agent" },
-      ],
+      mcp_resources: TACK_MCP_RESOURCES.map((resource) => ({
+        uri: resource.uri,
+        description: resource.description,
+      })),
+      mcp_tools: TACK_MCP_TOOLS.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+      })),
       direct_file_access: {
         read: [
           { path: ".tack/spec.yaml", description: "Architecture guardrails" },

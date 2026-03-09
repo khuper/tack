@@ -14,7 +14,7 @@ test("formats MCP resource activity events", () => {
   };
 
   assert.strictEqual(isMcpActivityEvent(event), true);
-  assert.strictEqual(formatMcpActivityEvent(event), "MCP read context/intent");
+  assert.strictEqual(formatMcpActivityEvent(event), "read context");
 });
 
 test("formats MCP tool activity events", () => {
@@ -22,10 +22,11 @@ test("formats MCP tool activity events", () => {
     ts: "2026-03-07T20:00:00.000Z",
     event: "mcp:tool",
     tool: "log_agent_note",
+    summary: 'saved: "captured a useful note"',
   };
 
   assert.strictEqual(isMcpActivityEvent(event), true);
-  assert.strictEqual(formatMcpActivityEvent(event), "MCP called log_agent_note");
+  assert.strictEqual(formatMcpActivityEvent(event), 'saved: "captured a useful note"');
 });
 
 test("keeps MCP activity labels stable across repeated resource reads and tool calls", () => {
@@ -43,17 +44,19 @@ test("keeps MCP activity labels stable across repeated resource reads and tool c
     ts: "2026-03-07T20:00:00.000Z",
     event: "mcp:tool",
     tool: "log_agent_note",
+    summary: 'saved: "captured a useful note"',
   };
   const toolCallB = {
     ts: "2026-03-07T20:00:02.000Z",
     event: "mcp:tool",
     tool: "log_agent_note",
+    summary: 'saved: "captured a useful note"',
   };
 
-  assert.strictEqual(formatMcpActivityEvent(resourceReadA), "MCP read context/intent");
-  assert.strictEqual(formatMcpActivityEvent(resourceReadB), "MCP read context/intent");
-  assert.strictEqual(formatMcpActivityEvent(toolCallA), "MCP called log_agent_note");
-  assert.strictEqual(formatMcpActivityEvent(toolCallB), "MCP called log_agent_note");
+  assert.strictEqual(formatMcpActivityEvent(resourceReadA), "read context");
+  assert.strictEqual(formatMcpActivityEvent(resourceReadB), "read context");
+  assert.strictEqual(formatMcpActivityEvent(toolCallA), 'saved: "captured a useful note"');
+  assert.strictEqual(formatMcpActivityEvent(toolCallB), 'saved: "captured a useful note"');
 });
 
 test("ignores non-MCP log events", () => {
@@ -78,14 +81,18 @@ test("suppresses repeated MCP activity bursts for the same resource", () => {
     fs.writeFileSync(logsPath(), "", "utf-8");
 
     const monitor = createMcpActivityMonitor();
-    log({ event: "mcp:resource", resource: "tack://context/intent" });
-    log({ event: "mcp:resource", resource: "tack://context/intent" });
-    log({ event: "mcp:tool", tool: "log_agent_note" });
+    log({ event: "mcp:resource", resource: "tack://session", summary: "briefed: 4 rules, 3 recent decisions" });
+    log({
+      event: "mcp:resource",
+      resource: "tack://context/workspace",
+      summary: "briefed: 4 rules, 3 recent decisions",
+    });
+    log({ event: "mcp:tool", tool: "log_agent_note", summary: 'saved: "captured a useful note"' });
 
     const notices = monitor();
     assert.strictEqual(notices.length, 2);
-    assert.strictEqual(notices[0].message, "MCP read context/intent");
-    assert.strictEqual(notices[1].message, "MCP called log_agent_note");
+    assert.strictEqual(notices[0].message, "briefed: 4 rules, 3 recent decisions");
+    assert.strictEqual(notices[1].message, 'saved: "captured a useful note"');
     assert.strictEqual(monitor().length, 0);
   } finally {
     process.chdir(originalCwd);

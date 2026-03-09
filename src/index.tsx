@@ -25,6 +25,7 @@ import { compactNotes } from "./lib/notes.js";
 import { runDiffPlain } from "./plain/diff.js";
 import { formatMissingTackContextMessage, tackDirExists } from "./lib/files.js";
 import { resolveAnimationsEnabled } from "./lib/animation.js";
+import { readPackageMeta } from "./lib/packageMeta.js";
 
 const ASCII_LOGO = `
  ████████╗ █████╗  ██████╗██╗  ██╗
@@ -36,10 +37,8 @@ const ASCII_LOGO = `
 `;
 
 import updateNotifier from "update-notifier";
-import { readFileSync } from "node:fs";
 
-const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
-const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+const pkg = readPackageMeta();
 const args = minimist(process.argv.slice(2));
 const rawCommand = args._[0] as string | undefined;
 const shouldCheckForUpdates =
@@ -292,7 +291,7 @@ if (normalizedCommand === "note") {
 if (!shouldUseInk) {
   if (normalizedCommand === "init") {
     try {
-      process.exit(runInitPlain() ? 0 : 1);
+      process.exit((await runInitPlain()) ? 0 : 1);
     } catch (err) {
       printFatal(err);
     }

@@ -44,6 +44,7 @@ import type {
 import { archiveOldHandoffs } from "./compaction.js";
 import { contextRefToString, parseContextPack } from "./contextPack.js";
 import { readNotes, formatRelativeTime } from "../lib/notes.js";
+import { buildStartHereLines, getMemoryWarnings } from "./memory.js";
 
 function sourceFile(file: string, line?: number): SourceRef {
   return typeof line === "number" ? { file, line } : { file };
@@ -121,16 +122,49 @@ function toChangedFiles(): HandoffChangedFile[] {
   }));
 }
 
-/** Parse verification.md: bullet lines (- or *) or numbered lines (1. 2.) into step strings. */
+/** Parse verification.md into step strings, preferring a dedicated "## Steps" section. */
 function parseVerificationSteps(content: string): string[] {
-  const steps: string[] = [];
-  for (const line of content.split("\n")) {
+  const parseStepLine = (line: string): string | null => {
     const trimmed = line.trim();
     const bullet = /^[-*]\s+(.+)$/.exec(trimmed);
     const numbered = /^\d+[.)]\s+(.+)$/.exec(trimmed);
-    if (bullet) steps.push(bullet[1]!.trim());
-    else if (numbered) steps.push(numbered[1]!.trim());
+    if (bullet) return bullet[1]!.trim();
+    if (numbered) return numbered[1]!.trim();
+    return null;
+  };
+
+  const lines = content.split("\n");
+  const steps: string[] = [];
+  const hasHeadings = lines.some((line) => line.trim().startsWith("## "));
+
+  if (!hasHeadings) {
+    for (const line of lines) {
+      const step = parseStepLine(line);
+      if (step) steps.push(step);
+    }
+    return steps.filter((s) => s.length > 0);
   }
+
+  let inStepsSection = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.toLowerCase() === "## steps") {
+      inStepsSection = true;
+      continue;
+    }
+    if (inStepsSection && trimmed.startsWith("## ")) {
+      break;
+    }
+    if (!inStepsSection) {
+      continue;
+    }
+
+    const step = parseStepLine(line);
+    if (step) {
+      steps.push(step);
+    }
+  }
+
   return steps.filter((s) => s.length > 0);
 }
 
@@ -153,14 +187,14 @@ function deriveNextSteps(params: {
   for (const d of params.driftItems) {
     if (steps.length >= 5) break;
     steps.push({
-      text: `Resolve drift: ${d.system ?? d.risk ?? d.type} — ${d.message}`,
+      text: `Resolve drift: ${d.system ?? d.risk ?? d.type} - ${d.message}`,
       source: d.source,
     });
   }
 
   if (params.allowed.length === 0 && params.forbidden.length === 0 && steps.length < 5) {
     steps.push({
-      text: "Configure guardrails in spec.yaml — currently empty",
+      text: "Configure guardrails in spec.yaml - currently empty",
       source: sourceFile(".tack/spec.yaml"),
     });
   }
@@ -256,7 +290,10 @@ function toMarkdown(report: HandoffReport): string {
   lines.push("");
   lines.push("### Option A: MCP (recommended if available)");
   lines.push("Connect to the Tack MCP server for live project context:");
-  lines.push("  tack://context/intent           North star, goals, open questions, decisions");
+  lines.push("  tack://context/start_here       Compact bootstrap and memory hygiene guidance");
+  lines.push(
+    "  tack://context/intent           North star, current focus, goals/non-goals, open questions, decisions"
+  );
   lines.push("  tack://context/facts            Implementation status and spec guardrails");
   lines.push("  tack://context/machine_state    Raw _audit.yaml and _drift.yaml");
   lines.push("  tack://context/decisions_recent Recent decisions summary");
@@ -265,6 +302,9 @@ function toMarkdown(report: HandoffReport): string {
   lines.push("Write back using MCP tools:");
   lines.push("  log_decision          Record a decision with reasoning");
   lines.push("  log_agent_note        Leave context for the next agent");
+  lines.push("");
+  lines.push("### Fast Start");
+  renderList(lines, buildStartHereLines(), 8);
   lines.push("");
   lines.push("### Option B: Direct File Access");
   lines.push("Read these files in .tack/ for project context:");
@@ -279,7 +319,7 @@ function toMarkdown(report: HandoffReport): string {
   lines.push("  .tack/_notes.ndjson         Agent notes (failed approaches, blockers, partial work)");
   lines.push("");
   lines.push("Write to these files to leave context:");
-  lines.push("  .tack/decisions.md      Append: - [YYYY-MM-DD] {decision} — {reasoning}");
+  lines.push("  .tack/decisions.md      Append: - [YYYY-MM-DD] {decision} - {reasoning}");
   lines.push('  .tack/_notes.ndjson     Append JSON: {"ts":"...","type":"...","message":"...","actor":"agent:{name}"}');
   lines.push("");
   lines.push("Note types for _notes.ndjson: tried, unfinished, discovered, blocked, warning");
@@ -303,6 +343,11 @@ function toMarkdown(report: HandoffReport): string {
 
   lines.push("## Summary");
   lines.push(sanitizeMd(report.summary));
+  if (report.memory_warnings.length > 0) {
+    lines.push("");
+    lines.push("## Memory Hygiene");
+    renderList(lines, report.memory_warnings.map((warning) => sanitizeMd(warning)));
+  }
 
   lines.push("");
   lines.push("## Agent Priorities");
@@ -324,14 +369,62 @@ function toMarkdown(report: HandoffReport): string {
     "- If `.tack/` and code appear to disagree, assume `.tack/` is stale, repair it first (via `tack status` / `tack watch`), then proceed."
   );
 
-  if (report.north_star.length > 0) {
+  if (
+    report.north_star.length > 0 ||
+    report.current_focus.length > 0 ||
+    report.goals.length > 0 ||
+    report.non_goals.length > 0
+  ) {
     lines.push("");
     lines.push("## 1) North Star");
     lines.push(freshnessLine("context.md", contextPath()));
-    renderList(
-      lines,
-      report.north_star.map((item) => `${sanitizeMd(item.text)} (${contextRefToString(item.source)})`)
-    );
+    if (report.north_star.length === 0) {
+      lines.push("- none tracked");
+    } else {
+      renderList(
+        lines,
+        report.north_star.map(
+          (item) => `${sanitizeMd(item.text)} (${contextRefToString(item.source)})`
+        )
+      );
+    }
+
+    if (report.current_focus.length > 0) {
+      lines.push("");
+      lines.push("### Current Focus");
+      renderList(
+        lines,
+        report.current_focus.map(
+          (item) => `${sanitizeMd(item.text)} (${contextRefToString(item.source)})`
+        )
+      );
+    }
+
+    if (report.goals.length > 0 || report.non_goals.length > 0) {
+      lines.push("");
+      lines.push("### Goals");
+      if (report.goals.length === 0) {
+        lines.push("- none tracked");
+      } else {
+        renderList(
+          lines,
+          report.goals.map((item) => `${sanitizeMd(item.text)} (${contextRefToString(item.source)})`)
+        );
+      }
+
+      lines.push("");
+      lines.push("### Non-Goals");
+      if (report.non_goals.length === 0) {
+        lines.push("- none tracked");
+      } else {
+        renderList(
+          lines,
+          report.non_goals.map(
+            (item) => `${sanitizeMd(item.text)} (${contextRefToString(item.source)})`
+          )
+        );
+      }
+    }
   }
 
   lines.push("");
@@ -439,7 +532,7 @@ function toMarkdown(report: HandoffReport): string {
     renderList(
       lines,
       report.recent_decisions.map((d) => {
-        return `[${sanitizeMd(d.date)}] ${sanitizeMd(d.decision)} — ${sanitizeMd(d.reasoning)}`;
+        return `[${sanitizeMd(d.date)}] ${sanitizeMd(d.decision)} - ${sanitizeMd(d.reasoning)}`;
       })
     );
   }
@@ -509,8 +602,13 @@ export function generateHandoff(): {
     agent_guide: {
       mcp_resources: [
         {
+          uri: "tack://context/start_here",
+          description: "Compact bootstrap and memory hygiene guidance",
+        },
+        {
           uri: "tack://context/intent",
-          description: "North star, goals, open questions, decisions",
+          description:
+            "North star, current focus, goals/non-goals, open questions, decisions",
         },
         {
           uri: "tack://context/facts",
@@ -551,7 +649,7 @@ export function generateHandoff(): {
           { path: ".tack/verification.md", description: "Validation/verification steps (commands to run after changes)" },
         ],
         append: [
-          { path: ".tack/decisions.md", format: "- [YYYY-MM-DD] {decision} — {reasoning}" },
+          { path: ".tack/decisions.md", format: "- [YYYY-MM-DD] {decision} - {reasoning}" },
           {
             path: ".tack/_notes.ndjson",
             format:
@@ -568,7 +666,11 @@ export function generateHandoff(): {
       git_branch: getCurrentBranch(),
     },
     summary: "",
+    memory_warnings: getMemoryWarnings(changedFiles),
     north_star: context.north_star,
+    current_focus: context.current_focus,
+    goals: context.goals,
+    non_goals: context.non_goals,
     implementation_status: context.implementation_status,
     guardrails: {
       allowed_systems: spec?.allowed_systems ?? [],

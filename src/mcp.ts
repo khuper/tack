@@ -4,17 +4,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import {
-  contextPath,
-  goalsPath,
-  openQuestionsPath,
-  decisionsPath,
   implementationStatusPath,
   specPath,
   auditPath,
   driftPath,
   handoffsDirPath,
 } from "./lib/files.js";
-import { parseContextPack } from "./engine/contextPack.js";
+import { contextRefToString, parseContextPack } from "./engine/contextPack.js";
+import { buildStartHereLines } from "./engine/memory.js";
 import { wrapUntrustedContext } from "./lib/promptSafety.js";
 import { appendDecision, normalizeDecisionActor } from "./engine/decisions.js";
 import { log } from "./lib/logger.js";
@@ -83,38 +80,81 @@ async function main(): Promise<void> {
     "tack://context/intent",
     {
       title: "Tack Context – Intent",
-      description: "High-level North Star, goals, and open questions for this project.",
+      description:
+        "High-level North Star, Current Focus, Goals, Non-Goals, open questions, and decisions.",
       mimeType: "text/markdown",
     },
     async (uri: URL) => {
       log({ event: "mcp:resource", resource: uri.href });
-      const parts: string[] = [];
+      const pack = parseContextPack();
+      const lines: string[] = ["# Intent Context", ""];
 
-      const context = safeReadFile(contextPath());
-      if (context) {
-        parts.push("# context.md", "", context.trim(), "");
-      }
+      const pushList = (title: string, items: string[]): void => {
+        lines.push(`## ${title}`);
+        if (items.length === 0) {
+          lines.push("- none tracked");
+        } else {
+          for (const item of items) {
+            lines.push(`- ${item}`);
+          }
+        }
+        lines.push("");
+      };
 
-      const goals = safeReadFile(goalsPath());
-      if (goals) {
-        parts.push("# goals.md", "", goals.trim(), "");
-      }
+      pushList(
+        "North Star",
+        pack.north_star.map((item) => `${item.text} (${contextRefToString(item.source)})`)
+      );
+      pushList(
+        "Current Focus",
+        pack.current_focus.map((item) => `${item.text} (${contextRefToString(item.source)})`)
+      );
+      pushList(
+        "Goals",
+        pack.goals.map((item) => `${item.text} (${contextRefToString(item.source)})`)
+      );
+      pushList(
+        "Non-Goals",
+        pack.non_goals.map((item) => `${item.text} (${contextRefToString(item.source)})`)
+      );
+      pushList(
+        "Open Questions",
+        pack.open_questions
+          .filter((q) => q.status === "open" || q.status === "unknown")
+          .slice(0, 8)
+          .map((q) => `[${q.status}] ${q.text} (${contextRefToString(q.source)})`)
+      );
+      pushList(
+        "Recent Decisions",
+        pack.decisions.slice(-8).map((d) => `[${d.date}] ${d.decision} - ${d.reasoning}`)
+      );
 
-      const open = safeReadFile(openQuestionsPath());
-      if (open) {
-        parts.push("# open_questions.md", "", open.trim(), "");
-      }
-
-      const decisions = safeReadFile(decisionsPath());
-      if (decisions) {
-        parts.push("# decisions.md", "", decisions.trim(), "");
-      }
-
-      const text =
-        parts.length > 0
-          ? parts.join("\n").trimEnd()
-          : "No context docs found in .tack/.";
+      const text = lines.join("\n").trimEnd();
       const wrapped = wrapUntrustedContext(text, "tack://context/intent");
+
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            text: wrapped,
+          },
+        ],
+      };
+    }
+  );
+
+  server.registerResource(
+    "start-here",
+    "tack://context/start_here",
+    {
+      title: "Tack Context - Start Here",
+      description: "Compact bootstrap instructions and memory hygiene guidance for agents.",
+      mimeType: "text/markdown",
+    },
+    async (uri: URL) => {
+      log({ event: "mcp:resource", resource: uri.href });
+      const lines = ["# Start Here", "", ...buildStartHereLines()];
+      const wrapped = wrapUntrustedContext(lines.join("\n"), "tack://context/start_here");
 
       return {
         contents: [

@@ -188,6 +188,7 @@ export type ImplementationStatusEntry = {
 
 export type ContextPack = {
   north_star: ContextBullet[];
+  current_focus: ContextBullet[];
   goals: ContextBullet[];
   non_goals: ContextBullet[];
   assumptions: ContextQuestion[];
@@ -254,7 +255,11 @@ export type HandoffReport = {
     git_branch: string;
   };
   summary: string;
+  memory_warnings: string[];
   north_star: ContextBullet[];
+  current_focus: ContextBullet[];
+  goals: ContextBullet[];
+  non_goals: ContextBullet[];
   implementation_status: ImplementationStatusEntry[];
   guardrails: {
     allowed_systems: string[];
@@ -289,6 +294,7 @@ export type ProjectStatus = {
   driftCount: number;
   driftItems: ProjectStatusItem[];
   lastScan: string | null;
+  memoryWarnings: string[];
 };
 
 export const KNOWN_SYSTEM_IDS = [

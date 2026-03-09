@@ -12,4 +12,10 @@ export function printStatusPlain(status: ProjectStatus): void {
     }
   }
   console.log(`${gray("Last scan:")} ${blue(status.lastScan ?? "never")}`);
+  if (status.memoryWarnings.length > 0) {
+    console.log(`${bold("Memory:")} ${red("attention needed")}`);
+    for (const warning of status.memoryWarnings) {
+      console.log(`  - ${warning}`);
+    }
+  }
 }

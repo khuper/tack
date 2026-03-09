@@ -5,6 +5,8 @@ import { readSpec, writeAudit } from "../lib/files.js";
 import { createAudit } from "../lib/signals.js";
 import type { ProjectStatus, Signal, Spec, SpecDiff, DriftState } from "../lib/signals.js";
 import { log } from "../lib/logger.js";
+import { getMemoryWarnings } from "./memory.js";
+import { getChangedFiles } from "../lib/git.js";
 
 export type StatusResult = {
   spec: Spec;
@@ -19,6 +21,7 @@ export function buildProjectStatus(spec: Spec, diff: SpecDiff, drift: DriftState
     system: item.system ?? item.risk ?? item.type,
     message: item.signal,
   }));
+  const changedFiles = getChangedFiles();
 
   return {
     name: spec.project,
@@ -26,6 +29,7 @@ export function buildProjectStatus(spec: Spec, diff: SpecDiff, drift: DriftState
     driftCount: unresolved.length,
     driftItems,
     lastScan: new Date().toISOString(),
+    memoryWarnings: getMemoryWarnings(changedFiles),
   };
 }
 

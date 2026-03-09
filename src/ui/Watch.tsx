@@ -11,6 +11,8 @@ import { createAudit } from "../lib/signals.js";
 import { runAllDetectors } from "../detectors/index.js";
 import { compareSpec } from "../engine/compareSpec.js";
 import { computeDrift } from "../engine/computeDrift.js";
+import { getMemoryWarnings } from "../engine/memory.js";
+import { getChangedFiles } from "../lib/git.js";
 import { notify } from "../lib/notify.js";
 import { log, createMcpActivityMonitor, type McpActivityNotice } from "../lib/logger.js";
 
@@ -70,6 +72,7 @@ export function Watch({ animationsEnabled }: WatchProps) {
   const [pendingAlerts, setPendingAlerts] = useState<DriftItem[]>([]);
   const [projectName, setProjectName] = useState("unknown");
   const [history, setHistory] = useState<HistoryEvent[]>([]);
+  const [memoryWarnings, setMemoryWarnings] = useState<string[]>([]);
   const [mascotMode, setMascotMode] = useState<"idle" | "scan" | "mcp">("idle");
   const [mascotAnimated, setMascotAnimated] = useState(animationsEnabled);
   const [cargoCount, setCargoCount] = useState(0);
@@ -128,6 +131,7 @@ export function Watch({ animationsEnabled }: WatchProps) {
     setSystemCount(diff.aligned.filter((signal) => signal.category === "system").length);
     setDriftCount(unresolvedCount);
     setLastScan(new Date().toLocaleTimeString());
+    setMemoryWarnings(getMemoryWarnings(getChangedFiles()));
 
     const scanTs = new Date().toLocaleTimeString();
     if (unresolvedCount === 0) {
@@ -267,6 +271,17 @@ export function Watch({ animationsEnabled }: WatchProps) {
           <Text dimColor>
             Watching for changes and MCP activity... (q to quit, a to {mascotAnimated ? "freeze" : "animate"} deckhand)
           </Text>
+        </Box>
+      )}
+
+      {memoryWarnings.length > 0 && (
+        <Box marginTop={1} flexDirection="column">
+          <Text color="yellow">Memory hygiene</Text>
+          {memoryWarnings.map((warning) => (
+            <Text key={warning} color="yellow">
+              - {warning}
+            </Text>
+          ))}
         </Box>
       )}
 

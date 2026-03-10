@@ -1,11 +1,29 @@
 import { getChangedFiles } from "../lib/git.js";
 import { readRecentLogs } from "../lib/logger.js";
-import { readNotes } from "../lib/notes.js";
-import type { LogEvent } from "../lib/signals.js";
+import { formatRelativeTime, readNotes } from "../lib/notes.js";
+import { TACK_MCP_TOOLS } from "../lib/mcpCatalog.js";
+import type { AgentNote, LogEvent } from "../lib/signals.js";
 import { parseContextPack, contextRefToString } from "./contextPack.js";
 import { readAudit, readDrift, readSpec } from "../lib/files.js";
 
 const RECENT_WRITE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const STALE_UNFINISHED_MS = 48 * 60 * 60 * 1000;
+const SESSION_ANALYSIS_LOG_LIMIT = 5000;
+const SESSION_MIN_COUNT = 3;
+const SESSION_USAGE_WINDOW = 5;
+const MCP_WRITE_TOOLS = new Set(["checkpoint_work", "log_decision", "log_agent_note"]);
+
+type SessionPatterns = {
+  repeated_blockers: string[];
+  rediscovered: string[];
+  stale_unfinished: string[];
+  read_write_ratio: string | null;
+  unused_tools: string | null;
+};
+
+type SessionWindow = {
+  events: LogEvent[];
+};
 
 function hasRecentEvent(
   events: LogEvent[],
@@ -25,6 +43,7 @@ export function getMemoryWarnings(changedFiles = getChangedFiles()): string[] {
   const warnings: string[] = [];
   const recentLogs = readRecentLogs<LogEvent>(200);
   const notes = readNotes({ limit: 10 });
+  const patterns = analyzeSessionPatterns();
 
   if (notes.length === 0) {
     warnings.push("No agent notes recorded yet. Use log_agent_note to preserve discoveries and partial work.");
@@ -32,6 +51,14 @@ export function getMemoryWarnings(changedFiles = getChangedFiles()): string[] {
 
   if (!recentLogs.some((event) => event.event === "decision")) {
     warnings.push("No decisions logged yet. Use log_decision when behavior or guardrails change.");
+  }
+
+  if (patterns.repeated_blockers.length > 0) {
+    warnings.push("Recurring blocker detected. Check session patterns before starting work.");
+  }
+
+  if (patterns.stale_unfinished.length > 0) {
+    warnings.push("Stale unfinished work exists. Consider continuing it or closing it out.");
   }
 
   if (changedFiles.length > 0 && !hasRecentEvent(recentLogs, (event) => event.event === "note:added")) {
@@ -42,7 +69,7 @@ export function getMemoryWarnings(changedFiles = getChangedFiles()): string[] {
     warnings.push("No recent MCP write-back detected. Agents may be reading context without updating memory.");
   }
 
-  return warnings.slice(0, 3);
+  return warnings.slice(0, 4);
 }
 
 function pushBullets(lines: string[], title: string, items: string[], limit = 5): void {
@@ -158,6 +185,10 @@ function normalizeText(value: string): string {
   return value.toLowerCase().replace(/[_-]+/g, " ").trim();
 }
 
+function stripCheckpointPrefix(value: string): string {
+  return value.replace(/^(blocked|partial|completed):\s*/i, "").trim();
+}
+
 function includesTerm(haystack: string, needle: string): boolean {
   const normalizedNeedle = normalizeText(needle);
   if (!normalizedNeedle) return false;
@@ -199,6 +230,241 @@ function toSearchTokens(value: string): string[] {
     .filter((token) => token.length >= 3 && !STOP_WORDS.has(token));
 
   return Array.from(new Set(tokens));
+}
+
+function truncateText(value: string, maxLength = 88): string {
+  const text = value.trim();
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}...`;
+}
+
+function uniqueRelatedFiles(notes: AgentNote[]): string[] {
+  return Array.from(
+    new Set(
+      notes.flatMap((note) =>
+        (note.related_files ?? []).map((filepath) => normalizeText(filepath)).filter((filepath) => filepath.length > 0)
+      )
+    )
+  );
+}
+
+function noteTokenSet(note: AgentNote): Set<string> {
+  return new Set(toSearchTokens(stripCheckpointPrefix(note.message)));
+}
+
+function notesShareFiles(a: AgentNote, b: AgentNote): boolean {
+  const related = new Set(
+    (a.related_files ?? []).map((filepath) => normalizeText(filepath)).filter((filepath) => filepath.length > 0)
+  );
+  if (related.size === 0) {
+    return false;
+  }
+
+  return (b.related_files ?? []).some((filepath) => related.has(normalizeText(filepath)));
+}
+
+function notesAreSimilar(a: AgentNote, b: AgentNote): boolean {
+  const aTokens = noteTokenSet(a);
+  const bTokens = noteTokenSet(b);
+  if (aTokens.size === 0 || bTokens.size === 0) {
+    return false;
+  }
+
+  let overlap = 0;
+  for (const token of aTokens) {
+    if (bTokens.has(token)) {
+      overlap += 1;
+    }
+  }
+
+  if (notesShareFiles(a, b) && overlap > 0) {
+    return true;
+  }
+
+  return overlap / Math.min(aTokens.size, bTokens.size) >= 0.5;
+}
+
+function groupSimilarNotes(notes: AgentNote[]): AgentNote[][] {
+  const groups: AgentNote[][] = [];
+  const ordered = [...notes].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+
+  for (const note of ordered) {
+    const group = groups.find((candidate) => candidate.some((item) => notesAreSimilar(item, note)));
+    if (group) {
+      group.push(note);
+    } else {
+      groups.push([note]);
+    }
+  }
+
+  return groups;
+}
+
+function summarizePatternTopic(notes: AgentNote[]): string {
+  if (notes.length === 0) {
+    return "unknown";
+  }
+
+  const sharedTokens = toSearchTokens(stripCheckpointPrefix(notes[0]!.message)).filter((token) =>
+    notes.every((note) => toSearchTokens(stripCheckpointPrefix(note.message)).includes(token))
+  );
+
+  if (sharedTokens.length >= 2) {
+    return sharedTokens.slice(0, 6).join(" ");
+  }
+
+  return truncateText(stripCheckpointPrefix(notes[0]!.message), 72);
+}
+
+function formatFilesSuffix(files: string[]): string {
+  return files.length > 0 ? ` (files: ${files.slice(0, 2).join(", ")})` : "";
+}
+
+function buildSessionWindows(logs: LogEvent[]): SessionWindow[] {
+  if (!logs.some((event) => event.event === "mcp:resource" && event.resource === "tack://session")) {
+    return [];
+  }
+
+  const windows: SessionWindow[] = [];
+  let current: SessionWindow | null = null;
+
+  for (const event of logs) {
+    if (event.event === "mcp:resource" && event.resource === "tack://session") {
+      if (current) {
+        windows.push(current);
+      }
+      current = { events: [event] };
+      continue;
+    }
+
+    if (current) {
+      current.events.push(event);
+    }
+  }
+
+  if (current) {
+    windows.push(current);
+  }
+
+  return windows;
+}
+
+function countSessionPatternSignals(patterns: SessionPatterns): number {
+  return (
+    patterns.repeated_blockers.length +
+    patterns.rediscovered.length +
+    patterns.stale_unfinished.length +
+    (patterns.read_write_ratio ? 1 : 0) +
+    (patterns.unused_tools ? 1 : 0)
+  );
+}
+
+export function analyzeSessionPatterns(): SessionPatterns {
+  const logs = readRecentLogs<LogEvent>(SESSION_ANALYSIS_LOG_LIMIT);
+  const sessions = buildSessionWindows(logs);
+  if (sessions.length < SESSION_MIN_COUNT) {
+    return {
+      repeated_blockers: [],
+      rediscovered: [],
+      stale_unfinished: [],
+      read_write_ratio: null,
+      unused_tools: null,
+    };
+  }
+
+  const notes = readNotes({ limit: -1 });
+  const blockedGroups = groupSimilarNotes(notes.filter((note) => note.type === "blocked"))
+    .filter((group) => group.length >= 2)
+    .sort((a, b) => b.length - a.length);
+  const repeated_blockers = blockedGroups.slice(0, 2).map((group) => {
+    const files = uniqueRelatedFiles(group);
+    return `[repeated blocker] ${group.length} notes hit: ${summarizePatternTopic(group)}${formatFilesSuffix(files)}. Read the earlier blocker notes before retrying.`;
+  });
+
+  const rediscoveredGroups = groupSimilarNotes(notes.filter((note) => note.type === "discovered"))
+    .filter((group) => new Set(group.map((note) => note.actor)).size >= 2)
+    .sort((a, b) => b.length - a.length);
+  const rediscovered = rediscoveredGroups.slice(0, 2).map((group) => {
+    const files = uniqueRelatedFiles(group);
+    return `[rediscovered] ${new Set(group.map((note) => note.actor)).size} agents independently found: ${summarizePatternTopic(group)}${formatFilesSuffix(files)}. Capture it in a checkpoint or decision if it still matters.`;
+  });
+
+  const completedNotes = notes.filter(
+    (note) => note.type === "discovered" && /^completed:/i.test(note.message.trim())
+  );
+  const now = Date.now();
+  const stale_unfinished = notes
+    .filter((note) => note.type === "unfinished")
+    .filter((note) => {
+      const tsMs = Date.parse(note.ts);
+      if (!Number.isFinite(tsMs) || now - tsMs < STALE_UNFINISHED_MS) {
+        return false;
+      }
+
+      const files = new Set(
+        (note.related_files ?? []).map((filepath) => normalizeText(filepath)).filter((filepath) => filepath.length > 0)
+      );
+      if (files.size === 0) {
+        return true;
+      }
+
+      return !completedNotes.some((candidate) => {
+        const completedAt = Date.parse(candidate.ts);
+        if (!Number.isFinite(completedAt) || completedAt <= tsMs) {
+          return false;
+        }
+
+        return (candidate.related_files ?? []).some((filepath) => files.has(normalizeText(filepath)));
+      });
+    })
+    .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))
+    .slice(0, 2)
+    .map((note) => {
+      const files = uniqueRelatedFiles([note]);
+      return `[stale] ${formatRelativeTime(note.ts)} unfinished: ${truncateText(stripCheckpointPrefix(note.message), 72)}${formatFilesSuffix(files)}. Resume it or close it out.`;
+    });
+
+  const recentSessions = sessions.slice(-SESSION_USAGE_WINDOW);
+  const readWithoutWriteCount = recentSessions.filter(
+    (session) =>
+      !session.events.some(
+        (event) => event.event === "mcp:tool" && MCP_WRITE_TOOLS.has(event.tool)
+      )
+  ).length;
+  const read_write_ratio =
+    readWithoutWriteCount > 0
+      ? `${readWithoutWriteCount} of last ${recentSessions.length} sessions read context without writing back.`
+      : null;
+
+  const usedTools = new Set(
+    recentSessions.flatMap((session) =>
+      session.events
+        .filter((event): event is LogEvent & { event: "mcp:tool"; tool: string } => event.event === "mcp:tool")
+        .map((event) => event.tool)
+    )
+  );
+  const unusedTools = TACK_MCP_TOOLS.map((tool) => tool.name).filter((tool) => !usedTools.has(tool));
+  const spec = readSpec();
+  const hasGuardrails =
+    !!spec &&
+    (spec.allowed_systems.length > 0 ||
+      spec.forbidden_systems.length > 0 ||
+      Object.keys(spec.constraints).length > 0);
+  const unused_tools =
+    hasGuardrails && unusedTools.includes("check_rule")
+      ? `check_rule hasn't been used in the last ${recentSessions.length} sessions despite active guardrails.`
+      : null;
+
+  return {
+    repeated_blockers,
+    rediscovered,
+    stale_unfinished,
+    read_write_ratio,
+    unused_tools,
+  };
 }
 
 function scoreOverlap(questionTokens: string[], text: string): number {
@@ -303,6 +569,7 @@ export function buildSessionLines(): string[] {
   const changedFiles = getChangedFiles();
   const warnings = getMemoryWarnings(changedFiles);
   const recentNotes = readNotes({ limit: 3 });
+  const patterns = analyzeSessionPatterns();
   const lines: string[] = ["# Session Start", ""];
 
   lines.push(`Project: ${(spec?.project && spec.project.trim()) || "unknown"}`);
@@ -344,6 +611,15 @@ export function buildSessionLines(): string[] {
     recentNotes.map((item) => `[${item.type}] ${item.message} (${item.actor})`),
     3
   );
+
+  const patternLines = [...patterns.repeated_blockers, ...patterns.stale_unfinished, ...patterns.rediscovered].slice(0, 3);
+  if (patternLines.length > 0) {
+    lines.push("## Session Patterns");
+    for (const item of patternLines) {
+      lines.push(`- ${item}`);
+    }
+    lines.push("");
+  }
 
   lines.push("## Memory Hygiene");
   if (warnings.length === 0) {
@@ -393,6 +669,7 @@ export function buildBriefingResult(): BriefingResult {
   const spec = readSpec();
   const pack = parseContextPack();
   const unresolvedDrift = readDrift().items.filter((item) => item.status === "unresolved");
+  const patterns = analyzeSessionPatterns();
   const systems = (readAudit()?.signals.systems ?? []).map((signal) =>
     signal.detail ? `${signal.id}=${signal.detail}` : signal.id
   );
@@ -425,6 +702,7 @@ export function buildBriefingResult(): BriefingResult {
     `Detected: ${detected}.`,
     `Recent decisions: ${decisions}.`,
     `Open drift: ${drift}.`,
+    `Patterns: ${countSessionPatternSignals(patterns) > 0 ? `${countSessionPatternSignals(patterns)} recurring issues` : "none"}.`,
     briefingWriteBackSummary(),
   ];
 

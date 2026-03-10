@@ -2,330 +2,147 @@
 
 [![npm version](https://img.shields.io/npm/v/tack-cli.svg)](https://www.npmjs.com/package/tack-cli) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Architecture drift guard. You declare the spec; Tack checks your code against it.
+Tack gives coding agents compact project memory across sessions.
 
-## Why Tack
+It keeps a shared record of your architecture, decisions, notes, drift, and handoffs in `./.tack/` so a new agent session can start with the smallest useful context instead of re-learning the repo from scratch.
 
-`tack` keeps a single, shared picture of your architecture and how it changes over time.
+## Quick Start
 
-It gives agents and humans a shared project memory that survives across sessions:
-
-- Captures your intended architecture in `spec.yaml` and a small set of context docs.
-- Detects architecture signals in code and tracks drift from the spec over time.
-- Generates handoff artifacts (`.md` + canonical `.json`) for the next agent or session.
-- Preserves machine history in append-only logs instead of ad-hoc console output.
-- Records explicit decisions and notes so future sessions can see why changes happened.
-
-## Persistent Context in `.tack/`
-
-All Tack state lives in `./.tack/`, so you can stop and resume work (or swap agents) without losing context:
-
-- `context.md`, `goals.md`, `assumptions.md`, `open_questions.md` – human-written intent and constraints.
-- `decisions.md` – append-only decision history with a short reason for each choice.
-- `_notes.ndjson` – timestamped agent notes between sessions (newline-delimited JSON).
-- `spec.yaml` – your architecture contract: allowed/forbidden systems, constraints, optional `domains` map.
-- `_audit.yaml` – latest detector snapshot of what the codebase actually does.
-- `_drift.yaml` – unresolved/accepted/rejected drift items between spec and reality.
-- `_logs.ndjson` – append-only machine event stream (what Tack saw and when).
-- `handoffs/*.md` and `handoffs/*.json` – handoff packages for the next session.
-- `verification.md` – validation steps that get pulled into handoffs.
-
-Agents and tools read and write this state in two main ways:
-
-- Through the `tack-mcp` server (Model Context Protocol), which exposes typed context resources and safe write-back tools.
-- By reading and appending to files under `.tack/`, where human-authored docs and machine-managed state live side by side.
-
-## Change Tracking Workflow
-
-- `tack status` runs a scan, updates `_audit.yaml`, and computes drift against your spec.
-- `tack watch` continuously rescans on file changes and appends events to `_logs.ndjson`.
-- `tack handoff` packages context + machine state + git deltas for the next session.
-- `tack log` and `tack note` store decisions and notes that future agents and humans can reuse.
-
-## Install from npm
-
-Use Tack in any project without cloning:
-
-**Run without installing (npx):**
-
-```bash
-npx tack-cli init
-npx tack-cli status
-npx tack-cli handoff
-```
-
-**Or install in your project (local):**
-
-```bash
-npm install tack-cli
-npx tack-cli init
-# or: ./node_modules/.bin/tack init
-```
-
-**Or install globally:**
+Install globally:
 
 ```bash
 npm install -g tack-cli
-tack init
-tack status
-tack handoff
 ```
 
-> **Note:** If global install on Windows fails with `EEXIST` or cleanup errors, remove any existing `tack` or `tack-cli` in `npm root -g`, or use `npx tack-cli` instead.
-
-## Build from source
-
-To develop or contribute:
+Or run without installing:
 
 ```bash
-npm install
-npm run build
+npx tack-cli@latest init
 ```
 
-Optional global link for local development:
+Initialize Tack in your project:
 
 ```bash
-npm link
-# now `tack` is available globally on this machine
-```
-
-Or package for use in another project:
-
-```bash
-npm pack
-# then install the tarball in another project if desired
-```
-
-## Usage
-
-From any project directory:
-
-```bash
-node /absolute/path/to/tack/dist/index.js init
-node /absolute/path/to/tack/dist/index.js status
-node /absolute/path/to/tack/dist/index.js watch
-node /absolute/path/to/tack/dist/index.js handoff
-node /absolute/path/to/tack/dist/index.js mcp
-```
-
-Within the `tack` repo itself:
-
-```bash
-node dist/index.js help
-```
-
-## `tack watch` Preview
-
-![tack watch MCP activity preview](./tack-mcp.png)
-
-## Typical Multi-Session Loop
-
-```bash
-# Session start
-tack status
-
-# During work
-tack watch
-
-# Record key intent changes
-tack log
-tack note
-
-# Session end
-tack handoff
-```
-
-## Project Root Rules
-
-Tack looks for the nearest ancestor directory that contains `.tack/` and treats that as the project root. This means you can run `tack status`, `tack watch`, `tack handoff`, `tack log`, `tack note`, and `tack diff` from subdirectories inside an initialized project.
-
-If no `.tack/` directory exists in the current directory or any parent, Tack will not try to guess a sibling project. Run Tack from the project root you actually want, or initialize a new project there:
-
-```bash
-cd /path/to/your/project
 tack init
 ```
 
-Legacy migration from `./tack/` to `./.tack/` only happens when that directory looks like old Tack state, not when it is just a separate folder named `tack`.
+If you want an agent to start using Tack automatically, install its startup instructions once:
 
-## Using Tack with Agents
+```bash
+tack setup-agent --target claude
+tack setup-agent --target codex
+tack setup-agent --target generic
+```
 
-Tack exposes a small, deterministic engine that agents call into (same inputs → same outputs, no hidden network calls). Agents should read context from `.tack/` and write back only through the documented channels instead of editing machine-managed files directly.
-
-### MCP (Model Context Protocol)
-
-**Run the MCP server:** From a project that has `.tack/`, run:
+Start the MCP server from the repo root:
 
 ```bash
 tack mcp
 ```
 
-If `tack` is on your PATH (for example after `npm install -g tack-cli` or `npm link` from the Tack repo), that’s all you need. Or run `node /path/to/tack/dist/index.js mcp`. The server reads `.tack/` from the current working directory, so always run it from your **project root**.
-
-**Cursor:** In Cursor (Settings → Tools & MCP), add an MCP server with command `tack`, args `["mcp"]`, and **cwd** set to your project root (the directory that contains `.tack/`). If `tack` isn’t on PATH, use command `node` with args `["/path/to/tack/dist/index.js", "mcp"]`, cwd = project root. Restart Cursor after changing MCP config.
-
-**Codex CLI:** Add the Tack MCP server to Codex:
+Watch live reads, writes, and drift while agents work:
 
 ```bash
-# With tack-cli on PATH (for example after npm install -g tack-cli)
-codex mcp add tack -- tack mcp
-
-# With a local build of this repo
-codex mcp add tack -- node /path/to/tack/dist/index.js mcp
+tack watch
 ```
 
-Then verify it:
+At the end of a session, package a handoff:
 
 ```bash
-codex mcp get tack
-codex mcp list
+tack handoff
 ```
 
-Tack reads `.tack/` from the current working directory, and Codex launches MCP servers relative to the Codex session cwd. Start Codex from your **project root** (the directory that contains `.tack/`), for example:
+Read the full guides:
+
+- [Getting Started](./docs/getting-started.md)
+- [Agent Workflow](./docs/agent-workflow.md)
+- [MCP Clients](./docs/mcp-clients.md)
+- [Watch Mode](./docs/watch.md)
+- [CLI Reference](./docs/cli.md)
+- [Detectors And YAML Rules](./docs/detectors.md)
+
+## What Can You Do With Tack?
+
+- Give agents a compact session-start entrypoint with `tack://session`
+- Preserve decisions, blockers, discoveries, and partial work across sessions
+- Watch live MCP reads and writes so you can tell whether agents are actually using Tack
+- Detect architecture drift against a declared spec
+- Package handoffs for the next agent or human
+- Install startup instructions for supported agents with `tack setup-agent`
+
+## Why Tack Helps
+
+- Agents stop starting cold every time you open a new window
+- Architectural guardrails live in one place instead of scattered prompts
+- The default workflow stays compact instead of vacuuming the entire repo
+- You can see who read context, who wrote memory back, and who may be leaving the next session cold
+- Project memory lives in versionable files under `./.tack/`
+
+## Common Workflow
+
+Initialize Tack once at the repo root:
 
 ```bash
-cd /path/to/your/project
-codex
+tack init
 ```
 
-Or:
+Install agent instructions once per repo:
 
 ```bash
-codex -C /path/to/your/project
+tack setup-agent --target claude
 ```
 
-> Troubleshooting: If Tack cannot find `.tack/` in Codex, you likely started Codex from the wrong directory. Restart Codex from the repo root, or use `codex -C /path/to/your/project`.
-
-If you update Tack from source, rebuild it with `npm run build` so `dist/index.js` stays current.
-
-**Claude Code:** From your project root (the directory that contains `.tack/`), add the Tack MCP server:
+During normal work:
 
 ```bash
-# With tack-cli on PATH (e.g. npm install -g tack-cli)
-claude mcp add --transport stdio tack-mcp -- tack mcp
-
-# With npx (no global install)
-claude mcp add --transport stdio tack-mcp -- npx tack-cli mcp
+tack status
+tack watch
 ```
 
-On **Windows (native, not WSL)** use the `cmd /c` wrapper for npx:
+For agent-driven work, start the MCP server from the project root:
 
 ```bash
-claude mcp add --transport stdio tack-mcp -- cmd /c npx tack-cli mcp
+TACK_AGENT_NAME=claude tack mcp
 ```
 
-Then run `/mcp` in Claude Code to confirm the server is connected. Tack reads `.tack/` from the current working directory, so open your project folder in Claude Code so the server runs with the correct cwd.
+If you use more than one agent, give each MCP server its own `TACK_AGENT_NAME` so `tack watch` can show who read context, who checked rules, and who wrote memory back.
 
-The server (`tack-mcp`) exposes these key resources:
+## Example Workflows
 
-- `tack://context/intent` – `context.md`, `goals.md`, `open_questions.md`, `decisions.md`
-- `tack://context/facts` – `implementation_status.md` and `spec.yaml`
-- `tack://context/machine_state` – `_audit.yaml` and `_drift.yaml`
-- `tack://context/decisions_recent` – recent decisions as markdown
-- `tack://handoff/latest` – latest handoff JSON (`.tack/handoffs/*.json`)
+### New Agent Session
 
-And these tools for safe write-back:
-
-- `log_decision` – appends a decision to `.tack/decisions.md` and logs a `decision` event
-- `log_agent_note` – appends an agent note to `.tack/_notes.ndjson`
-
-### Direct File Access
-
-Agents without MCP should:
-
-- **Read**:
-  - `.tack/spec.yaml` — architecture guardrails
-  - `.tack/context.md`, `.tack/goals.md`, `.tack/assumptions.md`, `.tack/open_questions.md`
-  - `.tack/implementation_status.md`
-  - `.tack/_audit.yaml`, `.tack/_drift.yaml`
-  - `.tack/verification.md` — validation/verification steps to run after changes
-  - `.tack/handoffs/*.json`, `.tack/handoffs/*.md`
-  - `.tack/_notes.ndjson` — agent working notes (NDJSON)
-- **Write back**:
-  - Append decisions to `.tack/decisions.md` in this format: `- [YYYY-MM-DD] Decision — reason`
-  - Prefer the CLI for notes: `tack note --message "..." --type discovered --actor agent:cursor`
-  - If the CLI is not available, append NDJSON lines manually to `.tack/_notes.ndjson`
-
-Do **not** modify `.tack/_drift.yaml`, `.tack/_audit.yaml`, or `.tack/_logs.ndjson` directly; they are machine-managed and may be overwritten at any time.
-
-## Detectors and YAML rules
-
-Detection is **YAML-driven**. Bundled rules live in `src/detectors/rules/*.yaml` and ship with the CLI. At runtime Tack also loads any `*.yaml` from `.tack/detectors/` so projects can add or override detectors.
-
-Each rule file uses this schema:
-
-- **Top-level:** `name`, `displayName`, `signalId`, `category` (`system` | `scope` | `risk`).
-- **`systems`:** list of entries, each with:
-  - `id` — system identifier (for example `nextjs`, `prisma`, `stripe`)
-  - `packages` — npm package names that imply this system
-  - `configFiles` — config files to look for (for example `next.config.js`)
-  - `directories` — optional directories (for example `src/jobs`)
-  - `routePatterns` — optional regex strings to grep in project files
-
-If any of `packages` / `configFiles` / `directories` / `routePatterns` match for a system, one signal is emitted (confidence 1). Invalid YAML or bad regex is skipped without failing the scan. The only detectors still implemented in TypeScript are `multiuser`, `admin`, and `duplicates`; all other primary systems (framework, auth, db, payments, background_jobs, exports) are defined in YAML.
-
-## Commands
-
-### `init`
-
-- Runs a detector sweep
-- Prompts you to classify detected systems as allowed/forbidden/skip
-- Writes initial files under `./.tack/`
-
-### `status`
-
-- Runs a one-shot scan
-- Updates `./.tack/_audit.yaml`
-- Computes drift and prints summary
-
-### `watch`
-
-- Starts persistent file watching
-- Re-scans on file changes
-- Creates drift items for new violations/risks/undeclared systems
-- Sends OS notifications for violations and risks
-- Press `q` to quit
-
-### `handoff`
-
-- Reads context docs + current machine state
-- Reads file-level git changes
-- Writes `./.tack/handoffs/<timestamp>.md`
-- Writes `./.tack/handoffs/<timestamp>.json` (canonical)
-- Includes a **Validation / Verification** section driven by `.tack/verification.md`:
-  - Each bullet/numbered item becomes a `verification.steps` entry in JSON and a markdown bullet
-  - Intended for humans or external tools to know which commands/checks to run after applying the handoff
-  - Tack does **not** execute these commands automatically
-
-## Keyboard Controls
-
-In selection prompts (`init`, drift options):
-
-- `↑` / `↓` to move
-- `Enter` to confirm
-
-## Development
+Open a new agent window in a repo that already uses Tack:
 
 ```bash
-npm run typecheck
-bun test
-npm run dev
+tack watch
+TACK_AGENT_NAME=claude tack mcp
 ```
 
-Optional Bun fast path for build contributors:
+The agent reads `tack://session`, sees the current focus and recent work, and starts from the smallest useful context instead of re-learning the repo. `tack watch` shows the read live so you know the agent is grounded in project memory.
 
-```bash
-npm run build:bun
-```
+### Structural Change
 
-Optional Bun source-run for contributors who have Bun:
+The agent wants to add a dependency or introduce a new boundary.
 
-```bash
-npm run dev:bun
-```
+Instead of guessing, it calls `check_rule` first. That gives a compact yes/no-with-context guardrail check before the architecture changes.
+
+### End Of Session
+
+The agent made changes, found one blocker, and left partial work.
+
+Instead of scattering notes manually, it calls `checkpoint_work` once. Tack saves a summary, discoveries, decisions, and related files so the next session has a usable starting point.
+
+## Learn More
+
+- [Getting Started](./docs/getting-started.md)
+- [Agent Workflow](./docs/agent-workflow.md)
+- [MCP Clients](./docs/mcp-clients.md)
+- [Watch Mode](./docs/watch.md)
+- [CLI Reference](./docs/cli.md)
+- [Detectors And YAML Rules](./docs/detectors.md)
 
 ## Notes
 
-- Offline-only (no network calls)
-- Writes are guarded to `./.tack/` only
-- Python virtual environments are ignored during scans (`venv`, `.venv`, `site-packages`) to avoid false positives
+- offline only, no hidden network calls in Tack's project-memory engine
+- writes are guarded to `./.tack/`
+- Python virtual environments are ignored during scans (`venv`, `.venv`, `site-packages`) to reduce false positives

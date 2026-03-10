@@ -1,0 +1,114 @@
+# Getting Started
+
+Tack gives coding agents compact project memory across sessions.
+
+It keeps a shared record of your architecture, decisions, notes, drift, and handoffs in `./.tack/` so a new agent session can start with the smallest useful context instead of re-learning the repo from scratch.
+
+## Install
+
+Install globally:
+
+```bash
+npm install -g tack-cli
+```
+
+Or run without installing:
+
+```bash
+npx tack-cli@latest init
+```
+
+## First Run
+
+Initialize Tack in your project:
+
+```bash
+tack init
+```
+
+Start the MCP server from the repo root:
+
+```bash
+tack mcp
+```
+
+Watch live reads, writes, and drift while agents work:
+
+```bash
+tack watch
+```
+
+At the end of a session, package a handoff:
+
+```bash
+tack handoff
+```
+
+## Common Workflow
+
+Initialize Tack once at the repo root:
+
+```bash
+tack init
+```
+
+Install agent instructions once per repo:
+
+```bash
+tack setup-agent --target claude
+tack setup-agent --target codex
+tack setup-agent --target generic
+```
+
+During normal work:
+
+```bash
+tack status
+tack watch
+```
+
+For agent-driven work, start the MCP server from the project root:
+
+```bash
+TACK_AGENT_NAME=claude tack mcp
+```
+
+If you use more than one agent, give each MCP server its own `TACK_AGENT_NAME` so `tack watch` can show who read context, who checked rules, and who wrote memory back.
+
+## What Tack Stores
+
+All state lives in `./.tack/`:
+
+- `spec.yaml` - your declared architecture contract
+- `context.md`, `goals.md`, `assumptions.md`, `open_questions.md` - human-written intent and constraints
+- `implementation_status.md` - current implementation facts
+- `decisions.md` - append-only decision history
+- `_notes.ndjson` - timestamped agent notes
+- `_audit.yaml` - latest detector sweep
+- `_drift.yaml` - unresolved, accepted, or rejected drift
+- `_logs.ndjson` - append-only event stream
+- `handoffs/*.md` and `handoffs/*.json` - handoff packages for the next session
+- `verification.md` - verification steps included in handoffs
+
+## Project Root Rules
+
+Tack looks for the nearest ancestor directory that contains `.tack/` and treats that as the project root.
+
+This means you can run `tack status`, `tack watch`, `tack handoff`, `tack log`, `tack note`, `tack diff`, and `tack mcp` from subdirectories inside an initialized project.
+
+If no `.tack/` exists in the current directory or any parent, Tack does not guess a sibling project. Run it from the repo you actually want, or initialize a new project there:
+
+```bash
+cd /path/to/your/project
+tack init
+```
+
+Legacy migration from `./tack/` to `./.tack/` only happens when that directory looks like old Tack state, not when it is just a folder named `tack`.
+
+## Next
+
+- [Agent Workflow](./agent-workflow.md)
+- [MCP Clients](./mcp-clients.md)
+- [Watch Mode](./watch.md)
+- [CLI Reference](./cli.md)
+- [Detectors And YAML Rules](./detectors.md)

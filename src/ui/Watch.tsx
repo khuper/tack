@@ -14,7 +14,19 @@ import { computeDrift } from "../engine/computeDrift.js";
 import { getMemoryWarnings } from "../engine/memory.js";
 import { getChangedFiles } from "../lib/git.js";
 import { notify } from "../lib/notify.js";
-import { log, createMcpActivityMonitor, hasRecentMcpWriteBack, type McpActivityNotice } from "../lib/logger.js";
+import {
+  log,
+  collectMcpInactivityWarnings,
+  createMcpActivityMonitor,
+  getMcpSessionDisplayLabel,
+  markMcpSessionsRepoChanged,
+  refreshMcpSessionStates,
+  upsertMcpSessionState,
+  type McpActivityCategory,
+  type McpActivityNotice,
+  type McpSessionHealth,
+  type McpSessionState,
+} from "../lib/logger.js";
 
 const IGNORE_PATTERNS = [
   "**/node_modules/**",
@@ -32,7 +44,7 @@ const IGNORE_PATTERNS = [
   "**/site-packages/**",
 ];
 
-type HistoryLevel = "good" | "bad" | "update" | "mcp";
+type HistoryLevel = "good" | "bad" | "update" | "ready" | "read" | "check" | "write" | "warn";
 
 type HistoryEvent = {
   id: number;
@@ -45,23 +57,96 @@ type WatchProps = {
 };
 
 function renderHistoryBadge(level: HistoryLevel) {
-  if (level === "mcp") {
+  if (level === "ready") {
     return (
-      <Text color="cyan" bold>
-        {"⚡ tack"}
+      <Text backgroundColor="blue" color="white" bold>
+        {" READY "}
       </Text>
     );
   }
 
-  if (level === "update" || level === "good" || level === "bad") {
+  if (level === "read") {
     return (
-      <Text backgroundColor="yellow" color="black" bold>
+      <Text color="cyan" bold>
+        {" READ "}
+      </Text>
+    );
+  }
+
+  if (level === "check") {
+    return (
+      <Text backgroundColor="magenta" color="white" bold>
         {" CHECK "}
       </Text>
     );
   }
 
-  return null;
+  if (level === "write") {
+    return (
+      <Text backgroundColor="green" color="black" bold>
+        {" WRITE "}
+      </Text>
+    );
+  }
+
+  if (level === "warn") {
+    return (
+      <Text backgroundColor="yellow" color="black" bold>
+        {" WARN "}
+      </Text>
+    );
+  }
+
+  return (
+    <Text backgroundColor="yellow" color="black" bold>
+      {" SCAN "}
+    </Text>
+  );
+}
+
+function historyLevelColor(level: HistoryLevel): "green" | "red" | "yellow" | "cyan" | "magenta" | "blue" {
+  if (level === "good" || level === "write") return "green";
+  if (level === "bad") return "red";
+  if (level === "read") return "cyan";
+  if (level === "check") return "magenta";
+  if (level === "ready") return "blue";
+  return "yellow";
+}
+
+function noticeToHistoryLevel(category: McpActivityCategory): HistoryLevel {
+  return category === "ready" ? "ready" : category === "read" ? "read" : category === "check" ? "check" : "write";
+}
+
+function sessionSummary(state: McpSessionState): { text: string; color: "green" | "yellow" | "cyan" | "magenta" | "blue" | "red" } {
+  if (state.awaitingWriteBack && state.repoChangedAfterRead && state.health === "stale") {
+    return { text: "stale after repo changes", color: "red" };
+  }
+  if (state.awaitingWriteBack && state.repoChangedAfterRead && state.health === "idle") {
+    return { text: "idle after repo changes", color: "yellow" };
+  }
+  if (state.awaitingWriteBack && state.repoChangedAfterRead) {
+    return { text: "waiting for write-back", color: "yellow" };
+  }
+  if (state.health === "stale") {
+    return { text: "stale", color: "red" };
+  }
+  if (state.health === "idle") {
+    return { text: "idle", color: "yellow" };
+  }
+  if (state.lastAction === "write") {
+    return { text: "memory saved", color: "green" };
+  }
+  if (state.lastAction === "check") {
+    return { text: "checked a guardrail", color: "magenta" };
+  }
+  if (state.lastAction === "read") {
+    return { text: "read context", color: "cyan" };
+  }
+  return { text: "connected", color: "blue" };
+}
+
+function healthLabel(health: McpSessionHealth): string {
+  return health === "active" ? "active" : health === "idle" ? "idle" : "stale";
 }
 
 export function Watch({ animationsEnabled }: WatchProps) {
@@ -73,6 +158,7 @@ export function Watch({ animationsEnabled }: WatchProps) {
   const [projectName, setProjectName] = useState("unknown");
   const [history, setHistory] = useState<HistoryEvent[]>([]);
   const [memoryWarnings, setMemoryWarnings] = useState<string[]>([]);
+  const [sessionStates, setSessionStates] = useState<McpSessionState[]>([]);
   const [mascotMode, setMascotMode] = useState<"idle" | "scan" | "mcp">("idle");
   const [mascotAnimated, setMascotAnimated] = useState(animationsEnabled);
   const [cargoCount, setCargoCount] = useState(0);
@@ -84,12 +170,14 @@ export function Watch({ animationsEnabled }: WatchProps) {
   const historySeq = useRef(0);
   const readNewMcpActivityRef = useRef<(() => McpActivityNotice[]) | null>(null);
   const missingWriteBackWarningActiveRef = useRef(false);
+  const sessionStatesRef = useRef<McpSessionState[]>([]);
+  const inactivityTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   function pushHistory(level: HistoryLevel, text: string): void {
     historySeq.current += 1;
     setHistory((prev) => {
       const next = [...prev, { id: historySeq.current, level, text }];
-      return next.slice(-40);
+      return next.slice(-60);
     });
   }
 
@@ -111,6 +199,28 @@ export function Watch({ animationsEnabled }: WatchProps) {
       cargoTimersRef.current = cargoTimersRef.current.filter((candidate) => candidate !== timer);
     }, 4000);
     cargoTimersRef.current.push(timer);
+  }
+
+  function syncSessionStates(next: McpSessionState[]): void {
+    sessionStatesRef.current = next;
+    setSessionStates(next);
+  }
+
+  function applyActivityNotice(notice: McpActivityNotice): void {
+    const next = upsertMcpSessionState(sessionStatesRef.current, notice);
+    syncSessionStates(next);
+    cueMascot("mcp", 1600);
+    addCargoPackage();
+    const display = getMcpSessionDisplayLabel(next.find((state) => state.sessionKey === notice.sessionKey) ?? next[0]!, next);
+    pushHistory(noticeToHistoryLevel(notice.category), `[${display}] ${notice.message}`);
+  }
+
+  function runInactivityCycle(): void {
+    const result = collectMcpInactivityWarnings(sessionStatesRef.current);
+    syncSessionStates(result.states);
+    for (const warning of result.warnings) {
+      pushHistory("warn", warning);
+    }
   }
 
   function runScan(reason = "scan") {
@@ -135,12 +245,17 @@ export function Watch({ animationsEnabled }: WatchProps) {
     setLastScan(new Date().toLocaleTimeString());
     setMemoryWarnings(getMemoryWarnings(changedFiles));
 
-    const missingWriteBack = changedFiles.length > 0 && !hasRecentMcpWriteBack();
-    if (missingWriteBack && !missingWriteBackWarningActiveRef.current) {
-      cueMascot("mcp", 1500);
-      pushHistory("mcp", "no memory saved for this work yet");
+    let nextSessions = refreshMcpSessionStates(sessionStatesRef.current);
+    if (changedFiles.length > 0) {
+      nextSessions = markMcpSessionsRepoChanged(nextSessions);
+    }
+    syncSessionStates(nextSessions);
+
+    const riskySessions = nextSessions.filter((state) => state.awaitingWriteBack && state.repoChangedAfterRead);
+    if (riskySessions.length > 0 && !missingWriteBackWarningActiveRef.current) {
+      pushHistory("warn", `${riskySessions.map((state) => getMcpSessionDisplayLabel(state, nextSessions)).join(", ")} waiting on write-back after repo changes`);
       missingWriteBackWarningActiveRef.current = true;
-    } else if (!missingWriteBack) {
+    } else if (riskySessions.length === 0) {
       missingWriteBackWarningActiveRef.current = false;
     }
 
@@ -170,7 +285,6 @@ export function Watch({ animationsEnabled }: WatchProps) {
       for (const item of alertable) {
         notify("! Tack: Drift Detected", `${item.system ?? item.risk}: ${item.signal}`);
       }
-
       setPendingAlerts((prev) => [...prev, ...alertable]);
     }
   }
@@ -218,11 +332,13 @@ export function Watch({ animationsEnabled }: WatchProps) {
     logsWatcher.on("change", () => {
       const notices = readNewMcpActivityRef.current?.() ?? [];
       for (const notice of notices) {
-        cueMascot("mcp", 1600);
-        addCargoPackage();
-        pushHistory("mcp", notice.message);
+        applyActivityNotice(notice);
       }
     });
+
+    inactivityTimerRef.current = setInterval(() => {
+      runInactivityCycle();
+    }, 30000);
 
     watcherRef.current = watcher;
     logsWatcherRef.current = logsWatcher;
@@ -232,6 +348,7 @@ export function Watch({ animationsEnabled }: WatchProps) {
       void logsWatcher.close();
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
       if (mascotTimerRef.current) clearTimeout(mascotTimerRef.current);
+      if (inactivityTimerRef.current) clearInterval(inactivityTimerRef.current);
       for (const timer of cargoTimersRef.current) {
         clearTimeout(timer);
       }
@@ -280,8 +397,34 @@ export function Watch({ animationsEnabled }: WatchProps) {
       {pendingAlerts.length === 0 && (
         <Box marginTop={1}>
           <Text dimColor>
-            Watching for changes and MCP activity... (q to quit, a to {mascotAnimated ? "freeze" : "animate"} deckhand)
+            Watching for repo changes and MCP activity... (q to quit, a to {mascotAnimated ? "freeze" : "animate"} deckhand)
           </Text>
+        </Box>
+      )}
+
+      <Box marginTop={1} flexDirection="column">
+        <Text bold>How to use watch</Text>
+        <Text dimColor>- File changes trigger fresh scans against your spec and drift rules.</Text>
+        <Text dimColor>- READY/READ/CHECK/WRITE events show which session is grounding itself in Tack and preserving memory.</Text>
+        <Text dimColor>- Idle or stale sessions after repo changes are the risky cases: those may leave the next session cold.</Text>
+      </Box>
+
+      {sessionStates.length > 0 && (
+        <Box marginTop={1} flexDirection="column">
+          <Text bold>Agent Sessions</Text>
+          {sessionStates.slice(0, 6).map((state) => {
+            const display = getMcpSessionDisplayLabel(state, sessionStates);
+            const summary = sessionSummary(state);
+            return (
+              <Box key={state.sessionKey}>
+                <Text color="cyan">{display}</Text>
+                <Text dimColor>  </Text>
+                <Text color={summary.color}>{summary.text}</Text>
+                <Text dimColor>  ({healthLabel(state.health)})</Text>
+                <Text dimColor>  last: {state.lastMessage}</Text>
+              </Box>
+            );
+          })}
         </Box>
       )}
 
@@ -302,37 +445,39 @@ export function Watch({ animationsEnabled }: WatchProps) {
             <Box key={item.id}>
               {renderHistoryBadge(item.level)}
               <Text> </Text>
-              <Text color={item.level === "good" ? "green" : item.level === "bad" ? "red" : item.level === "mcp" ? "cyan" : "yellow"}>
-                {item.text}
-              </Text>
+              <Text color={historyLevelColor(item.level)}>{item.text}</Text>
             </Box>
           )}
         </Static>
       </Box>
 
       <Box marginTop={1}>
-        <Text dimColor>--- Run in another terminal -----------</Text>
+        <Text dimColor>--- Useful commands from another terminal ---</Text>
       </Box>
       <Box flexDirection="column" paddingLeft={2}>
         <Text>
           <Text color="green">tack status</Text>
-          <Text dimColor>     Project health snapshot</Text>
+          <Text dimColor>     Full health snapshot and drift details</Text>
         </Text>
         <Text>
           <Text color="green">tack handoff</Text>
-          <Text dimColor>    Generate handoff for agents</Text>
+          <Text dimColor>    Package the current state for the next session</Text>
         </Text>
         <Text>
-          <Text color="green">tack check-in</Text>
-          <Text dimColor>   Morning/evening pulse</Text>
+          <Text color="green">tack note</Text>
+          <Text dimColor>       Add or inspect agent notes</Text>
         </Text>
         <Text>
           <Text color="green">tack log</Text>
           <Text dimColor>        View or append decisions</Text>
         </Text>
         <Text>
+          <Text color="green">checkpoint_work</Text>
+          <Text dimColor>   Default MCP write-back before ending work</Text>
+        </Text>
+        <Text>
           <Text color="green">tack help</Text>
-          <Text dimColor>       All commands and options</Text>
+          <Text dimColor>       Show all commands and options</Text>
         </Text>
       </Box>
     </Box>

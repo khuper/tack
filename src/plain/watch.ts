@@ -2,7 +2,15 @@ import chokidar from "chokidar";
 import * as path from "node:path";
 import { logsPath } from "../lib/files.js";
 import { runStatusScan } from "../engine/status.js";
-import { createMcpActivityMonitor, hasRecentMcpWriteBack } from "../lib/logger.js";
+import {
+  collectMcpInactivityWarnings,
+  createMcpActivityMonitor,
+  getMcpSessionDisplayLabel,
+  markMcpSessionsRepoChanged,
+  upsertMcpSessionState,
+  type McpActivityNotice,
+  type McpSessionState,
+} from "../lib/logger.js";
 import { getChangedFiles } from "../lib/git.js";
 import { blue, checkBadge, gray, green, mcpBadge, red, yellow } from "./colors.js";
 
@@ -45,10 +53,40 @@ function printSnapshot(reason: string): boolean {
   return true;
 }
 
+function printWatchGuide(): void {
+  console.log(gray("Watch mode keeps two loops visible:"));
+  console.log(gray("- file changes -> rescan architecture + drift"));
+  console.log(gray("- MCP activity -> show when each agent session reads context or writes memory"));
+  console.log("");
+  console.log(gray("What to do with the output:"));
+  console.log(gray("- if drift appears, run `tack status` or inspect `.tack/_drift.yaml`"));
+  console.log(gray("- if you see READ without a later WRITE, that session may not be preserving memory yet"));
+  console.log(gray("- if a session goes idle or stale after repo changes, wrap it up with a write-back"));
+  console.log("");
+}
+
+function printMcpNotice(notice: McpActivityNotice, sessions: McpSessionState[]): void {
+  const state = sessions.find((candidate) => candidate.sessionKey === notice.sessionKey);
+  const label = state ? getMcpSessionDisplayLabel(state, sessions) : notice.agent;
+  console.log(`${mcpBadge()}  [${notice.category.toUpperCase()}][${label}] ${gray(notice.message)}`);
+}
+
+function maybeWarnMissingWriteBack(sessions: McpSessionState[], missingWriteBackWarningActive: boolean): boolean {
+  const awaiting = sessions.filter((state) => state.awaitingWriteBack && state.repoChangedAfterRead);
+  if (!awaiting.length || missingWriteBackWarningActive) {
+    return awaiting.length > 0;
+  }
+
+  const labels = awaiting.map((state) => getMcpSessionDisplayLabel(state, sessions));
+  console.log(`${mcpBadge()}  [WARN][repo] ${gray(`${labels.join(", ")} waiting on write-back after repo changes`)}`);
+  return true;
+}
+
 export async function runWatchPlain(): Promise<void> {
   const ok = printSnapshot("initial");
   if (!ok) return;
 
+  printWatchGuide();
   console.log(`${gray("Watching for changes and MCP activity (plain mode). Press Ctrl+C to stop.")}`);
 
   const watcher = chokidar.watch(".", {
@@ -69,14 +107,24 @@ export async function runWatchPlain(): Promise<void> {
     },
   });
   const readNewMcpActivity = createMcpActivityMonitor();
+  let sessionStates: McpSessionState[] = [];
   let missingWriteBackWarningActive = false;
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  const inactivityTimer = setInterval(() => {
+    const result = collectMcpInactivityWarnings(sessionStates);
+    sessionStates = result.states;
+    for (const warning of result.warnings) {
+      console.log(`${mcpBadge()}  [WARN][session] ${gray(warning)}`);
+    }
+  }, 30000);
+
   const shutdown = async (): Promise<void> => {
     if (debounceTimer) {
       clearTimeout(debounceTimer);
       debounceTimer = null;
     }
+    clearInterval(inactivityTimer);
     await watcher.close();
     await logsWatcher.close();
     console.log(gray("Stopped watch mode."));
@@ -84,7 +132,8 @@ export async function runWatchPlain(): Promise<void> {
 
   logsWatcher.on("change", () => {
     for (const notice of readNewMcpActivity()) {
-      console.log(`${mcpBadge()}  ${gray(notice.message)}`);
+      sessionStates = upsertMcpSessionState(sessionStates, notice);
+      printMcpNotice(notice, sessionStates);
     }
   });
 
@@ -94,12 +143,19 @@ export async function runWatchPlain(): Promise<void> {
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       const changedFiles = getChangedFiles();
-      const missingWriteBack = changedFiles.length > 0 && !hasRecentMcpWriteBack();
-      if (missingWriteBack && !missingWriteBackWarningActive) {
-        console.log(`${mcpBadge()}  ${gray("no memory saved for this work yet")}`);
-        missingWriteBackWarningActive = true;
-      } else if (!missingWriteBack) {
+      if (changedFiles.length > 0) {
+        sessionStates = markMcpSessionsRepoChanged(sessionStates);
+      }
+      const riskySessions = sessionStates.filter((state) => state.awaitingWriteBack && state.repoChangedAfterRead);
+      if (riskySessions.length > 0) {
+        missingWriteBackWarningActive = maybeWarnMissingWriteBack(sessionStates, missingWriteBackWarningActive);
+      } else {
         missingWriteBackWarningActive = false;
+      }
+      const inactivityResult = collectMcpInactivityWarnings(sessionStates);
+      sessionStates = inactivityResult.states;
+      for (const warning of inactivityResult.warnings) {
+        console.log(`${mcpBadge()}  [WARN][session] ${gray(warning)}`);
       }
       printSnapshot(`${event} ${filepath}`);
     }, 300);

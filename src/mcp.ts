@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import * as path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -58,17 +59,19 @@ function latestHandoffJsonPath(): string | null {
   return path.join(dir, jsonFiles[0]!);
 }
 
-function announceMcpReady(): void {
+function announceMcpReady(agentType: string, sessionId: string): void {
   const lines = process.stderr.isTTY
     ? [
         "",
         "tack-mcp ready",
         `  cwd: ${process.cwd()}`,
         "  transport: stdio",
+        `  agent: ${agentType}`,
+        `  session: ${sessionId}`,
         "  waiting for MCP client requests...",
         "",
       ]
-    : [`tack-mcp ready (cwd: ${process.cwd()}, transport: stdio)\n`];
+    : [`tack-mcp ready (cwd: ${process.cwd()}, transport: stdio, agent: ${agentType}, session: ${sessionId})\n`];
 
   process.stderr.write(lines.join("\n"));
 }
@@ -93,6 +96,12 @@ function formatSavedSummary(text: string): string {
 function formatBriefingSummary(): string {
   const briefing = buildBriefingResult();
   return `briefed: ${briefing.rules_count} rules, ${briefing.recent_decisions_count} recent decisions`;
+}
+
+function resolveMcpAgentName(): string {
+  const raw = process.env.TACK_AGENT_NAME?.trim().toLowerCase() ?? "";
+  const normalized = raw.replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+  return normalized || "unknown";
 }
 
 let telemetrySessionRecorded = false;
@@ -122,6 +131,8 @@ function noteBriefingServed(): void {
 async function main(): Promise<void> {
   ensureTelemetryState();
   const pkg = readPackageMeta();
+  const mcpAgent = resolveMcpAgentName();
+  const mcpSessionId = randomUUID();
   const sessionResource = getTackMcpResource("tack://session");
   const workspaceResource = getTackMcpResource("tack://context/workspace");
   const factsResource = getTackMcpResource("tack://context/facts");
@@ -143,6 +154,22 @@ async function main(): Promise<void> {
     {}
   );
 
+  const logMcpResource = (resource: string, summary?: string): void => {
+    log(
+      summary
+        ? { event: "mcp:resource", resource, summary, agent: mcpAgent, agent_type: mcpAgent, session_id: mcpSessionId }
+        : { event: "mcp:resource", resource, agent: mcpAgent, agent_type: mcpAgent, session_id: mcpSessionId }
+    );
+  };
+
+  const logMcpTool = (tool: string, summary?: string): void => {
+    log(
+      summary
+        ? { event: "mcp:tool", tool, summary, agent: mcpAgent, agent_type: mcpAgent, session_id: mcpSessionId }
+        : { event: "mcp:tool", tool, agent: mcpAgent, agent_type: mcpAgent, session_id: mcpSessionId }
+    );
+  };
+
   server.registerResource(
     "intent",
     "tack://context/intent",
@@ -153,7 +180,7 @@ async function main(): Promise<void> {
     },
     async (uri: URL) => {
       noteMcpSessionActivity();
-      log({ event: "mcp:resource", resource: uri.href });
+      logMcpResource(uri.href);
       const pack = parseContextPack();
       const lines: string[] = ["# Intent Context", ""];
 
@@ -221,11 +248,7 @@ async function main(): Promise<void> {
     },
     async (uri: URL) => {
       noteBriefingServed();
-      log({
-        event: "mcp:resource",
-        resource: uri.href,
-        summary: formatBriefingSummary(),
-      });
+      logMcpResource(uri.href, formatBriefingSummary());
       const wrapped = wrapUntrustedContext(buildSessionLines().join("\n"), "tack://session");
 
       return {
@@ -249,11 +272,7 @@ async function main(): Promise<void> {
     },
     async (uri: URL) => {
       noteBriefingServed();
-      log({
-        event: "mcp:resource",
-        resource: uri.href,
-        summary: formatBriefingSummary(),
-      });
+      logMcpResource(uri.href, formatBriefingSummary());
       const wrapped = wrapUntrustedContext(
         buildWorkspaceSnapshotLines().join("\n"),
         "tack://context/workspace"
@@ -280,7 +299,7 @@ async function main(): Promise<void> {
     },
     async (uri: URL) => {
       noteMcpSessionActivity();
-      log({ event: "mcp:resource", resource: uri.href });
+      logMcpResource(uri.href);
       const parts: string[] = [];
 
       const impl = safeReadFile(implementationStatusPath());
@@ -320,7 +339,7 @@ async function main(): Promise<void> {
     },
     async (uri: URL) => {
       noteMcpSessionActivity();
-      log({ event: "mcp:resource", resource: uri.href });
+      logMcpResource(uri.href);
       const jsonPath = latestHandoffJsonPath();
       if (!jsonPath) {
         return {
@@ -359,7 +378,7 @@ async function main(): Promise<void> {
     },
     async (uri: URL) => {
       noteMcpSessionActivity();
-      log({ event: "mcp:resource", resource: uri.href });
+      logMcpResource(uri.href);
       const pack = parseContextPack();
       const recent = pack.decisions.slice(-10);
       if (recent.length === 0) {
@@ -404,7 +423,7 @@ async function main(): Promise<void> {
     },
     async (uri: URL) => {
       noteMcpSessionActivity();
-      log({ event: "mcp:resource", resource: uri.href });
+      logMcpResource(uri.href);
       const parts: string[] = [];
 
       const audit = safeReadFile(auditPath());
@@ -443,11 +462,10 @@ async function main(): Promise<void> {
     async () => {
       const briefing = buildBriefingResult();
       noteBriefingServed();
-      log({
-        event: "mcp:tool",
-        tool: "get_briefing",
-        summary: `briefed: ${briefing.rules_count} rules, ${briefing.recent_decisions_count} recent decisions`,
-      });
+      logMcpTool(
+        "get_briefing",
+        `briefed: ${briefing.rules_count} rules, ${briefing.recent_decisions_count} recent decisions`
+      );
 
       return {
         content: [
@@ -476,11 +494,7 @@ async function main(): Promise<void> {
     async (args: { question: string }) => {
       const result = buildRuleCheckResult(args.question);
       noteMcpSessionActivity();
-      log({
-        event: "mcp:tool",
-        tool: "check_rule",
-        summary: `checked guardrail: ${result.status}`,
-      });
+      logMcpTool("check_rule", `checked guardrail: ${result.status}`);
 
       return {
         content: [
@@ -610,11 +624,7 @@ async function main(): Promise<void> {
         notes_logged: (summaryOk ? 1 : 0) + discoveryWrites,
         decisions_logged: args.decisions?.length ?? 0,
       });
-      log({
-        event: "mcp:tool",
-        tool: "checkpoint_work",
-        summary: formatSavedSummary(savedText),
-      });
+      logMcpTool("checkpoint_work", formatSavedSummary(savedText));
 
       return {
         content: [
@@ -677,11 +687,7 @@ async function main(): Promise<void> {
         reasoning,
         actor: normalizeDecisionActor(actor),
       });
-      log({
-        event: "mcp:tool",
-        tool: "log_decision",
-        summary: formatSavedSummary(decision),
-      });
+      logMcpTool("log_decision", formatSavedSummary(decision));
 
       return {
         content: [
@@ -750,11 +756,7 @@ async function main(): Promise<void> {
       if (ok) {
         recordTelemetryCounts({ notes_logged: 1 });
       }
-      log({
-        event: "mcp:tool",
-        tool: "log_agent_note",
-        summary: ok ? formatSavedSummary(args.message) : "save failed",
-      });
+      logMcpTool("log_agent_note", ok ? formatSavedSummary(args.message) : "save failed");
 
       return {
         content: [
@@ -775,8 +777,8 @@ async function main(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  log({ event: "mcp:ready", transport: "stdio" });
-  announceMcpReady();
+  log({ event: "mcp:ready", transport: "stdio", agent: mcpAgent, agent_type: mcpAgent, session_id: mcpSessionId });
+  announceMcpReady(mcpAgent, mcpSessionId);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-floating-promises

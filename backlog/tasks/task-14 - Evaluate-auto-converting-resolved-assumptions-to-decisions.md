@@ -1,6 +1,6 @@
 ---
 id: TASK-14
-title: Evaluate auto-converting resolved assumptions to decisions
+title: Evaluate promoting resolved assumptions into durable project memory
 status: To Do
 assignee: []
 created_date: '2026-03-03 23:21'
@@ -18,11 +18,11 @@ priority: low
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Determine whether resolved assumptions should auto-convert into dated decisions during compaction, and implement only if traceability and noise tradeoffs are acceptable.
+Determine whether resolved assumptions should be promoted into more durable project memory during compaction, and only automate that if traceability and noise tradeoffs are acceptable.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 Decision made and documented with tradeoffs
-- [ ] #2 If enabled, conversion logic is deterministic and tested
+- [ ] #2 If enabled, promotion logic is deterministic, source-traceable, and tested
 <!-- AC:END -->

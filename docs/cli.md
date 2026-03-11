@@ -29,19 +29,19 @@
 
 ## `tack log`
 
-View decisions:
+View decisions (human/manual path):
 
 ```bash
 tack log
 ```
 
-Append a decision:
+Append a manual decision:
 
 ```bash
 tack log decision "Use session-first MCP flow" --reason "Keeps startup compact"
 ```
 
-View recent log events:
+View recent raw log events (debugging):
 
 ```bash
 tack log events
@@ -99,11 +99,18 @@ tack setup-agent --list
 
 Show command help.
 
+## V1 Scope Note
+
+`tack check-in` does not ship as a standalone CLI command in v1.
+
+Use MCP write-back tools such as `checkpoint_work`, `log_decision`, and `log_agent_note` during agent sessions, and use `tack handoff` when you want an explicit end-of-session package.
+
 ## Development
 
 ```bash
 npm run typecheck
 npm run test
+npm run test:publish
 npm run build
 ```
 

@@ -60,9 +60,9 @@ type WatchProps = {
 const USEFUL_COMMANDS: Array<{ command: string; description: string }> = [
   { command: "tack status", description: "Full health snapshot and drift details" },
   { command: "tack handoff", description: "Package the current state for the next session" },
-  { command: "tack note", description: "Add or inspect agent notes" },
-  { command: "tack log", description: "View or append decisions" },
   { command: "checkpoint_work", description: "Default MCP write-back before ending work" },
+  { command: "tack note", description: "Add or inspect agent notes" },
+  { command: "tack log", description: "View decisions or raw events manually" },
   { command: "tack help", description: "Show all commands and options" },
 ];
 

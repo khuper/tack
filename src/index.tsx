@@ -29,12 +29,11 @@ import { readPackageMeta } from "./lib/packageMeta.js";
 import { runSetupAgent } from "./cli/setupAgent.js";
 
 const ASCII_LOGO = `
- ████████╗ █████╗  ██████╗██╗  ██╗
- ╚══██╔══╝██╔══██╗██╔════╝██║ ██╔╝
-    ██║   ███████║██║     █████╔╝
-    ██║   ██╔══██║██║     ██╔═██╗
-    ██║   ██║  ██║╚██████╗██║  ██╗
-    ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝
+  _____            _
+ |_   _|_ _  ___  | |__
+   | |/ _\` |/ __| | '_ \
+   | | (_| | (__  | | | |
+   |_|\__,_|\___| |_| |_|
 `;
 
 import updateNotifier from "update-notifier";
@@ -69,15 +68,15 @@ if (command === "help" || args.help || args.h) {
   // eslint-disable-next-line no-console
   console.log(`
 ${ASCII_LOGO}
-  tack — Architecture drift guard
+  tack — Compact project memory for coding agents
 
   Usage:
     npx tack init [--ink]          Set up spec.yaml from detected architecture
     npx tack status [--ink]        Run a scan and show current state
     npx tack watch [--plain]       Persistent watcher with live drift alerts
     npx tack handoff [--ink]       Generate agent handoff artifacts
-    npx tack log                   View or append decisions
-    npx tack log events [N]        Show last N log events (default 50)
+    npx tack log                   View decisions or append a manual decision
+    npx tack log events [N]        Show last N raw log events (default 50)
     npx tack note                  View/add agent notes
     npx tack diff <base-branch>    Compare architecture vs base branch (plain)
     npx tack mcp                   Start MCP server (for Cursor / agent integrations)

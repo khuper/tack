@@ -90,6 +90,8 @@ TACK_AGENT_NAME=claude tack mcp
 
 `tack watch` is the live proof. If the agent reads `tack://session` or writes memory back, you will see it immediately.
 
+v1 does not ship a standalone `tack check-in` command. Write-back stays behind MCP tools like `checkpoint_work` plus `tack handoff`.
+
 During normal work:
 
 ```bash

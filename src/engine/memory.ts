@@ -50,7 +50,7 @@ export function getMemoryWarnings(changedFiles = getChangedFiles()): string[] {
   }
 
   if (!recentLogs.some((event) => event.event === "decision")) {
-    warnings.push("No decisions logged yet. Use log_decision when behavior or guardrails change.");
+    warnings.push("No decisions logged yet. Use checkpoint_work or log_decision when behavior or guardrails change.");
   }
 
   if (patterns.repeated_blockers.length > 0) {

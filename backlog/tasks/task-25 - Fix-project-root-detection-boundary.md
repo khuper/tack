@@ -1,7 +1,7 @@
 ---
 id: TASK-25
 title: Fix project root detection boundary
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-09 18:17'
 labels:
@@ -27,8 +27,8 @@ This breaks first-run behavior and makes MCP tests misleading because `tack init
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Tack does not adopt a parent `.tack/` that lives outside the current repo boundary when run inside a separate git repository.
-- [ ] #2 Running `tack init` inside a repo without its own `.tack/` initializes that repo instead of claiming a parent/home directory is already initialized.
-- [ ] #3 MCP tools such as `get_briefing` resolve context from the current repo and not from an unrelated parent directory.
-- [ ] #4 Regression coverage exists for a repo nested under a parent directory that already contains `.tack/`.
+- [x] #1 Tack does not adopt a parent `.tack/` that lives outside the current repo boundary when run inside a separate git repository.
+- [x] #2 Running `tack init` inside a repo without its own `.tack/` initializes that repo instead of claiming a parent/home directory is already initialized.
+- [x] #3 MCP tools such as `get_briefing` resolve context from the current repo and not from an unrelated parent directory.
+- [x] #4 Regression coverage exists for a repo nested under a parent directory that already contains `.tack/`.
 <!-- AC:END -->

@@ -57,3 +57,31 @@ test("log works from a nested directory inside an initialized Tack project", () 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test("init inside a nested git repo ignores a parent .tack from outside the repo boundary", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tack-cli-init-boundary-"));
+
+  try {
+    const parentTackDir = path.join(tmpDir, ".tack");
+    const repoRoot = path.join(tmpDir, "page-agent");
+    const nestedDir = path.join(repoRoot, "packages", "web");
+
+    fs.mkdirSync(parentTackDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(parentTackDir, "spec.yaml"),
+      "project: home-memory\nallowed_systems: []\nforbidden_systems: []\nconstraints: {}\n",
+      "utf-8"
+    );
+    fs.mkdirSync(path.join(repoRoot, ".git"), { recursive: true });
+    fs.mkdirSync(nestedDir, { recursive: true });
+
+    const result = runCli(["init"], nestedDir);
+
+    assert.strictEqual(result.code, 0);
+    assert.match(result.stdout, /Initialized \/.tack\//);
+    assert.doesNotMatch(result.stderr, /already initialized/i);
+    assert.ok(fs.existsSync(path.join(repoRoot, ".tack", "spec.yaml")));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

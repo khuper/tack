@@ -51,7 +51,7 @@ function looksLikeLegacyTackDir(dir: string): boolean {
   }
 }
 
-function findNearestProjectRootWithContext(start = process.cwd()): string | null {
+function normalizeProjectLookupStart(start = process.cwd()): string {
   let current = path.resolve(start);
 
   if (path.basename(current) === TACK_DIRNAME) {
@@ -59,6 +59,33 @@ function findNearestProjectRootWithContext(start = process.cwd()): string | null
   } else if (path.basename(current) === LEGACY_DIRNAME && looksLikeLegacyTackDir(current)) {
     current = path.dirname(current);
   }
+
+  return current;
+}
+
+function findGitRepoBoundary(start = process.cwd()): string | null {
+  let current = normalizeProjectLookupStart(start);
+
+  while (true) {
+    try {
+      if (fs.existsSync(path.join(current, ".git"))) {
+        return current;
+      }
+    } catch {
+      // Ignore stat failures and keep walking upward.
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
+function findNearestProjectRootWithContext(start = process.cwd()): string | null {
+  let current = normalizeProjectLookupStart(start);
+  const repoBoundary = findGitRepoBoundary(current);
 
   while (true) {
     const tackDir = path.join(current, TACK_DIRNAME);
@@ -75,6 +102,10 @@ function findNearestProjectRootWithContext(start = process.cwd()): string | null
       return current;
     }
 
+    if (repoBoundary && current === repoBoundary) {
+      return null;
+    }
+
     const parent = path.dirname(current);
     if (parent === current) {
       return null;
@@ -84,7 +115,8 @@ function findNearestProjectRootWithContext(start = process.cwd()): string | null
 }
 
 export function projectRoot(): string {
-  return findNearestProjectRootWithContext() ?? path.resolve(process.cwd());
+  const start = process.cwd();
+  return findNearestProjectRootWithContext(start) ?? findGitRepoBoundary(start) ?? path.resolve(start);
 }
 
 export function findProjectRoot(): string {

@@ -83,6 +83,23 @@ describe("files", () => {
     expect(tackDirExists()).toBeTrue();
   });
 
+  it("stops at the current git repo boundary instead of adopting a parent .tack", () => {
+    const repoRoot = path.join(tmpDir, "repo");
+    const nestedDir = path.join(repoRoot, "packages", "web", "src");
+
+    fs.mkdirSync(path.join(repoRoot, ".git"), { recursive: true });
+    fs.mkdirSync(nestedDir, { recursive: true });
+    process.chdir(nestedDir);
+
+    expect(projectRoot()).toBe(repoRoot);
+    expect(tackDirExists()).toBeFalse();
+    expect(specExists()).toBeFalse();
+
+    ensureTackDir();
+
+    expect(fs.existsSync(path.join(repoRoot, ".tack"))).toBeTrue();
+  });
+
   it("adds local telemetry files to git exclude without touching project gitignore", () => {
     fs.mkdirSync(path.join(tmpDir, ".git", "info"), { recursive: true });
 

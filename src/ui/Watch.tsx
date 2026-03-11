@@ -113,7 +113,7 @@ function renderHistoryBadge(level: HistoryLevel) {
   }
 
   return (
-    <Text backgroundColor="yellow" color="black" bold>
+    <Text backgroundColor="cyan" color="black" bold>
       {" SCAN "}
     </Text>
   );
@@ -125,6 +125,7 @@ function historyLevelColor(level: HistoryLevel): "green" | "red" | "yellow" | "c
   if (level === "read") return "cyan";
   if (level === "check") return "magenta";
   if (level === "ready") return "blue";
+  if (level === "update") return "blue";
   return "yellow";
 }
 

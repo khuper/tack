@@ -38,7 +38,7 @@ Examples:
 
 ## End-Of-Work Write-Back
 
-Before finishing meaningful work, use `checkpoint_work`.
+Before finishing each meaningful task, use `checkpoint_work`.
 
 Use it when you:
 
@@ -47,7 +47,7 @@ Use it when you:
 - hit a blocker
 - left partial work
 
-Use `log_decision` only for a narrow decision without a full checkpoint.
+When you make or recommend a direction change, call `log_decision` with the reasoning without waiting to be asked.
 Use `log_agent_note` only for a narrow discovery or warning without a full checkpoint.
 
 ## Example: A Fresh Agent Window

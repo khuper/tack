@@ -552,7 +552,11 @@ function findMatchingConstraintKey(question: string, specConstraints: Record<str
 const CHECKPOINT_FINISH_CASES = "made a decision, discovered a constraint, hit a blocker, or left partial work";
 
 function checkpointDefaultLine(): string {
-  return `- checkpoint_work is the default end-of-work path. Call it before finishing if you ${CHECKPOINT_FINISH_CASES}.`;
+  return `- Before finishing each meaningful task, call checkpoint_work with what changed and why if you ${CHECKPOINT_FINISH_CASES}.`;
+}
+
+function decisionDefaultLine(): string {
+  return "- When you make or recommend a direction change, call log_decision with the reasoning without waiting to be asked.";
 }
 
 function checkRuleLine(): string {
@@ -560,7 +564,7 @@ function checkRuleLine(): string {
 }
 
 function briefingWriteBackSummary(): string {
-  return "Write back: checkpoint_work is the default end-of-work path; call it before finishing for decisions, discovered constraints, blockers, or partial work; use check_rule mid-task before structural changes.";
+  return "Write back: self-document by default; call log_decision when you make or recommend a direction change, and call checkpoint_work before finishing each meaningful task with what changed and why; use check_rule mid-task before structural changes.";
 }
 
 export function buildSessionLines(): string[] {
@@ -633,8 +637,8 @@ export function buildSessionLines(): string[] {
 
   lines.push("## Write Back Triggers");
   lines.push(checkpointDefaultLine());
+  lines.push(decisionDefaultLine());
   lines.push(checkRuleLine());
-  lines.push("- Use log_decision only when you intentionally change behavior, guardrails, or architecture.");
   lines.push("- Use log_agent_note only for a narrow discovery or warning that does not need a full checkpoint.");
 
   if (changedFiles.length > 0) {

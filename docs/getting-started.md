@@ -118,6 +118,7 @@ Legacy migration from `./tack/` to `./.tack/` only happens when that directory l
 
 ## Next
 
+- [Product Direction](./product-direction.md)
 - [Agent Workflow](./agent-workflow.md)
 - [MCP Clients](./mcp-clients.md)
 - [Watch Mode](./watch.md)

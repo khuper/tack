@@ -43,6 +43,7 @@ tack handoff
 
 Read the full guides:
 
+- [Product Direction](./docs/product-direction.md)
 - [Getting Started](./docs/getting-started.md)
 - [Agent Workflow](./docs/agent-workflow.md)
 - [MCP Clients](./docs/mcp-clients.md)
@@ -127,6 +128,7 @@ Instead of making the next session reconstruct what happened, it calls `checkpoi
 
 ## Learn More
 
+- [Product Direction](./docs/product-direction.md)
 - [Getting Started](./docs/getting-started.md)
 - [Agent Workflow](./docs/agent-workflow.md)
 - [MCP Clients](./docs/mcp-clients.md)

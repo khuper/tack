@@ -96,11 +96,14 @@ describe("memory summaries", () => {
     expect(text).toContain("# Session Start");
     expect(text).toContain("tack://context/workspace");
     expect(text).toContain("## Write Back Triggers");
-    expect(text).toContain("checkpoint_work is the default end-of-work path");
+    expect(text).toContain("Before finishing each meaningful task, call checkpoint_work");
+    expect(text).toContain("with what changed and why");
     expect(text).toContain("made a decision");
     expect(text).toContain("discovered a constraint");
     expect(text).toContain("hit a blocker");
     expect(text).toContain("left partial work");
+    expect(text).toContain("When you make or recommend a direction change, call log_decision");
+    expect(text).toContain("without waiting to be asked");
     expect(text).toContain("Mid-task, use check_rule briefly before structural changes");
     expect(text).toContain("Reduce agent prompting");
   });
@@ -122,8 +125,9 @@ describe("memory summaries", () => {
     expect(briefing.summary).toContain("Rules:");
     expect(briefing.summary).toContain("Recent decisions:");
     expect(briefing.summary).toContain("Open drift:");
-    expect(briefing.summary).toContain("checkpoint_work is the default end-of-work path");
-    expect(briefing.summary).toContain("blockers");
+    expect(briefing.summary).toContain("self-document by default");
+    expect(briefing.summary).toContain("call log_decision when you make or recommend a direction change");
+    expect(briefing.summary).toContain("call checkpoint_work before finishing each meaningful task");
     expect(briefing.summary).toContain("check_rule mid-task before structural changes");
     expect(briefing.rules_count).toBe(4);
     expect(briefing.open_drift_count).toBe(1);

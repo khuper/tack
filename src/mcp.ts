@@ -21,6 +21,7 @@ import {
 import { wrapUntrustedContext } from "./lib/promptSafety.js";
 import { appendDecision, normalizeDecisionActor } from "./engine/decisions.js";
 import { log } from "./lib/logger.js";
+import { deriveMcpAgentName } from "./lib/mcpAgent.js";
 import { addNote } from "./lib/notes.js";
 import { AGENT_NOTE_TYPES } from "./lib/signals.js";
 import type { AgentNoteType } from "./lib/signals.js";
@@ -98,12 +99,6 @@ function formatBriefingSummary(): string {
   return `briefed: ${briefing.rules_count} rules, ${briefing.recent_decisions_count} recent decisions`;
 }
 
-function resolveMcpAgentName(): string {
-  const raw = process.env.TACK_AGENT_NAME?.trim().toLowerCase() ?? "";
-  const normalized = raw.replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
-  return normalized || "unknown";
-}
-
 let telemetrySessionRecorded = false;
 let lastBriefingRecordedAt = 0;
 
@@ -131,7 +126,7 @@ function noteBriefingServed(): void {
 async function main(): Promise<void> {
   ensureTelemetryState();
   const pkg = readPackageMeta();
-  const mcpAgent = resolveMcpAgentName();
+  let mcpAgent = deriveMcpAgentName(process.env.TACK_AGENT_NAME);
   const mcpSessionId = randomUUID();
   const sessionResource = getTackMcpResource("tack://session");
   const workspaceResource = getTackMcpResource("tack://context/workspace");
@@ -777,6 +772,7 @@ async function main(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  mcpAgent = deriveMcpAgentName(process.env.TACK_AGENT_NAME, server.server.getClientVersion());
   log({ event: "mcp:ready", transport: "stdio", agent: mcpAgent, agent_type: mcpAgent, session_id: mcpSessionId });
   announceMcpReady(mcpAgent, mcpSessionId);
 }

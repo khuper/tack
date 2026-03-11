@@ -19,6 +19,7 @@ import {
   markMcpSessionsRepoChanged,
   upsertMcpSessionState,
 } from "../dist/lib/logger.js";
+import { deriveMcpAgentName } from "../dist/lib/mcpAgent.js";
 import { ensureTackDir, logsPath } from "../dist/lib/files.js";
 
 test("formats MCP resource activity events with agent type and session id", () => {
@@ -54,6 +55,15 @@ test("formats MCP tool activity events", () => {
   assert.strictEqual(isMcpActivityEvent(event), true);
   assert.strictEqual(classifyMcpActivityEvent(event), "write");
   assert.strictEqual(formatMcpActivityEvent(event), "recorded a note");
+});
+
+test("derives agent names from explicit config and MCP client info", () => {
+  assert.strictEqual(deriveMcpAgentName("codex", { name: "Cursor", version: "1.0.0" }), "codex");
+  assert.strictEqual(deriveMcpAgentName(undefined, { name: "Claude Code", version: "1.0.57" }), "claude");
+  assert.strictEqual(deriveMcpAgentName(undefined, { name: "OpenAI Codex", version: "0.9.0" }), "codex");
+  assert.strictEqual(deriveMcpAgentName(undefined, { name: "Cursor", version: "0.48.6" }), "cursor");
+  assert.strictEqual(deriveMcpAgentName(undefined, { name: "My Custom Client", version: "1.0.0" }), "my-custom-client");
+  assert.strictEqual(deriveMcpAgentName(undefined, undefined), "unknown");
 });
 
 test("keeps MCP activity labels stable across repeated resource reads and tool calls", () => {

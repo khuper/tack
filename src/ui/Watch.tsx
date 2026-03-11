@@ -56,6 +56,20 @@ type WatchProps = {
   animationsEnabled: boolean;
 };
 
+const USEFUL_COMMANDS: Array<{ command: string; description: string }> = [
+  { command: "tack status", description: "Full health snapshot and drift details" },
+  { command: "tack handoff", description: "Package the current state for the next session" },
+  { command: "tack note", description: "Add or inspect agent notes" },
+  { command: "tack log", description: "View or append decisions" },
+  { command: "checkpoint_work", description: "Default MCP write-back before ending work" },
+  { command: "tack help", description: "Show all commands and options" },
+];
+
+const USEFUL_COMMANDS_LABEL_WIDTH = USEFUL_COMMANDS.reduce(
+  (max, item) => Math.max(max, item.command.length),
+  0
+);
+
 function renderHistoryBadge(level: HistoryLevel) {
   if (level === "ready") {
     return (
@@ -455,30 +469,12 @@ export function Watch({ animationsEnabled }: WatchProps) {
         <Text dimColor>--- Useful commands from another terminal ---</Text>
       </Box>
       <Box flexDirection="column" paddingLeft={2}>
-        <Text>
-          <Text color="green">tack status</Text>
-          <Text dimColor>     Full health snapshot and drift details</Text>
-        </Text>
-        <Text>
-          <Text color="green">tack handoff</Text>
-          <Text dimColor>    Package the current state for the next session</Text>
-        </Text>
-        <Text>
-          <Text color="green">tack note</Text>
-          <Text dimColor>       Add or inspect agent notes</Text>
-        </Text>
-        <Text>
-          <Text color="green">tack log</Text>
-          <Text dimColor>        View or append decisions</Text>
-        </Text>
-        <Text>
-          <Text color="green">checkpoint_work</Text>
-          <Text dimColor>   Default MCP write-back before ending work</Text>
-        </Text>
-        <Text>
-          <Text color="green">tack help</Text>
-          <Text dimColor>       Show all commands and options</Text>
-        </Text>
+        {USEFUL_COMMANDS.map((item) => (
+          <Text key={item.command}>
+            <Text color="green">{item.command.padEnd(USEFUL_COMMANDS_LABEL_WIDTH)}</Text>
+            <Text dimColor>  {item.description}</Text>
+          </Text>
+        ))}
       </Box>
     </Box>
   );

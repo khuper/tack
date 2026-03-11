@@ -35,8 +35,8 @@ The trust loop is:
 1. the agent reads Tack context before acting
 2. the agent writes memory back after acting
 
-Reads tell you the agent is grounding itself in project memory.
-Writes tell you the next session will not start cold.
+Reads tell you the agent is grounding itself in current project memory.
+Writes tell you the next session will not start from stale or missing context.
 
 ## Session Labels
 

@@ -1,6 +1,6 @@
 # Agent Workflow
 
-Tack works best when the agent follows a compact read/write loop instead of reading everything upfront.
+Tack works best when the agent uses a compact read/write loop to stay grounded in accurate project memory instead of stale instructions or broad repo guesses.
 
 ## Session Start
 
@@ -52,12 +52,12 @@ Use `log_agent_note` only for a narrow discovery or warning without a full check
 
 ## Example: A Fresh Agent Window
 
-Without Tack, a new session often re-reads the repo, re-asks the same questions, or misses prior decisions.
+Without Tack, a new session often re-reads the repo, re-asks the same questions, or follows stale assumptions.
 
 With Tack:
 
 1. the agent reads `tack://session`
-2. sees the current focus and recent decisions
+2. sees the current focus, recent decisions, and memory warnings
 3. notices stale unfinished work or recurring blockers if they exist
 4. reads `tack://context/workspace` only if it needs guardrails or drift details
 5. starts work with less prompting and less token waste

@@ -107,6 +107,10 @@ export function classifyMcpActivityEvent(event: McpActivityEvent): McpActivityCa
     return "read";
   }
 
+  if (event.tool === "register_agent_identity") {
+    return "ready";
+  }
+
   if (event.tool === "check_rule") {
     return "check";
   }
@@ -203,6 +207,12 @@ export function formatMcpActivityEvent(event: McpActivityEvent): string {
     return "fetched briefing";
   }
 
+  if (event.tool === "register_agent_identity") {
+    return event.summary && event.summary.trim().length > 0
+      ? event.summary
+      : "registered session identity";
+  }
+
   if (event.tool === "check_rule") {
     return event.summary && event.summary.trim().length > 0 ? event.summary : "checked guardrail";
   }
@@ -276,9 +286,12 @@ export function createMcpActivityMonitor(): () => McpActivityNotice[] {
 }
 
 export function upsertMcpSessionState(states: McpSessionState[], notice: McpActivityNotice, now = Date.now()): McpSessionState[] {
+  const matchesNotice = (state: McpSessionState): boolean =>
+    state.sessionKey === notice.sessionKey ||
+    (notice.sessionId !== "unknown" && state.sessionId === notice.sessionId);
   const eventMs = eventTimeMs(notice.event, now);
   const current =
-    states.find((state) => state.sessionKey === notice.sessionKey) ??
+    states.find(matchesNotice) ??
     {
       agent: notice.agent,
       agentType: notice.agentType,
@@ -335,7 +348,7 @@ export function upsertMcpSessionState(states: McpSessionState[], notice: McpActi
     next.warnedStale = false;
   }
 
-  return [next, ...states.filter((state) => state.sessionKey !== notice.sessionKey)].sort((a, b) => b.lastEventAt - a.lastEventAt);
+  return [next, ...states.filter((state) => !matchesNotice(state))].sort((a, b) => b.lastEventAt - a.lastEventAt);
 }
 
 export function refreshMcpSessionStates(states: McpSessionState[], now = Date.now()): McpSessionState[] {

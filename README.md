@@ -2,9 +2,9 @@
 
 [![npm version](https://img.shields.io/npm/v/tack-cli.svg)](https://www.npmjs.com/package/tack-cli) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Tack gives coding agents compact project memory with guardrails and handoffs.
+Tack gives your agents persistent project memory that stays accurate instead of going stale.
 
-It keeps a shared record in `./.tack/` so a new agent session can start with the smallest useful context instead of re-learning the repo from scratch.
+Static instruction files drift the moment the code changes. Tack keeps a shared record in `./.tack/` and checks that memory against the actual codebase, so the next agent starts from context that is still trustworthy.
 
 ## Install And Prove It Works
 
@@ -50,22 +50,21 @@ Read the full guides:
 - [CLI Reference](./docs/cli.md)
 - [Detectors And YAML Rules](./docs/detectors.md)
 
-## What Can You Do With Tack?
+## What Tack Actually Does
 
-- Give agents a compact session-start entrypoint with `tack://session`
+- Keep implementation facts aligned with the real codebase
+- Stop stale project instructions from misleading the next agent
 - Preserve decisions, blockers, discoveries, and partial work across sessions
-- Watch live MCP reads and writes so you can tell whether agents are actually using Tack
-- Detect architecture drift against a declared spec
-- Package handoffs for the next agent or human
-- Install startup instructions for supported agents with `tack setup-agent`
+- Show live proof that agents are reading current context and writing memory back
+- Carry context across session boundaries with handoffs and MCP startup resources
 
-## Why Tack Helps
+## Why This Matters
 
-- Agents stop starting cold every time you open a new window
-- Architectural guardrails live in one place instead of scattered prompts
-- The default workflow stays compact instead of vacuuming the entire repo
-- You can see who read context, who wrote memory back, and who may be leaving the next session cold
-- Project memory lives in versionable files under `./.tack/`
+- The real failure mode is stale context, not just missing context
+- Every repeated question like "what framework are we using?" is a context failure
+- Drift detection keeps Tack from lying to the next agent when the code has changed
+- Decisions explain why the system looks the way it does before the agent asks
+- Handoffs let context survive session boundaries without another interview
 
 ## Common Workflow
 
@@ -88,7 +87,7 @@ tack watch
 TACK_AGENT_NAME=claude tack mcp
 ```
 
-`tack watch` is the live proof. If the agent reads `tack://session` or writes memory back, you will see it immediately.
+`tack watch` is the live proof. If the agent reads `tack://session`, checks a rule, or writes memory back, you will see it immediately.
 
 v1 does not ship a standalone `tack check-in` command. Write-back stays behind MCP tools like `checkpoint_work` plus `tack handoff`.
 
@@ -112,19 +111,19 @@ tack watch
 TACK_AGENT_NAME=claude tack mcp
 ```
 
-The agent reads `tack://session`, sees the current focus and recent work, and starts from the smallest useful context instead of re-learning the repo. `tack watch` shows the read live so you know the agent is grounded in project memory.
+The agent reads `tack://session`, sees the current focus and recent work, and starts from maintained context instead of re-learning the repo. `tack watch` shows the read live so you know the agent is grounded in current project memory.
 
 ### Structural Change
 
 The agent wants to add a dependency or introduce a new boundary.
 
-Instead of guessing, it calls `check_rule` first. That gives a compact yes/no-with-context guardrail check before the architecture changes.
+Instead of guessing from stale instructions, it calls `check_rule` first. That gives a compact yes/no-with-context guardrail check before the architecture changes.
 
 ### End Of Session
 
 The agent made changes, found one blocker, and left partial work.
 
-Instead of scattering notes manually, it calls `checkpoint_work` once. Tack saves a summary, discoveries, decisions, and related files so the next session has a usable starting point.
+Instead of making the next session reconstruct what happened, it calls `checkpoint_work` once. Tack saves a summary, discoveries, decisions, and related files so the next session inherits usable context immediately.
 
 ## Learn More
 

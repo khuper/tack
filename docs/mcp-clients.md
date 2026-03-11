@@ -18,6 +18,8 @@ TACK_AGENT_NAME=cursor tack mcp
 
 That label is written into MCP activity logs so `tack watch` can show which agent read context, checked a rule, or wrote memory back.
 
+If your MCP client provides neither `TACK_AGENT_NAME` nor `initialize.clientInfo.name`, call `register_agent_identity` once near session start. That gives the current session a stable label without overloading `get_briefing` or requiring manual log edits.
+
 ## Cursor
 
 Add an MCP server with:
@@ -113,6 +115,7 @@ If you run more than one agent against the same repo, give each one a distinct l
 
 - `get_briefing` - low-token session-start briefing
 - `check_rule` - mid-task guardrail check before structural changes
+- `register_agent_identity` - explicit session labeling fallback when the client does not identify itself
 - `checkpoint_work` - default end-of-work write-back
 - `log_decision` - record a single decision without a full checkpoint
 - `log_agent_note` - record a narrow discovery or warning without a full checkpoint

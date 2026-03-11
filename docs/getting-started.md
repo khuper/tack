@@ -1,8 +1,8 @@
 # Getting Started
 
-Tack gives coding agents compact project memory across sessions.
+Tack gives coding agents project memory that stays accurate across sessions.
 
-It keeps a shared record of your architecture, decisions, notes, drift, and handoffs in `./.tack/` so a new agent session can start with the smallest useful context instead of re-learning the repo from scratch.
+Static setup files go stale the moment the code changes. Tack keeps a shared record of your architecture, decisions, notes, drift, and handoffs in `./.tack/`, then checks that memory against the codebase so the next session starts from context that is still trustworthy.
 
 ## Install
 
@@ -54,6 +54,8 @@ tack handoff
 
 ## Common Workflow
 
+The goal is simple: stop re-explaining the same codebase facts every time a new agent session starts.
+
 Initialize Tack once at the repo root:
 
 ```bash
@@ -93,8 +95,8 @@ All state lives in `./.tack/`:
 - `implementation_status.md` - current implementation facts
 - `decisions.md` - append-only decision history
 - `_notes.ndjson` - timestamped agent notes
-- `_audit.yaml` - latest detector sweep
-- `_drift.yaml` - unresolved, accepted, or rejected drift
+- `_audit.yaml` - latest detector sweep used to verify context against the codebase
+- `_drift.yaml` - unresolved, accepted, or rejected mismatches between memory and reality
 - `_logs.ndjson` - append-only event stream
 - `handoffs/*.md` and `handoffs/*.json` - handoff packages for the next session
 - `verification.md` - verification steps included in handoffs

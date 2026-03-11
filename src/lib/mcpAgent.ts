@@ -3,6 +3,13 @@ type McpClientInfo = {
   version?: string | null;
 } | null;
 
+export type McpAgentSource = "env" | "client" | "registered" | "unknown";
+
+export type McpAgentIdentity = {
+  name: string;
+  source: McpAgentSource;
+};
+
 const KNOWN_MCP_AGENT_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /\bcodex\b/, label: "codex" },
   { pattern: /\bclaude(?:[\s-]?code)?\b/, label: "claude" },
@@ -19,25 +26,71 @@ export function normalizeMcpAgentName(value: string | null | undefined): string 
   return normalized || "unknown";
 }
 
-export function deriveMcpAgentName(
+export function resolveMcpAgentIdentity(
   configuredAgentName?: string | null,
   clientInfo?: McpClientInfo
-): string {
+): McpAgentIdentity {
   const explicit = normalizeMcpAgentName(configuredAgentName);
   if (explicit !== "unknown") {
-    return explicit;
+    return { name: explicit, source: "env" };
   }
 
   const clientName = clientInfo?.name?.trim().toLowerCase() ?? "";
   if (!clientName) {
-    return "unknown";
+    return { name: "unknown", source: "unknown" };
   }
 
   for (const entry of KNOWN_MCP_AGENT_PATTERNS) {
     if (entry.pattern.test(clientName)) {
-      return entry.label;
+      return { name: entry.label, source: "client" };
     }
   }
 
-  return normalizeMcpAgentName(clientName);
+  return { name: normalizeMcpAgentName(clientName), source: "client" };
+}
+
+export function deriveMcpAgentName(
+  configuredAgentName?: string | null,
+  clientInfo?: McpClientInfo
+): string {
+  return resolveMcpAgentIdentity(configuredAgentName, clientInfo).name;
+}
+
+export function registerMcpAgentIdentity(
+  current: McpAgentIdentity,
+  requestedAgentName: string | null | undefined
+): { identity: McpAgentIdentity; changed: boolean; reason: string } {
+  const requested = normalizeMcpAgentName(requestedAgentName);
+  if (requested === "unknown") {
+    return {
+      identity: current,
+      changed: false,
+      reason: "invalid_name",
+    };
+  }
+
+  if (current.source === "env" || current.source === "client") {
+    return {
+      identity: current,
+      changed: false,
+      reason: `preserved_${current.source}`,
+    };
+  }
+
+  if (current.source === "registered" && current.name === requested) {
+    return {
+      identity: current,
+      changed: false,
+      reason: "already_registered",
+    };
+  }
+
+  return {
+    identity: {
+      name: requested,
+      source: "registered",
+    },
+    changed: true,
+    reason: current.source === "registered" ? "updated_registration" : "registered",
+  };
 }

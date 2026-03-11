@@ -71,6 +71,11 @@ export const TACK_MCP_TOOLS: TackMcpToolGuide[] = [
       "Brief mid-task guardrail check before structural changes such as a new dependency, storage choice, pattern, or boundary.",
   },
   {
+    name: "register_agent_identity",
+    description:
+      "Explicitly register a session label when the MCP client does not provide TACK_AGENT_NAME or initialize.clientInfo.name.",
+  },
+  {
     name: "checkpoint_work",
     description:
       "Default end-of-work write-back. Call this before finishing if you made a decision, discovered a constraint, hit a blocker, or left partial work.",

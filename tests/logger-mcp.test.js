@@ -20,7 +20,11 @@ import {
   markMcpSessionsRepoChanged,
   upsertMcpSessionState,
 } from "../dist/lib/logger.js";
-import { deriveMcpAgentName } from "../dist/lib/mcpAgent.js";
+import {
+  deriveMcpAgentName,
+  registerMcpAgentIdentity,
+  resolveMcpAgentIdentity,
+} from "../dist/lib/mcpAgent.js";
 import { ensureTackDir, logsPath } from "../dist/lib/files.js";
 
 test("formats MCP resource activity events with agent type and session id", () => {
@@ -58,6 +62,21 @@ test("formats MCP tool activity events", () => {
   assert.strictEqual(formatMcpActivityEvent(event), "recorded a note");
 });
 
+test("treats explicit identity registration as ready activity instead of write-back", () => {
+  const event = {
+    ts: "2026-03-11T20:00:00.000Z",
+    event: "mcp:tool",
+    agent: "codex",
+    agent_type: "codex",
+    session_id: "session-c",
+    tool: "register_agent_identity",
+    summary: "registered identity as codex",
+  };
+
+  assert.strictEqual(classifyMcpActivityEvent(event), "ready");
+  assert.strictEqual(formatMcpActivityEvent(event), "registered identity as codex");
+});
+
 test("derives agent names from explicit config and MCP client info", () => {
   assert.strictEqual(deriveMcpAgentName("codex", { name: "Cursor", version: "1.0.0" }), "codex");
   assert.strictEqual(deriveMcpAgentName(undefined, { name: "Claude Code", version: "1.0.57" }), "claude");
@@ -65,6 +84,29 @@ test("derives agent names from explicit config and MCP client info", () => {
   assert.strictEqual(deriveMcpAgentName(undefined, { name: "Cursor", version: "0.48.6" }), "cursor");
   assert.strictEqual(deriveMcpAgentName(undefined, { name: "My Custom Client", version: "1.0.0" }), "my-custom-client");
   assert.strictEqual(deriveMcpAgentName(undefined, undefined), "unknown");
+});
+
+test("registers a fallback identity only when env and client info are missing", () => {
+  const unknown = resolveMcpAgentIdentity(undefined, undefined);
+  assert.deepStrictEqual(registerMcpAgentIdentity(unknown, "Codex"), {
+    identity: { name: "codex", source: "registered" },
+    changed: true,
+    reason: "registered",
+  });
+
+  const envIdentity = resolveMcpAgentIdentity("cursor", { name: "Claude Code", version: "1.0.57" });
+  assert.deepStrictEqual(registerMcpAgentIdentity(envIdentity, "codex"), {
+    identity: { name: "cursor", source: "env" },
+    changed: false,
+    reason: "preserved_env",
+  });
+
+  const clientIdentity = resolveMcpAgentIdentity(undefined, { name: "Claude Code", version: "1.0.57" });
+  assert.deepStrictEqual(registerMcpAgentIdentity(clientIdentity, "codex"), {
+    identity: { name: "claude", source: "client" },
+    changed: false,
+    reason: "preserved_client",
+  });
 });
 
 test("keeps MCP activity labels stable across repeated resource reads and tool calls", () => {
@@ -379,4 +421,41 @@ test("adds a short session suffix when the same agent has multiple sessions", ()
   ];
 
   assert.strictEqual(getMcpSessionDisplayLabel(states[0], states), "claude#sess");
+});
+
+test("relabels an existing session when identity is registered after connect", () => {
+  const readyNotice = {
+    event: { ts: "2026-03-11T20:00:00.000Z", event: "mcp:ready", transport: "stdio", agent: "unknown", agent_type: "unknown", session_id: "session-a" },
+    agent: "unknown",
+    agentType: "unknown",
+    sessionId: "session-a",
+    sessionKey: "unknown:session-a",
+    category: "ready",
+    message: "connected to Tack MCP",
+  };
+  const registerNotice = {
+    event: {
+      ts: "2026-03-11T20:00:05.000Z",
+      event: "mcp:tool",
+      tool: "register_agent_identity",
+      summary: "registered identity as codex",
+      agent: "codex",
+      agent_type: "codex",
+      session_id: "session-a",
+    },
+    agent: "codex",
+    agentType: "codex",
+    sessionId: "session-a",
+    sessionKey: "codex:session-a",
+    category: "ready",
+    message: "registered identity as codex",
+  };
+
+  let states = upsertMcpSessionState([], readyNotice, Date.parse("2026-03-11T20:00:00.000Z"));
+  states = upsertMcpSessionState(states, registerNotice, Date.parse("2026-03-11T20:00:05.000Z"));
+
+  assert.strictEqual(states.length, 1);
+  assert.strictEqual(states[0]?.agent, "codex");
+  assert.strictEqual(states[0]?.sessionKey, "codex:session-a");
+  assert.strictEqual(states[0]?.lastMessage, "registered identity as codex");
 });

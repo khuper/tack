@@ -21,7 +21,7 @@ import {
 import { wrapUntrustedContext } from "./lib/promptSafety.js";
 import { appendDecision, normalizeDecisionActor } from "./engine/decisions.js";
 import { log } from "./lib/logger.js";
-import { deriveMcpAgentName } from "./lib/mcpAgent.js";
+import { registerMcpAgentIdentity, resolveMcpAgentIdentity } from "./lib/mcpAgent.js";
 import { addNote } from "./lib/notes.js";
 import { AGENT_NOTE_TYPES } from "./lib/signals.js";
 import type { AgentNoteType } from "./lib/signals.js";
@@ -126,7 +126,7 @@ function noteBriefingServed(): void {
 async function main(): Promise<void> {
   ensureTelemetryState();
   const pkg = readPackageMeta();
-  let mcpAgent = deriveMcpAgentName(process.env.TACK_AGENT_NAME);
+  let mcpAgentIdentity = resolveMcpAgentIdentity(process.env.TACK_AGENT_NAME);
   const mcpSessionId = randomUUID();
   const sessionResource = getTackMcpResource("tack://session");
   const workspaceResource = getTackMcpResource("tack://context/workspace");
@@ -137,6 +137,7 @@ async function main(): Promise<void> {
   const handoffResource = getTackMcpResource("tack://handoff/latest");
   const getBriefingTool = getTackMcpTool("get_briefing");
   const checkRuleTool = getTackMcpTool("check_rule");
+  const registerAgentIdentityTool = getTackMcpTool("register_agent_identity");
   const checkpointWorkTool = getTackMcpTool("checkpoint_work");
   const logDecisionTool = getTackMcpTool("log_decision");
   const logAgentNoteTool = getTackMcpTool("log_agent_note");
@@ -152,16 +153,42 @@ async function main(): Promise<void> {
   const logMcpResource = (resource: string, summary?: string): void => {
     log(
       summary
-        ? { event: "mcp:resource", resource, summary, agent: mcpAgent, agent_type: mcpAgent, session_id: mcpSessionId }
-        : { event: "mcp:resource", resource, agent: mcpAgent, agent_type: mcpAgent, session_id: mcpSessionId }
+        ? {
+            event: "mcp:resource",
+            resource,
+            summary,
+            agent: mcpAgentIdentity.name,
+            agent_type: mcpAgentIdentity.name,
+            session_id: mcpSessionId,
+          }
+        : {
+            event: "mcp:resource",
+            resource,
+            agent: mcpAgentIdentity.name,
+            agent_type: mcpAgentIdentity.name,
+            session_id: mcpSessionId,
+          }
     );
   };
 
   const logMcpTool = (tool: string, summary?: string): void => {
     log(
       summary
-        ? { event: "mcp:tool", tool, summary, agent: mcpAgent, agent_type: mcpAgent, session_id: mcpSessionId }
-        : { event: "mcp:tool", tool, agent: mcpAgent, agent_type: mcpAgent, session_id: mcpSessionId }
+        ? {
+            event: "mcp:tool",
+            tool,
+            summary,
+            agent: mcpAgentIdentity.name,
+            agent_type: mcpAgentIdentity.name,
+            session_id: mcpSessionId,
+          }
+        : {
+            event: "mcp:tool",
+            tool,
+            agent: mcpAgentIdentity.name,
+            agent_type: mcpAgentIdentity.name,
+            session_id: mcpSessionId,
+          }
     );
   };
 
@@ -503,6 +530,53 @@ async function main(): Promise<void> {
   );
 
   server.registerTool(
+    "register_agent_identity",
+    {
+      description: registerAgentIdentityTool.description,
+      inputSchema: z.object({
+        name: z
+          .string()
+          .min(1)
+          .describe(
+            'Short session label to use when the MCP client did not provide one. Example: "codex", "claude", or "cursor".'
+          ),
+      }),
+    },
+    async (args: { name: string }) => {
+      noteMcpSessionActivity();
+      const registration = registerMcpAgentIdentity(mcpAgentIdentity, args.name);
+      mcpAgentIdentity = registration.identity;
+
+      const summary =
+        registration.reason === "invalid_name"
+          ? "ignored invalid identity registration"
+          : registration.reason === "preserved_env"
+            ? `kept configured identity ${mcpAgentIdentity.name}`
+            : registration.reason === "preserved_client"
+              ? `kept client identity ${mcpAgentIdentity.name}`
+              : registration.reason === "already_registered"
+                ? `identity already registered as ${mcpAgentIdentity.name}`
+                : `registered identity as ${mcpAgentIdentity.name}`;
+      logMcpTool("register_agent_identity", summary);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: jsonText({
+              ok: registration.reason !== "invalid_name",
+              changed: registration.changed,
+              agent: mcpAgentIdentity.name,
+              source: mcpAgentIdentity.source,
+              reason: registration.reason,
+            }),
+          },
+        ],
+      };
+    }
+  );
+
+  server.registerTool(
     "checkpoint_work",
     {
       description: checkpointWorkTool.description,
@@ -772,9 +846,15 @@ async function main(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  mcpAgent = deriveMcpAgentName(process.env.TACK_AGENT_NAME, server.server.getClientVersion());
-  log({ event: "mcp:ready", transport: "stdio", agent: mcpAgent, agent_type: mcpAgent, session_id: mcpSessionId });
-  announceMcpReady(mcpAgent, mcpSessionId);
+  mcpAgentIdentity = resolveMcpAgentIdentity(process.env.TACK_AGENT_NAME, server.server.getClientVersion());
+  log({
+    event: "mcp:ready",
+    transport: "stdio",
+    agent: mcpAgentIdentity.name,
+    agent_type: mcpAgentIdentity.name,
+    session_id: mcpSessionId,
+  });
+  announceMcpReady(mcpAgentIdentity.name, mcpSessionId);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-floating-promises

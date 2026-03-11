@@ -1,7 +1,7 @@
 {
   "name": "tack-cli",
   "version": "0.1.3",
-  "description": "Compact project memory for coding agents, with guardrails and handoffs.",
+  "description": "Accurate project memory for coding agents, kept in sync with the codebase.",
   "keywords": [
     "ai-agents",
     "project-memory",

@@ -184,6 +184,10 @@ export function mcpActivityEventKey(event: McpActivityEvent): string {
 
 export function formatMcpActivityEvent(event: McpActivityEvent): string {
   if (event.event === "mcp:ready") {
+    const label = getMcpAgentLabel(event);
+    if (label === "unknown") {
+      return "connected (new session; identity unknown)";
+    }
     return "connected to Tack MCP";
   }
 
@@ -302,7 +306,7 @@ export function getRecentMcpSessionStates(limit = 200, now = Date.now()): McpSes
     states = upsertMcpSessionState(states, toMcpActivityNotice(event), now);
   }
 
-  return refreshMcpSessionStates(states, now);
+  return refreshMcpSessionStates(pruneMcpSessionStates(states, now), now);
 }
 
 export function upsertMcpSessionState(states: McpSessionState[], notice: McpActivityNotice, now = Date.now()): McpSessionState[] {
@@ -372,7 +376,7 @@ export function upsertMcpSessionState(states: McpSessionState[], notice: McpActi
 }
 
 export function refreshMcpSessionStates(states: McpSessionState[], now = Date.now()): McpSessionState[] {
-  return pruneMcpSessionStates(states, now).map((state) => ({
+  return states.map((state) => ({
     ...state,
     health: computeSessionHealth(state.lastEventAt, now),
   }));
@@ -381,7 +385,7 @@ export function refreshMcpSessionStates(states: McpSessionState[], now = Date.no
 export function markMcpSessionsRepoChanged(states: McpSessionState[]): McpSessionState[] {
   const candidate = states
     .filter((state) => state.awaitingWriteBack)
-    .sort((a, b) => b.lastEventAt - a.lastEventAt)[0];
+    .sort((a, b) => (b.lastReadAt ?? b.lastEventAt) - (a.lastReadAt ?? a.lastEventAt))[0];
 
   if (!candidate) {
     return states;

@@ -79,6 +79,19 @@ test("treats explicit identity registration as ready activity instead of write-b
   assert.strictEqual(formatMcpActivityEvent(event), "registered identity as codex");
 });
 
+test("formats unknown ready activity as a new session with missing identity", () => {
+  const event = {
+    ts: "2026-03-11T20:00:00.000Z",
+    event: "mcp:ready",
+    transport: "stdio",
+    agent: "unknown",
+    agent_type: "unknown",
+    session_id: "session-x",
+  };
+
+  assert.strictEqual(formatMcpActivityEvent(event), "connected (new session; identity unknown)");
+});
+
 test("derives agent names from explicit config and MCP client info", () => {
   assert.strictEqual(deriveMcpAgentName("codex", { name: "Cursor", version: "1.0.0" }), "codex");
   assert.strictEqual(deriveMcpAgentName(undefined, { name: "Claude Code", version: "1.0.57" }), "claude");
@@ -450,6 +463,82 @@ test("attributes repo changes to the freshest reading session", () => {
 
   assert.strictEqual(states.find((state) => state.sessionKey === "claude:session-a")?.repoChangedAfterRead, false);
   assert.strictEqual(states.find((state) => state.sessionKey === "codex:session-b")?.repoChangedAfterRead, true);
+});
+
+test("does not let a later non-read event steal repo-change attribution", () => {
+  const olderReadNotice = {
+    event: { ts: "2026-03-07T20:00:00.000Z", event: "mcp:resource", resource: "tack://session", agent: "claude", agent_type: "claude", session_id: "session-a" },
+    agent: "claude",
+    agentType: "claude",
+    sessionId: "session-a",
+    sessionKey: "claude:session-a",
+    category: "read",
+    message: "read session context",
+  };
+  const newerReadNotice = {
+    event: { ts: "2026-03-07T20:01:00.000Z", event: "mcp:resource", resource: "tack://session", agent: "codex", agent_type: "codex", session_id: "session-b" },
+    agent: "codex",
+    agentType: "codex",
+    sessionId: "session-b",
+    sessionKey: "codex:session-b",
+    category: "read",
+    message: "read session context",
+  };
+  const laterCheckNotice = {
+    event: {
+      ts: "2026-03-07T20:02:00.000Z",
+      event: "mcp:tool",
+      tool: "check_rule",
+      summary: "checked guardrail: allowed",
+      agent: "claude",
+      agent_type: "claude",
+      session_id: "session-a",
+    },
+    agent: "claude",
+    agentType: "claude",
+    sessionId: "session-a",
+    sessionKey: "claude:session-a",
+    category: "check",
+    message: "checked guardrail: allowed",
+  };
+
+  let states = upsertMcpSessionState([], olderReadNotice, Date.parse("2026-03-07T20:00:00.000Z"));
+  states = upsertMcpSessionState(states, newerReadNotice, Date.parse("2026-03-07T20:01:00.000Z"));
+  states = upsertMcpSessionState(states, laterCheckNotice, Date.parse("2026-03-07T20:02:00.000Z"));
+  states = markMcpSessionsRepoChanged(states);
+
+  assert.strictEqual(states.find((state) => state.sessionKey === "claude:session-a")?.repoChangedAfterRead, false);
+  assert.strictEqual(states.find((state) => state.sessionKey === "codex:session-b")?.repoChangedAfterRead, true);
+});
+
+test("refresh keeps long-lived sessions and only updates health", () => {
+  const now = Date.parse("2026-03-11T20:00:00.000Z");
+  const states = [
+    {
+      agent: "codex",
+      agentType: "codex",
+      sessionId: "session-a",
+      sessionKey: "codex:session-a",
+      connectedAt: now - 2 * 60 * 60 * 1000,
+      lastEventAt: now - 2 * 60 * 60 * 1000,
+      lastReadAt: now - 2 * 60 * 60 * 1000,
+      lastCheckAt: null,
+      lastWriteAt: null,
+      lastAction: "read",
+      lastMessage: "read session context",
+      hasReadSessionContext: true,
+      awaitingWriteBack: true,
+      repoChangedAfterRead: false,
+      health: "active",
+      warnedIdle: false,
+      warnedStale: false,
+    },
+  ];
+
+  const refreshed = collectMcpInactivityWarnings(states, now).states;
+  assert.strictEqual(refreshed.length, 1);
+  assert.strictEqual(refreshed[0]?.sessionKey, "codex:session-a");
+  assert.strictEqual(refreshed[0]?.health, "stale");
 });
 
 test("adds a short session suffix when the same agent has multiple sessions", () => {

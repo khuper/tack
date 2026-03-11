@@ -8,6 +8,7 @@ const MCP_ACTIVITY_SUPPRESS_MS = 1500;
 const RECENT_WRITE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MCP_IDLE_MS = 5 * 60 * 1000;
 const MCP_STALE_MS = 15 * 60 * 1000;
+const MCP_SESSION_RETENTION_MS = 60 * 60 * 1000;
 const MCP_WRITE_TOOLS = new Set(["checkpoint_work", "log_decision", "log_agent_note"]);
 
 export type McpActivityEvent = Extract<LogEvent, { event: "mcp:ready" | "mcp:resource" | "mcp:tool" }>;
@@ -134,6 +135,14 @@ function computeSessionHealth(lastEventAt: number, now = Date.now()): McpSession
   return "active";
 }
 
+export function pruneMcpSessionStates(
+  states: McpSessionState[],
+  now = Date.now(),
+  maxAgeMs = MCP_SESSION_RETENTION_MS
+): McpSessionState[] {
+  return states.filter((state) => Math.max(0, now - state.lastEventAt) <= maxAgeMs);
+}
+
 export function hasRecentMcpWriteBack(windowMs = RECENT_WRITE_WINDOW_MS, agent?: string): boolean {
   const now = Date.now();
   const normalizedAgent = agent?.trim();
@@ -232,6 +241,18 @@ export function formatMcpActivityEvent(event: McpActivityEvent): string {
   return event.summary && event.summary.trim().length > 0 ? event.summary : "saved project memory";
 }
 
+export function toMcpActivityNotice(event: McpActivityEvent): McpActivityNotice {
+  return {
+    event,
+    agent: getMcpAgentLabel(event),
+    agentType: getMcpAgentType(event),
+    sessionId: getMcpSessionId(event),
+    sessionKey: getMcpSessionKey(event),
+    category: classifyMcpActivityEvent(event),
+    message: formatMcpActivityEvent(event),
+  };
+}
+
 export function createMcpActivityMonitor(): () => McpActivityNotice[] {
   const seen = new Set(safeReadNdjson<LogEvent>(logsPath()).filter(isMcpActivityEvent).map(mcpActivityEventKey));
   const lastShownAt = new Map<string, number>();
@@ -246,19 +267,15 @@ export function createMcpActivityMonitor(): () => McpActivityNotice[] {
       if (seen.has(key)) continue;
       seen.add(key);
 
-      const agent = getMcpAgentLabel(event);
-      const agentType = getMcpAgentType(event);
-      const sessionId = getMcpSessionId(event);
-      const sessionKey = getMcpSessionKey(event);
-      const category = classifyMcpActivityEvent(event);
+      const notice = toMcpActivityNotice(event);
       const kind =
         event.event === "mcp:resource"
-          ? category === "read" && (event.resource === "tack://session" || event.resource === "tack://context/workspace")
-            ? `${sessionKey}:briefing`
-            : `${sessionKey}:resource:${event.resource}`
+          ? notice.category === "read" && (event.resource === "tack://session" || event.resource === "tack://context/workspace")
+            ? `${notice.sessionKey}:briefing`
+            : `${notice.sessionKey}:resource:${event.resource}`
           : event.event === "mcp:tool"
-            ? `${sessionKey}:tool:${event.tool}:${category === "write" ? "" : event.summary ?? ""}`
-            : `${sessionKey}:ready:${event.transport}`;
+            ? `${notice.sessionKey}:tool:${event.tool}:${notice.category === "write" ? "" : event.summary ?? ""}`
+            : `${notice.sessionKey}:ready:${event.transport}`;
       const tsMs = eventTimeMs(event);
       const lastMs = lastShownAt.get(kind) ?? 0;
 
@@ -270,19 +287,22 @@ export function createMcpActivityMonitor(): () => McpActivityNotice[] {
         lastShownAt.set(kind, tsMs);
       }
 
-      notices.push({
-        event,
-        agent,
-        agentType,
-        sessionId,
-        sessionKey,
-        category,
-        message: formatMcpActivityEvent(event),
-      });
+      notices.push(notice);
     }
 
     return notices;
   };
+}
+
+export function getRecentMcpSessionStates(limit = 200, now = Date.now()): McpSessionState[] {
+  const events = [...readRecentMcpActivity(limit)].sort((left, right) => eventTimeMs(left) - eventTimeMs(right));
+  let states: McpSessionState[] = [];
+
+  for (const event of events) {
+    states = upsertMcpSessionState(states, toMcpActivityNotice(event), now);
+  }
+
+  return refreshMcpSessionStates(states, now);
 }
 
 export function upsertMcpSessionState(states: McpSessionState[], notice: McpActivityNotice, now = Date.now()): McpSessionState[] {
@@ -352,7 +372,7 @@ export function upsertMcpSessionState(states: McpSessionState[], notice: McpActi
 }
 
 export function refreshMcpSessionStates(states: McpSessionState[], now = Date.now()): McpSessionState[] {
-  return states.map((state) => ({
+  return pruneMcpSessionStates(states, now).map((state) => ({
     ...state,
     health: computeSessionHealth(state.lastEventAt, now),
   }));

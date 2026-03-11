@@ -37,7 +37,7 @@
     "tack": "dist/index.js"
   },
   "scripts": {
-    "test": "npm run build && node --test tests/agentTemplates.test.js tests/cli-default-command.test.js tests/cli-context.test.js tests/cli-animations.test.js tests/cli-setup-agent.test.js tests/logger-mcp.test.js tests/ndjson-tail.test.js",
+    "test": "npm run build && node --test tests/agentTemplates.test.js tests/cli-default-command.test.js tests/cli-context.test.js tests/cli-animations.test.js tests/cli-setup-agent.test.js tests/git-changed-files.test.js tests/watch-runtime.test.js tests/logger-mcp.test.js tests/ndjson-tail.test.js",
     "test:publish": "npm run build && node --test tests/publish-hygiene.test.js",
     "dev": "npm run build && node dist/index.js watch --plain",
     "dev:bun": "bun run src/index.tsx",

@@ -11,6 +11,8 @@ import {
   getMcpAgentLabel,
   getMcpAgentType,
   getMcpInstallVerification,
+  getRecentMcpSessionStates,
+  pruneMcpSessionStates,
   getMcpSessionId,
   getMcpSessionKey,
   getMcpSessionDisplayLabel,
@@ -348,6 +350,78 @@ test("tracks install verification milestones from first read to write-back", () 
     readLabel: "claude",
     writeLabel: "claude",
   });
+});
+
+test("hydrates session state from recent MCP logs at watch startup", () => {
+  const originalCwd = process.cwd();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tack-logger-hydrate-"));
+
+  try {
+    process.chdir(tmpDir);
+    ensureTackDir();
+    fs.writeFileSync(logsPath(), "", "utf-8");
+
+    log({ event: "mcp:ready", agent: "codex", agent_type: "codex", session_id: "session-a", transport: "stdio" });
+    log({ event: "mcp:resource", agent: "codex", agent_type: "codex", session_id: "session-a", resource: "tack://session" });
+    log({ event: "mcp:tool", agent: "codex", agent_type: "codex", session_id: "session-a", tool: "checkpoint_work", summary: 'saved: "captured work"' });
+
+    const states = getRecentMcpSessionStates();
+    assert.strictEqual(states.length, 1);
+    assert.strictEqual(states[0].sessionKey, "codex:session-a");
+    assert.strictEqual(states[0].hasReadSessionContext, true);
+    assert.strictEqual(states[0].awaitingWriteBack, false);
+    assert.strictEqual(getMcpInstallVerification(states).status, "write_seen");
+  } finally {
+    process.chdir(originalCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("prunes session state older than the retention window", () => {
+  const now = Date.parse("2026-03-11T20:00:00.000Z");
+  const states = [
+    {
+      agent: "codex",
+      agentType: "codex",
+      sessionId: "session-a",
+      sessionKey: "codex:session-a",
+      connectedAt: now - 10 * 60 * 1000,
+      lastEventAt: now - 10 * 60 * 1000,
+      lastReadAt: now - 10 * 60 * 1000,
+      lastCheckAt: null,
+      lastWriteAt: null,
+      lastAction: "read",
+      lastMessage: "read session context",
+      hasReadSessionContext: true,
+      awaitingWriteBack: true,
+      repoChangedAfterRead: false,
+      health: "idle",
+      warnedIdle: false,
+      warnedStale: false,
+    },
+    {
+      agent: "claude",
+      agentType: "claude",
+      sessionId: "session-b",
+      sessionKey: "claude:session-b",
+      connectedAt: now - 2 * 60 * 60 * 1000,
+      lastEventAt: now - 2 * 60 * 60 * 1000,
+      lastReadAt: now - 2 * 60 * 60 * 1000,
+      lastCheckAt: null,
+      lastWriteAt: null,
+      lastAction: "read",
+      lastMessage: "read session context",
+      hasReadSessionContext: true,
+      awaitingWriteBack: true,
+      repoChangedAfterRead: false,
+      health: "stale",
+      warnedIdle: false,
+      warnedStale: false,
+    },
+  ];
+
+  const pruned = pruneMcpSessionStates(states, now);
+  assert.deepStrictEqual(pruned.map((state) => state.sessionKey), ["codex:session-a"]);
 });
 
 test("attributes repo changes to the freshest reading session", () => {

@@ -1,11 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Text, Box, Static, useApp, useInput } from "ink";
-import * as path from "node:path";
 import chokidar from "chokidar";
-import { Logo } from "./Logo.js";
 import { DriftAlert } from "./DriftAlert.js";
-import { MascotLane } from "./MascotLane.js";
-import { readSpec, readDrift, writeAudit, logsPath } from "../lib/files.js";
+import { Logo } from "./Logo.js";
+import { readSpec, readDrift, writeAudit } from "../lib/files.js";
 import type { DriftItem } from "../lib/signals.js";
 import { createAudit } from "../lib/signals.js";
 import { runAllDetectors } from "../detectors/index.js";
@@ -19,6 +17,7 @@ import {
   collectMcpInactivityWarnings,
   createMcpActivityMonitor,
   getMcpInstallVerification,
+  getRecentMcpSessionStates,
   getMcpSessionDisplayLabel,
   markMcpSessionsRepoChanged,
   refreshMcpSessionStates,
@@ -28,22 +27,13 @@ import {
   type McpSessionHealth,
   type McpSessionState,
 } from "../lib/logger.js";
-
-const IGNORE_PATTERNS = [
-  "**/node_modules/**",
-  "**/.git/**",
-  "**/.tack/**",
-  "**/dist/**",
-  "**/build/**",
-  "**/.next/**",
-  "**/.cache/**",
-  "**/.svelte-kit/**",
-  "**/coverage/**",
-  "**/venv/**",
-  "**/.venv/**",
-  "**/env/**",
-  "**/site-packages/**",
-];
+import {
+  attachMcpLogWatcher,
+  createMcpLogsWatcher,
+  createRepoWatcher,
+  shouldIgnoreRepoWatchPath,
+  WATCH_DEBOUNCE_MS,
+} from "../lib/watch.js";
 
 type HistoryLevel = "good" | "bad" | "update" | "ready" | "read" | "check" | "write" | "warn";
 
@@ -53,17 +43,11 @@ type HistoryEvent = {
   text: string;
 };
 
-type WatchProps = {
-  animationsEnabled: boolean;
-};
-
 const USEFUL_COMMANDS: Array<{ command: string; description: string }> = [
   { command: "tack status", description: "Full health snapshot and drift details" },
-  { command: "tack handoff", description: "Package the current state for the next session" },
   { command: "checkpoint_work", description: "Default MCP write-back before ending work" },
+  { command: "tack handoff", description: "Package the current state for the next session" },
   { command: "tack note", description: "Add or inspect agent notes" },
-  { command: "tack log", description: "View decisions or raw events manually" },
-  { command: "tack help", description: "Show all commands and options" },
 ];
 
 const USEFUL_COMMANDS_LABEL_WIDTH = USEFUL_COMMANDS.reduce(
@@ -133,6 +117,21 @@ function noticeToHistoryLevel(category: McpActivityCategory): HistoryLevel {
   return category === "ready" ? "ready" : category === "read" ? "read" : category === "check" ? "check" : "write";
 }
 
+function formatAge(ms: number, now = Date.now()): string {
+  const ageMs = Math.max(0, now - ms);
+  if (ageMs < 60_000) {
+    return `${Math.max(1, Math.round(ageMs / 1000))}s ago`;
+  }
+  if (ageMs < 60 * 60_000) {
+    return `${Math.round(ageMs / 60_000)}m ago`;
+  }
+  return `${Math.round(ageMs / (60 * 60_000))}h ago`;
+}
+
+function getWatchErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 function sessionSummary(state: McpSessionState): { text: string; color: "green" | "yellow" | "cyan" | "magenta" | "blue" | "red" } {
   if (state.awaitingWriteBack && state.repoChangedAfterRead && state.health === "stale") {
     return { text: "stale after repo changes", color: "red" };
@@ -165,6 +164,34 @@ function healthLabel(health: McpSessionHealth): string {
   return health === "active" ? "active" : health === "idle" ? "idle" : "stale";
 }
 
+function trustHeadline(
+  installVerification: ReturnType<typeof getMcpInstallVerification>,
+  sessionStates: McpSessionState[]
+): { text: string; color: "green" | "yellow" | "cyan" | "red" } {
+  const staleOrRisky = sessionStates.filter(
+    (state) =>
+      state.health === "stale" ||
+      (state.awaitingWriteBack && state.repoChangedAfterRead)
+  ).length;
+
+  if (staleOrRisky > 0) {
+    return {
+      text: `${staleOrRisky} session${staleOrRisky === 1 ? "" : "s"} need attention`,
+      color: "yellow",
+    };
+  }
+
+  if (installVerification.status === "write_seen") {
+    return { text: "agent context loop verified", color: "green" };
+  }
+
+  if (installVerification.status === "read_seen") {
+    return { text: "agent has read context; waiting for write-back", color: "cyan" };
+  }
+
+  return { text: "waiting for first agent read", color: "yellow" };
+}
+
 function renderVerificationStatus(status: "pending" | "done", text: string, detail?: string): React.JSX.Element {
   return (
     <Box>
@@ -176,7 +203,7 @@ function renderVerificationStatus(status: "pending" | "done", text: string, deta
   );
 }
 
-export function Watch({ animationsEnabled }: WatchProps) {
+export function Watch() {
   const { exit } = useApp();
   const [systemCount, setSystemCount] = useState(0);
   const [driftCount, setDriftCount] = useState(0);
@@ -186,47 +213,32 @@ export function Watch({ animationsEnabled }: WatchProps) {
   const [history, setHistory] = useState<HistoryEvent[]>([]);
   const [memoryWarnings, setMemoryWarnings] = useState<string[]>([]);
   const [sessionStates, setSessionStates] = useState<McpSessionState[]>([]);
-  const [mascotMode, setMascotMode] = useState<"idle" | "scan" | "mcp">("idle");
-  const [mascotAnimated, setMascotAnimated] = useState(animationsEnabled);
-  const [cargoCount, setCargoCount] = useState(0);
+  const [fatalError, setFatalError] = useState<string | null>(null);
   const watcherRef = useRef<chokidar.FSWatcher | null>(null);
   const logsWatcherRef = useRef<chokidar.FSWatcher | null>(null);
+  const detachLogsWatcherRef = useRef<(() => void) | null>(null);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mascotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const cargoTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const historySeq = useRef(0);
   const readNewMcpActivityRef = useRef<(() => McpActivityNotice[]) | null>(null);
   const missingWriteBackWarningActiveRef = useRef(false);
   const sessionStatesRef = useRef<McpSessionState[]>([]);
   const inactivityTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastScanHistoryRef = useRef<string | null>(null);
+  const stoppedRef = useRef(false);
   const installVerification = getMcpInstallVerification(sessionStates);
+  const headline = trustHeadline(installVerification, sessionStates);
+  const visibleSessions = sessionStates.slice(0, 4);
 
   function pushHistory(level: HistoryLevel, text: string): void {
     historySeq.current += 1;
     setHistory((prev) => {
+      const last = prev[prev.length - 1];
+      if (last && last.level === level && last.text === text) {
+        return prev;
+      }
       const next = [...prev, { id: historySeq.current, level, text }];
-      return next.slice(-60);
+      return next.slice(-12);
     });
-  }
-
-  function cueMascot(mode: "scan" | "mcp", durationMs: number): void {
-    setMascotMode(mode);
-    if (mascotTimerRef.current) {
-      clearTimeout(mascotTimerRef.current);
-    }
-    mascotTimerRef.current = setTimeout(() => {
-      setMascotMode("idle");
-      mascotTimerRef.current = null;
-    }, durationMs);
-  }
-
-  function addCargoPackage(): void {
-    setCargoCount((current) => Math.min(current + 1, 3));
-    const timer = setTimeout(() => {
-      setCargoCount((current) => Math.max(current - 1, 0));
-      cargoTimersRef.current = cargoTimersRef.current.filter((candidate) => candidate !== timer);
-    }, 4000);
-    cargoTimersRef.current.push(timer);
   }
 
   function syncSessionStates(next: McpSessionState[]): void {
@@ -237,8 +249,6 @@ export function Watch({ animationsEnabled }: WatchProps) {
   function applyActivityNotice(notice: McpActivityNotice): void {
     const next = upsertMcpSessionState(sessionStatesRef.current, notice);
     syncSessionStates(next);
-    cueMascot("mcp", 1600);
-    addCargoPackage();
     const display = getMcpSessionDisplayLabel(next.find((state) => state.sessionKey === notice.sessionKey) ?? next[0]!, next);
     pushHistory(noticeToHistoryLevel(notice.category), `[${display}] ${notice.message}`);
   }
@@ -257,7 +267,6 @@ export function Watch({ animationsEnabled }: WatchProps) {
     if (!spec) return;
     const changedFiles = getChangedFiles();
 
-    cueMascot("scan", 1400);
     setProjectName(spec.project);
 
     const { signals } = runAllDetectors();
@@ -287,11 +296,13 @@ export function Watch({ animationsEnabled }: WatchProps) {
       missingWriteBackWarningActiveRef.current = false;
     }
 
-    const scanTs = new Date().toLocaleTimeString();
-    if (unresolvedCount === 0) {
-      pushHistory("good", `[${scanTs}] ${reason}: scan clean (0 drift)`);
-    } else {
-      pushHistory("bad", `[${scanTs}] ${reason}: ${unresolvedCount} unresolved drift item(s)`);
+    const scanSummary =
+      unresolvedCount === 0
+        ? "scan clean (0 drift)"
+        : `${unresolvedCount} unresolved drift item(s)`;
+    if (lastScanHistoryRef.current !== scanSummary || unresolvedCount > 0 || reason === "scan") {
+      pushHistory(unresolvedCount === 0 ? "good" : "bad", scanSummary);
+      lastScanHistoryRef.current = scanSummary;
     }
 
     log({
@@ -317,6 +328,32 @@ export function Watch({ animationsEnabled }: WatchProps) {
     }
   }
 
+  function stopWatchRuntime(): void {
+    if (stoppedRef.current) {
+      return;
+    }
+    stoppedRef.current = true;
+
+    detachLogsWatcherRef.current?.();
+    detachLogsWatcherRef.current = null;
+
+    const watcher = watcherRef.current;
+    const logsWatcher = logsWatcherRef.current;
+    watcherRef.current = null;
+    logsWatcherRef.current = null;
+    void watcher?.close();
+    void logsWatcher?.close();
+
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
+      debounceTimer.current = null;
+    }
+    if (inactivityTimerRef.current) {
+      clearInterval(inactivityTimerRef.current);
+      inactivityTimerRef.current = null;
+    }
+  }
+
   useEffect(() => {
     const spec = readSpec();
     if (!spec) {
@@ -326,43 +363,45 @@ export function Watch({ animationsEnabled }: WatchProps) {
       return;
     }
 
+    stoppedRef.current = false;
+    setFatalError(null);
+    syncSessionStates(getRecentMcpSessionStates());
     runScan();
     readNewMcpActivityRef.current = createMcpActivityMonitor();
 
-    const watcher = chokidar.watch(".", {
-      ignored: IGNORE_PATTERNS,
-      persistent: true,
-      ignoreInitial: true,
-      awaitWriteFinish: {
-        stabilityThreshold: 200,
-        pollInterval: 50,
-      },
-    });
-    const logsWatcher = chokidar.watch(logsPath(), {
-      persistent: true,
-      ignoreInitial: true,
-      awaitWriteFinish: {
-        stabilityThreshold: 100,
-        pollInterval: 50,
-      },
-    });
+    const watcher = createRepoWatcher();
+    const logsWatcher = createMcpLogsWatcher();
 
-    watcher.on("all", (event, filepath) => {
-      if (filepath.includes(`${path.sep}.tack${path.sep}`)) return;
-      if (filepath.startsWith(".tack/") || filepath.startsWith(".tack\\")) return;
-      cueMascot("scan", 900);
-      pushHistory("update", "Filesystem change detected. Running scan...");
+    const onRepoEvent = (event: string, filepath: string) => {
+      if (shouldIgnoreRepoWatchPath(filepath)) return;
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
       debounceTimer.current = setTimeout(() => {
         runScan(`change (${event})`);
-      }, 300);
-    });
-    logsWatcher.on("change", () => {
+      }, WATCH_DEBOUNCE_MS);
+    };
+    const onLogActivity = () => {
       const notices = readNewMcpActivityRef.current?.() ?? [];
       for (const notice of notices) {
         applyActivityNotice(notice);
       }
-    });
+    };
+    const onWatcherError = (err: unknown) => {
+      const message = `Watch repo error: ${getWatchErrorMessage(err)}`;
+      pushHistory("warn", message);
+      setFatalError(message);
+      stopWatchRuntime();
+    };
+    const onLogsWatcherError = (err: unknown) => {
+      const message = `Watch activity log error: ${getWatchErrorMessage(err)}`;
+      pushHistory("warn", message);
+      setFatalError(message);
+      stopWatchRuntime();
+    };
+
+    watcher.on("all", onRepoEvent);
+    watcher.on("error", onWatcherError);
+    logsWatcher.on("error", onLogsWatcherError);
+    detachLogsWatcherRef.current = attachMcpLogWatcher(logsWatcher, onLogActivity);
 
     inactivityTimerRef.current = setInterval(() => {
       runInactivityCycle();
@@ -372,15 +411,10 @@ export function Watch({ animationsEnabled }: WatchProps) {
     logsWatcherRef.current = logsWatcher;
 
     return () => {
-      void watcher.close();
-      void logsWatcher.close();
-      if (debounceTimer.current) clearTimeout(debounceTimer.current);
-      if (mascotTimerRef.current) clearTimeout(mascotTimerRef.current);
-      if (inactivityTimerRef.current) clearInterval(inactivityTimerRef.current);
-      for (const timer of cargoTimersRef.current) {
-        clearTimeout(timer);
-      }
-      cargoTimersRef.current = [];
+      watcher.off("all", onRepoEvent);
+      watcher.off("error", onWatcherError);
+      logsWatcher.off("error", onLogsWatcherError);
+      stopWatchRuntime();
     };
   }, [exit]);
 
@@ -392,14 +426,9 @@ export function Watch({ animationsEnabled }: WatchProps) {
 
   useInput((input) => {
     if (input === "q") {
-      void watcherRef.current?.close();
-      void logsWatcherRef.current?.close();
+      stopWatchRuntime();
       exit();
       return;
-    }
-
-    if (input === "a") {
-      setMascotAnimated((current) => !current);
     }
   });
 
@@ -414,31 +443,37 @@ export function Watch({ animationsEnabled }: WatchProps) {
           <Text color="green">{systemCount} systems</Text>
           {"  "}
           {driftCount > 0 ? <Text color="yellow">{driftCount} drift</Text> : <Text color="green">0 drift</Text>}
+          {"  "}
+          <Text color="cyan">{sessionStates.length} sessions</Text>
         </Text>
         <Text dimColor>Last scan: {lastScan}</Text>
       </Box>
 
-      <MascotLane animate={mascotAnimated} mode={mascotMode} cargoCount={cargoCount} hasDrift={driftCount > 0} />
-
-      {pendingAlerts.length > 0 && pendingAlerts[0] && <DriftAlert item={pendingAlerts[0]} onResolved={handleAlertResolved} />}
-
-      {pendingAlerts.length === 0 && (
-        <Box marginTop={1}>
-          <Text dimColor>
-            Watching for repo changes and MCP activity... (q to quit, a to {mascotAnimated ? "freeze" : "animate"} deckhand)
+      {fatalError ? (
+        <Box marginTop={1} flexDirection="column">
+          <Text bold color="red">
+            watch stopped because of a runtime error
           </Text>
+          <Text color="red">{fatalError}</Text>
+          <Text dimColor>Press q to quit, then rerun `tack watch` after fixing the underlying filesystem issue.</Text>
         </Box>
+      ) : (
+        <>
+          {pendingAlerts.length > 0 && pendingAlerts[0] && <DriftAlert item={pendingAlerts[0]} onResolved={handleAlertResolved} />}
+
+          {pendingAlerts.length === 0 && (
+            <Box marginTop={1} flexDirection="column">
+              <Text bold color={headline.color}>
+                {headline.text}
+              </Text>
+              <Text dimColor>Watch answers four questions: connected, read, wrote, and attention needed. Press q to quit.</Text>
+            </Box>
+          )}
+        </>
       )}
 
       <Box marginTop={1} flexDirection="column">
-        <Text bold>How to use watch</Text>
-        <Text dimColor>- File changes trigger fresh scans against your spec and drift rules.</Text>
-        <Text dimColor>- READY/READ/CHECK/WRITE events show which session is grounding itself in Tack and preserving memory.</Text>
-        <Text dimColor>- Idle or stale sessions after repo changes are the risky cases: those may leave the next session cold.</Text>
-      </Box>
-
-      <Box marginTop={1} flexDirection="column">
-        <Text bold>Install Verification</Text>
+        <Text bold>Trust Loop</Text>
         <Text color={installVerification.status === "write_seen" ? "green" : installVerification.status === "read_seen" ? "cyan" : "yellow"}>
           {installVerification.summary}
         </Text>
@@ -454,19 +489,26 @@ export function Watch({ animationsEnabled }: WatchProps) {
         )}
       </Box>
 
-      {sessionStates.length > 0 && (
+      {visibleSessions.length > 0 && (
         <Box marginTop={1} flexDirection="column">
           <Text bold>Agent Sessions</Text>
-          {sessionStates.slice(0, 6).map((state) => {
+          {visibleSessions.map((state) => {
             const display = getMcpSessionDisplayLabel(state, sessionStates);
             const summary = sessionSummary(state);
             return (
-              <Box key={state.sessionKey}>
-                <Text color="cyan">{display}</Text>
-                <Text dimColor>  </Text>
-                <Text color={summary.color}>{summary.text}</Text>
-                <Text dimColor>  ({healthLabel(state.health)})</Text>
-                <Text dimColor>  last: {state.lastMessage}</Text>
+              <Box key={state.sessionKey} justifyContent="space-between">
+                <Box>
+                  <Text color="cyan">{display}</Text>
+                  <Text dimColor>  </Text>
+                  <Text color={summary.color}>{summary.text}</Text>
+                  <Text dimColor>  </Text>
+                  <Text dimColor>{healthLabel(state.health)}</Text>
+                </Box>
+                <Box>
+                  <Text dimColor>{formatAge(state.lastEventAt)}</Text>
+                  <Text dimColor>  </Text>
+                  <Text dimColor>{state.lastMessage}</Text>
+                </Box>
               </Box>
             );
           })}
@@ -475,8 +517,8 @@ export function Watch({ animationsEnabled }: WatchProps) {
 
       {memoryWarnings.length > 0 && (
         <Box marginTop={1} flexDirection="column">
-          <Text color="yellow">Memory hygiene</Text>
-          {memoryWarnings.map((warning) => (
+          <Text color="yellow">Attention</Text>
+          {memoryWarnings.slice(0, 3).map((warning) => (
             <Text key={warning} color="yellow">
               - {warning}
             </Text>
@@ -484,20 +526,23 @@ export function Watch({ animationsEnabled }: WatchProps) {
         </Box>
       )}
 
-      <Box marginTop={1} flexDirection="column">
-        <Static items={history}>
-          {(item: HistoryEvent) => (
-            <Box key={item.id}>
-              {renderHistoryBadge(item.level)}
-              <Text> </Text>
-              <Text color={historyLevelColor(item.level)}>{item.text}</Text>
-            </Box>
-          )}
-        </Static>
-      </Box>
+      {history.length > 0 && (
+        <Box marginTop={1} flexDirection="column">
+          <Text bold>Recent Events</Text>
+          <Static items={history}>
+            {(item: HistoryEvent) => (
+              <Box key={item.id}>
+                {renderHistoryBadge(item.level)}
+                <Text> </Text>
+                <Text color={historyLevelColor(item.level)}>{item.text}</Text>
+              </Box>
+            )}
+          </Static>
+        </Box>
+      )}
 
       <Box marginTop={1}>
-        <Text dimColor>--- Useful commands from another terminal ---</Text>
+        <Text dimColor>Useful commands</Text>
       </Box>
       <Box flexDirection="column" paddingLeft={2}>
         {USEFUL_COMMANDS.map((item) => (

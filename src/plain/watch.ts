@@ -1,11 +1,9 @@
-import chokidar from "chokidar";
-import * as path from "node:path";
-import { logsPath } from "../lib/files.js";
 import { runStatusScan } from "../engine/status.js";
 import {
   collectMcpInactivityWarnings,
   createMcpActivityMonitor,
   getMcpInstallVerification,
+  getRecentMcpSessionStates,
   getMcpSessionDisplayLabel,
   markMcpSessionsRepoChanged,
   upsertMcpSessionState,
@@ -13,26 +11,17 @@ import {
   type McpSessionState,
 } from "../lib/logger.js";
 import { getChangedFiles } from "../lib/git.js";
+import {
+  attachMcpLogWatcher,
+  createMcpLogsWatcher,
+  createRepoWatcher,
+  getWatchScanSummary,
+  shouldIgnoreRepoWatchPath,
+  WATCH_DEBOUNCE_MS,
+} from "../lib/watch.js";
 import { blue, checkBadge, gray, green, mcpBadge, red, yellow } from "./colors.js";
 
-const IGNORE_PATTERNS = [
-  "**/node_modules/**",
-  "**/.git/**",
-  "**/.tack/**",
-  "**/dist/**",
-  "**/build/**",
-  "**/.next/**",
-  "**/.cache/**",
-  "**/.svelte-kit/**",
-  "**/coverage/**",
-  "**/venv/**",
-  "**/.venv/**",
-  "**/env/**",
-  "**/site-packages/**",
-];
-
-function printSnapshot(reason: string): boolean {
-  const result = runStatusScan();
+function printSnapshot(reason: string, result = runStatusScan()): boolean {
   if (!result) {
     console.error("No spec.yaml found. Run 'tack init' first.");
     return false;
@@ -55,14 +44,7 @@ function printSnapshot(reason: string): boolean {
 }
 
 function printWatchGuide(): void {
-  console.log(gray("Watch mode keeps two loops visible:"));
-  console.log(gray("- file changes -> rescan architecture + drift"));
-  console.log(gray("- MCP activity -> show when each agent session reads context or writes memory"));
-  console.log("");
-  console.log(gray("What to do with the output:"));
-  console.log(gray("- if drift appears, run `tack status` or inspect `.tack/_drift.yaml`"));
-  console.log(gray("- if you see READ without a later WRITE, that session may not be preserving memory yet"));
-  console.log(gray("- if a session goes idle or stale after repo changes, wrap it up with a write-back"));
+  console.log(gray("Watch answers four questions: did the agent connect, read context, write memory back, or leave anything risky behind?"));
   console.log("");
 }
 
@@ -99,36 +81,28 @@ function maybeWarnMissingWriteBack(sessions: McpSessionState[], missingWriteBack
   return true;
 }
 
+function getWatchErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export async function runWatchPlain(): Promise<void> {
   const ok = printSnapshot("initial");
   if (!ok) return;
 
+  let sessionStates: McpSessionState[] = getRecentMcpSessionStates();
   printWatchGuide();
-  printInstallVerification([]);
+  printInstallVerification(sessionStates);
   console.log(`${gray("Watching for changes and MCP activity (plain mode). Press Ctrl+C to stop.")}`);
 
-  const watcher = chokidar.watch(".", {
-    ignored: IGNORE_PATTERNS,
-    persistent: true,
-    ignoreInitial: true,
-    awaitWriteFinish: {
-      stabilityThreshold: 200,
-      pollInterval: 50,
-    },
-  });
-  const logsWatcher = chokidar.watch(logsPath(), {
-    persistent: true,
-    ignoreInitial: true,
-    awaitWriteFinish: {
-      stabilityThreshold: 100,
-      pollInterval: 50,
-    },
-  });
+  const watcher = createRepoWatcher();
+  const logsWatcher = createMcpLogsWatcher();
   const readNewMcpActivity = createMcpActivityMonitor();
-  let sessionStates: McpSessionState[] = [];
   let missingWriteBackWarningActive = false;
+  let lastSnapshotSummary = "initial";
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let shutdownPromise: Promise<void> | null = null;
+  let settled = false;
   const inactivityTimer = setInterval(() => {
     const result = collectMcpInactivityWarnings(sessionStates);
     sessionStates = result.states;
@@ -137,18 +111,7 @@ export async function runWatchPlain(): Promise<void> {
     }
   }, 30000);
 
-  const shutdown = async (): Promise<void> => {
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
-      debounceTimer = null;
-    }
-    clearInterval(inactivityTimer);
-    await watcher.close();
-    await logsWatcher.close();
-    console.log(gray("Stopped watch mode."));
-  };
-
-  logsWatcher.on("change", () => {
+  const onLogActivity = () => {
     for (const notice of readNewMcpActivity()) {
       sessionStates = upsertMcpSessionState(sessionStates, notice);
       printMcpNotice(notice, sessionStates);
@@ -159,11 +122,11 @@ export async function runWatchPlain(): Promise<void> {
         printInstallVerification(sessionStates);
       }
     }
-  });
+  };
+  const detachLogsWatcher = attachMcpLogWatcher(logsWatcher, onLogActivity);
 
-  watcher.on("all", (event, filepath) => {
-    if (filepath.includes(`${path.sep}.tack${path.sep}`)) return;
-    if (filepath.startsWith(".tack/") || filepath.startsWith(".tack\\")) return;
+  const onRepoEvent = (event: string, filepath: string) => {
+    if (shouldIgnoreRepoWatchPath(filepath)) return;
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       const changedFiles = getChangedFiles();
@@ -181,14 +144,86 @@ export async function runWatchPlain(): Promise<void> {
       for (const warning of inactivityResult.warnings) {
         console.log(`${mcpBadge()}  [WARN][session] ${gray(warning)}`);
       }
-      printSnapshot(`${event} ${filepath}`);
-    }, 300);
-  });
+      const result = runStatusScan();
+      if (!result) {
+        console.error("No spec.yaml found. Run 'tack init' first.");
+        return;
+      }
+      const summary = getWatchScanSummary(result.status.health, result.status.driftCount);
+      if (summary !== lastSnapshotSummary || result.status.driftCount > 0) {
+        lastSnapshotSummary = summary;
+        printSnapshot(`${event} ${filepath}`, result);
+      }
+    }, WATCH_DEBOUNCE_MS);
+  };
+  watcher.on("all", onRepoEvent);
 
-  await new Promise<void>((resolve) => {
-    const onSignal = () => {
-      void shutdown().then(resolve);
+  let onSignal: (() => void) | null = null;
+  let onWatcherError: ((err: unknown) => void) | null = null;
+  let onLogsWatcherError: ((err: unknown) => void) | null = null;
+
+  const shutdown = async (): Promise<void> => {
+    if (shutdownPromise) {
+      return shutdownPromise;
+    }
+
+    shutdownPromise = (async () => {
+      detachLogsWatcher();
+      if (onSignal) {
+        process.off("SIGINT", onSignal);
+        process.off("SIGTERM", onSignal);
+      }
+      if (onWatcherError) {
+        watcher.off("error", onWatcherError);
+      }
+      if (onLogsWatcherError) {
+        logsWatcher.off("error", onLogsWatcherError);
+      }
+      watcher.off("all", onRepoEvent);
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
+      clearInterval(inactivityTimer);
+      await Promise.allSettled([watcher.close(), logsWatcher.close()]);
+      console.log(gray("Stopped watch mode."));
+    })();
+
+    return shutdownPromise;
+  };
+
+  const finish = (resolve: () => void, reject: (error: Error) => void, fail?: Error) => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    void shutdown().then(
+      () => {
+        if (fail) {
+          reject(fail);
+          return;
+        }
+        resolve();
+      },
+      (err) => {
+        reject(err instanceof Error ? err : new Error(getWatchErrorMessage(err)));
+      }
+    );
+  };
+
+  await new Promise<void>((resolve, reject) => {
+    onSignal = () => {
+      finish(resolve, reject);
     };
+    onWatcherError = (err: unknown) => {
+      finish(resolve, reject, new Error(`Watch repo error: ${getWatchErrorMessage(err)}`));
+    };
+    onLogsWatcherError = (err: unknown) => {
+      finish(resolve, reject, new Error(`Watch activity log error: ${getWatchErrorMessage(err)}`));
+    };
+
+    watcher.on("error", onWatcherError);
+    logsWatcher.on("error", onLogsWatcherError);
     process.once("SIGINT", onSignal);
     process.once("SIGTERM", onSignal);
   });

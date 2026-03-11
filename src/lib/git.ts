@@ -87,7 +87,7 @@ export function filterChangedPaths(lines: string[]): string[] {
   return dedupeAndFilter(lines);
 }
 
-export function getChangedFiles(base = "HEAD~1"): string[] {
+export function getChangedFiles(base?: string): string[] {
   if (!isGitRepo()) return [];
 
   if (!hasCommits()) {
@@ -102,11 +102,20 @@ export function getChangedFiles(base = "HEAD~1"): string[] {
     return dedupeAndFilter(all);
   }
 
-  const diffResult = gitExec(["diff", "--name-only", base]);
-  if (diffResult.ok) {
-    return dedupeAndFilter(diffResult.value.split("\n"));
+  if (base) {
+    const diffResult = gitExec(["diff", "--name-only", base]);
+    if (diffResult.ok) {
+      return dedupeAndFilter(diffResult.value.split("\n"));
+    }
   }
 
-  const fallback = gitExec(["ls-files"]);
-  return fallback.ok ? dedupeAndFilter(fallback.value.split("\n")) : [];
+  const staged = gitExec(["diff", "--cached", "--name-only"]);
+  const unstaged = gitExec(["diff", "--name-only"]);
+  const untracked = gitExec(["ls-files", "--others", "--exclude-standard"]);
+  const all = [
+    ...(staged.ok ? staged.value.split("\n") : []),
+    ...(unstaged.ok ? unstaged.value.split("\n") : []),
+    ...(untracked.ok ? untracked.value.split("\n") : []),
+  ];
+  return dedupeAndFilter(all);
 }

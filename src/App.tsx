@@ -6,17 +6,16 @@ import { Handoff } from "./ui/Handoff.js";
 
 type AppProps = {
   command: "init" | "status" | "watch" | "handoff";
-  animationsEnabled: boolean;
 };
 
-export function App({ command, animationsEnabled }: AppProps) {
+export function App({ command }: AppProps) {
   switch (command) {
     case "init":
       return <Init />;
     case "status":
       return <Status />;
     case "watch":
-      return <Watch animationsEnabled={animationsEnabled} />;
+      return <Watch />;
     case "handoff":
       return <Handoff />;
   }

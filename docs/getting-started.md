@@ -86,6 +86,14 @@ TACK_AGENT_NAME=claude tack mcp
 
 `tack watch` is the live proof. The happy path is `READY`, then `READ`, then `WRITE`.
 
+Example watch output:
+
+```text
+[READY][claude] connected to Tack MCP
+[READ][claude] read session context
+[WRITE][claude] checkpointed work
+```
+
 During normal work:
 
 ```bash

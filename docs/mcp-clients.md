@@ -40,6 +40,16 @@ The recommended order is:
 2. rely on client handshake identity when the client already identifies itself clearly
 3. call `register_agent_identity` once at session start only as a fallback
 
+Canonical watch proof:
+
+```text
+[READY][claude] connected to Tack MCP
+[READ][claude] read session context
+[WRITE][claude] checkpointed work
+```
+
+If the same agent reconnects with a new MCP session, watch will say `reconnected to Tack MCP (new session)` instead of looking silent or broken.
+
 ## Cursor
 
 Add an MCP server with:

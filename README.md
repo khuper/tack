@@ -96,6 +96,14 @@ TACK_AGENT_NAME=claude tack mcp
 
 `tack watch` is the live proof. The happy path is simple: `READY`, then `READ`, then `WRITE`.
 
+Example:
+
+```text
+[READY][claude] connected to Tack MCP
+[READ][claude] read session context
+[WRITE][claude] checkpointed work
+```
+
 v1 does not ship a standalone `tack check-in` command. Write-back stays behind MCP tools like `checkpoint_work` plus `tack handoff`.
 
 During normal work:

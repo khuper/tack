@@ -78,6 +78,14 @@ That is the case most likely to leave the next session cold.
 
 The canonical happy path is `READY`, then `READ`, then `WRITE`.
 
+Example:
+
+```text
+[READY][claude] connected to Tack MCP
+[READ][claude] read session context
+[WRITE][claude] checkpointed work
+```
+
 ## Best Practice
 
 Run `tack watch` in a second terminal whenever agents are working in the repo.

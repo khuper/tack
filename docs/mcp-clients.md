@@ -59,6 +59,15 @@ Add an MCP server with:
 - cwd: your project root
 - env: `{"TACK_AGENT_NAME":"cursor"}`
 
+On Windows, prefer:
+
+- command: `tack.cmd`
+- args: `["mcp"]`
+- cwd: your project root
+- env: `{"TACK_AGENT_NAME":"cursor"}`
+
+If you want the most reliable Windows setup, use the absolute `.cmd` path from your global npm bin directory.
+
 If `tack` is not on PATH, use:
 
 - command: `node`
@@ -66,21 +75,43 @@ If `tack` is not on PATH, use:
 - cwd: your project root
 - env: `{"TACK_AGENT_NAME":"cursor"}`
 
+Avoid shell-style commands like `env TACK_AGENT_NAME=... tack mcp` in Windows configs. Cursor can set env vars directly, so use the `env` field instead.
+
 Restart Cursor after changing MCP config.
 
 ## Codex CLI
 
-With `tack` on PATH:
+On macOS/Linux, with `tack` on PATH:
 
 ```bash
 codex mcp add tack -- env TACK_AGENT_NAME=codex tack mcp
 ```
 
-With a local build:
+On Windows, use `cmd` plus the `.cmd` shim:
+
+```bash
+codex mcp add tack -- cmd /c "set TACK_AGENT_NAME=codex&& tack.cmd mcp"
+```
+
+If you want the most reliable Windows setup, use absolute paths:
+
+```bash
+codex mcp add tack -- "C:\Windows\System32\cmd.exe" /c "set TACK_AGENT_NAME=codex&& C:\Users\you\AppData\Roaming\npm\tack.cmd mcp"
+```
+
+With a local build on macOS/Linux:
 
 ```bash
 codex mcp add tack -- env TACK_AGENT_NAME=codex node /path/to/tack/dist/index.js mcp
 ```
+
+With a local build on Windows:
+
+```bash
+codex mcp add tack -- cmd /c "set TACK_AGENT_NAME=codex&& node C:\path\to\tack\dist\index.js mcp"
+```
+
+Do not use `env TACK_AGENT_NAME=...` on Windows. `env` is a Unix command, and PowerShell may also block the `tack.ps1` shim. `tack.cmd` avoids that execution-policy failure.
 
 Verify:
 
@@ -104,23 +135,31 @@ codex -C /path/to/your/project
 
 ## Claude Code
 
-With `tack` on PATH:
+On macOS/Linux, with `tack` on PATH:
 
 ```bash
 claude mcp add --transport stdio tack-mcp -- env TACK_AGENT_NAME=claude tack mcp
 ```
 
-With `npx`:
+With `npx` on macOS/Linux:
 
 ```bash
 claude mcp add --transport stdio tack-mcp -- env TACK_AGENT_NAME=claude npx tack-cli mcp
 ```
 
-On Windows native PowerShell, use:
+On Windows native PowerShell, use `cmd` plus the `.cmd` shim:
 
 ```bash
-claude mcp add --transport stdio tack-mcp -- cmd /c "set TACK_AGENT_NAME=claude && npx tack-cli mcp"
+claude mcp add --transport stdio tack-mcp -- cmd /c "set TACK_AGENT_NAME=claude&& tack.cmd mcp"
 ```
+
+If you prefer `npx` on Windows:
+
+```bash
+claude mcp add --transport stdio tack-mcp -- cmd /c "set TACK_AGENT_NAME=claude&& npx tack-cli mcp"
+```
+
+Do not use `env TACK_AGENT_NAME=...` on Windows. `env` is Unix-only, and PowerShell may block the `tack.ps1` shim. `tack.cmd` is the safer default on Windows.
 
 Then run `/mcp` in Claude Code to confirm the server is connected.
 

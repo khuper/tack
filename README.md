@@ -6,12 +6,6 @@ Tack gives your agents persistent project memory that stays accurate instead of 
 
 Static instruction files drift the moment the code changes. Tack keeps a shared record in `./.tack/` and checks that memory against the actual codebase, so the next agent starts from context that is still trustworthy.
 
-## Showcase
-
-<video src="./tack-showcase.mp4" controls muted playsinline>
-  Your renderer does not support inline video. Download or open <a href="./tack-showcase.mp4">tack-showcase.mp4</a>.
-</video>
-
 ## Install And Prove It Works
 
 1. Install Tack. If you prefer not to install globally, use `npx tack-cli@latest` instead of `tack`.

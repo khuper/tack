@@ -24,7 +24,7 @@ export function Logo() {
           </Text>
         ))}
       </Box>
-      <Text dimColor>{`  Compact project memory for coding agents - v${pkg.version}`}</Text>
+      <Text dimColor>{`  Accurate project memory for coding agents - v${pkg.version}`}</Text>
     </Box>
   );
 }

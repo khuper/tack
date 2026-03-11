@@ -28,13 +28,18 @@ import { resolveAnimationsEnabled } from "./lib/animation.js";
 import { readPackageMeta } from "./lib/packageMeta.js";
 import { runSetupAgent } from "./cli/setupAgent.js";
 
-const ASCII_LOGO = `
-  _____            _
- |_   _|_ _  ___  | |__
-   | |/ _\` |/ __| | '_ \
-   | | (_| | (__  | | | |
-   |_|\__,_|\___| |_| |_|
-`;
+const ASCII_LOGO_LINES = [
+  "████████╗ █████╗  ██████╗██╗  ██╗",
+  "╚══██╔══╝██╔══██╗██╔════╝██║ ██╔╝",
+  "   ██║   ███████║██║     █████╔╝",
+  "   ██║   ██╔══██║██║     ██╔═██╗",
+  "   ██║   ██║  ██║╚██████╗██║  ██╗",
+  "   ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝",
+] as const;
+const ASCII_LOGO_COLORS = [120, 114, 108, 71, 65, 22] as const;
+const ASCII_LOGO = ASCII_LOGO_LINES.map(
+  (line, index) => `\x1b[38;5;${ASCII_LOGO_COLORS[index]}m${line}\x1b[0m`
+).join("\n");
 
 import updateNotifier from "update-notifier";
 

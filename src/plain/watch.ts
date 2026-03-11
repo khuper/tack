@@ -1,24 +1,12 @@
 import { runStatusScan } from "../engine/status.js";
 import {
-  collectMcpInactivityWarnings,
-  createMcpActivityMonitor,
   getMcpInstallVerification,
-  getRecentMcpSessionStates,
   getMcpSessionDisplayLabel,
-  markMcpSessionsRepoChanged,
-  upsertMcpSessionState,
   type McpActivityNotice,
   type McpSessionState,
 } from "../lib/logger.js";
-import { getChangedFiles } from "../lib/git.js";
-import {
-  attachMcpLogWatcher,
-  createMcpLogsWatcher,
-  createRepoWatcher,
-  getWatchScanSummary,
-  shouldIgnoreRepoWatchPath,
-  WATCH_DEBOUNCE_MS,
-} from "../lib/watch.js";
+import { getWatchScanSummary } from "../lib/watch.js";
+import { createWatchController } from "../lib/watchController.js";
 import { blue, checkBadge, gray, green, mcpBadge, red, yellow } from "./colors.js";
 
 function printSnapshot(reason: string, result = runStatusScan()): boolean {
@@ -70,17 +58,6 @@ function printMcpNotice(notice: McpActivityNotice, sessions: McpSessionState[]):
   console.log(`${mcpBadge()}  [${notice.category.toUpperCase()}][${label}] ${gray(notice.message)}`);
 }
 
-function maybeWarnMissingWriteBack(sessions: McpSessionState[], missingWriteBackWarningActive: boolean): boolean {
-  const awaiting = sessions.filter((state) => state.awaitingWriteBack && state.repoChangedAfterRead);
-  if (!awaiting.length || missingWriteBackWarningActive) {
-    return awaiting.length > 0;
-  }
-
-  const labels = awaiting.map((state) => getMcpSessionDisplayLabel(state, sessions));
-  console.log(`${mcpBadge()}  [WARN][repo] ${gray(`${labels.join(", ")} waiting on write-back after repo changes`)}`);
-  return true;
-}
-
 function getWatchErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -89,31 +66,14 @@ export async function runWatchPlain(): Promise<void> {
   const ok = printSnapshot("initial");
   if (!ok) return;
 
-  let sessionStates: McpSessionState[] = getRecentMcpSessionStates();
-  printWatchGuide();
-  printInstallVerification(sessionStates);
-  console.log(`${gray("Watching for changes and MCP activity (plain mode). Press Ctrl+C to stop.")}`);
-
-  const watcher = createRepoWatcher();
-  const logsWatcher = createMcpLogsWatcher();
-  const readNewMcpActivity = createMcpActivityMonitor();
-  let missingWriteBackWarningActive = false;
+  let sessionStates: McpSessionState[] = [];
+  let errorMessage: string | null = null;
   let lastSnapshotSummary = "initial";
 
-  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  let shutdownPromise: Promise<void> | null = null;
-  let settled = false;
-  const inactivityTimer = setInterval(() => {
-    const result = collectMcpInactivityWarnings(sessionStates);
-    sessionStates = result.states;
-    for (const warning of result.warnings) {
-      console.log(`${mcpBadge()}  [WARN][session] ${gray(warning)}`);
-    }
-  }, 30000);
-
-  const onLogActivity = () => {
-    for (const notice of readNewMcpActivity()) {
-      sessionStates = upsertMcpSessionState(sessionStates, notice);
+  const controller = createWatchController({
+    handleProcessSignals: true,
+    onActivityNotice: (notice, nextStates) => {
+      sessionStates = nextStates;
       printMcpNotice(notice, sessionStates);
       if (
         (notice.event.event === "mcp:resource" && notice.event.resource === "tack://session") ||
@@ -121,110 +81,44 @@ export async function runWatchPlain(): Promise<void> {
       ) {
         printInstallVerification(sessionStates);
       }
-    }
-  };
-  const detachLogsWatcher = attachMcpLogWatcher(logsWatcher, onLogActivity);
-
-  const onRepoEvent = (event: string, filepath: string) => {
-    if (shouldIgnoreRepoWatchPath(filepath)) return;
-    if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      const changedFiles = getChangedFiles();
-      if (changedFiles.length > 0) {
-        sessionStates = markMcpSessionsRepoChanged(sessionStates);
-      }
-      const riskySessions = sessionStates.filter((state) => state.awaitingWriteBack && state.repoChangedAfterRead);
-      if (riskySessions.length > 0) {
-        missingWriteBackWarningActive = maybeWarnMissingWriteBack(sessionStates, missingWriteBackWarningActive);
-      } else {
-        missingWriteBackWarningActive = false;
-      }
-      const inactivityResult = collectMcpInactivityWarnings(sessionStates);
-      sessionStates = inactivityResult.states;
-      for (const warning of inactivityResult.warnings) {
-        console.log(`${mcpBadge()}  [WARN][session] ${gray(warning)}`);
-      }
+    },
+    onError: (message) => {
+      errorMessage = message;
+    },
+    onRepoScan: ({ event, filepath }) => {
       const result = runStatusScan();
       if (!result) {
-        console.error("No spec.yaml found. Run 'tack init' first.");
+        errorMessage = "No spec.yaml found. Run 'tack init' first.";
+        void controller.stop();
         return;
       }
+
       const summary = getWatchScanSummary(result.status.health, result.status.driftCount);
       if (summary !== lastSnapshotSummary || result.status.driftCount > 0) {
         lastSnapshotSummary = summary;
         printSnapshot(`${event} ${filepath}`, result);
       }
-    }, WATCH_DEBOUNCE_MS);
-  };
-  watcher.on("all", onRepoEvent);
-
-  let onSignal: (() => void) | null = null;
-  let onWatcherError: ((err: unknown) => void) | null = null;
-  let onLogsWatcherError: ((err: unknown) => void) | null = null;
-
-  const shutdown = async (): Promise<void> => {
-    if (shutdownPromise) {
-      return shutdownPromise;
-    }
-
-    shutdownPromise = (async () => {
-      detachLogsWatcher();
-      if (onSignal) {
-        process.off("SIGINT", onSignal);
-        process.off("SIGTERM", onSignal);
-      }
-      if (onWatcherError) {
-        watcher.off("error", onWatcherError);
-      }
-      if (onLogsWatcherError) {
-        logsWatcher.off("error", onLogsWatcherError);
-      }
-      watcher.off("all", onRepoEvent);
-      if (debounceTimer) {
-        clearTimeout(debounceTimer);
-        debounceTimer = null;
-      }
-      clearInterval(inactivityTimer);
-      await Promise.allSettled([watcher.close(), logsWatcher.close()]);
-      console.log(gray("Stopped watch mode."));
-    })();
-
-    return shutdownPromise;
-  };
-
-  const finish = (resolve: () => void, reject: (error: Error) => void, fail?: Error) => {
-    if (settled) {
-      return;
-    }
-    settled = true;
-    void shutdown().then(
-      () => {
-        if (fail) {
-          reject(fail);
-          return;
-        }
-        resolve();
-      },
-      (err) => {
-        reject(err instanceof Error ? err : new Error(getWatchErrorMessage(err)));
-      }
-    );
-  };
-
-  await new Promise<void>((resolve, reject) => {
-    onSignal = () => {
-      finish(resolve, reject);
-    };
-    onWatcherError = (err: unknown) => {
-      finish(resolve, reject, new Error(`Watch repo error: ${getWatchErrorMessage(err)}`));
-    };
-    onLogsWatcherError = (err: unknown) => {
-      finish(resolve, reject, new Error(`Watch activity log error: ${getWatchErrorMessage(err)}`));
-    };
-
-    watcher.on("error", onWatcherError);
-    logsWatcher.on("error", onLogsWatcherError);
-    process.once("SIGINT", onSignal);
-    process.once("SIGTERM", onSignal);
+    },
+    onRepoWarning: (warning, nextStates) => {
+      sessionStates = nextStates;
+      console.log(`${mcpBadge()}  [WARN][repo] ${gray(warning)}`);
+    },
+    onSessionsChanged: (nextStates) => {
+      sessionStates = nextStates;
+    },
+    onSessionWarning: (warning, nextStates) => {
+      sessionStates = nextStates;
+      console.log(`${mcpBadge()}  [WARN][session] ${gray(warning)}`);
+    },
   });
+  sessionStates = controller.getSessionStates();
+  printWatchGuide();
+  printInstallVerification(sessionStates);
+  console.log(`${gray("Watching for changes and MCP activity (plain mode). Press Ctrl+C to stop.")}`);
+  controller.start();
+  await controller.waitUntilStopped();
+  console.log(gray("Stopped watch mode."));
+  if (errorMessage) {
+    throw new Error(getWatchErrorMessage(errorMessage));
+  }
 }

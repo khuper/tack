@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Text, Box, Static, useApp, useInput } from "ink";
-import chokidar from "chokidar";
 import { DriftAlert } from "./DriftAlert.js";
 import { Logo } from "./Logo.js";
 import { readSpec, readDrift, writeAudit } from "../lib/files.js";
@@ -14,26 +13,14 @@ import { getChangedFiles } from "../lib/git.js";
 import { notify } from "../lib/notify.js";
 import {
   log,
-  collectMcpInactivityWarnings,
-  createMcpActivityMonitor,
   getMcpInstallVerification,
-  getRecentMcpSessionStates,
   getMcpSessionDisplayLabel,
-  markMcpSessionsRepoChanged,
-  refreshMcpSessionStates,
-  upsertMcpSessionState,
   type McpActivityCategory,
   type McpActivityNotice,
   type McpSessionHealth,
   type McpSessionState,
 } from "../lib/logger.js";
-import {
-  attachMcpLogWatcher,
-  createMcpLogsWatcher,
-  createRepoWatcher,
-  shouldIgnoreRepoWatchPath,
-  WATCH_DEBOUNCE_MS,
-} from "../lib/watch.js";
+import { createWatchController, type WatchController } from "../lib/watchController.js";
 
 type HistoryLevel = "good" | "bad" | "update" | "ready" | "read" | "check" | "write" | "warn";
 
@@ -128,10 +115,6 @@ function formatAge(ms: number, now = Date.now()): string {
   return `${Math.round(ageMs / (60 * 60_000))}h ago`;
 }
 
-function getWatchErrorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 function sessionSummary(state: McpSessionState): { text: string; color: "green" | "yellow" | "cyan" | "magenta" | "blue" | "red" } {
   if (state.awaitingWriteBack && state.repoChangedAfterRead && state.health === "stale") {
     return { text: "stale after repo changes", color: "red" };
@@ -214,17 +197,10 @@ export function Watch() {
   const [memoryWarnings, setMemoryWarnings] = useState<string[]>([]);
   const [sessionStates, setSessionStates] = useState<McpSessionState[]>([]);
   const [fatalError, setFatalError] = useState<string | null>(null);
-  const watcherRef = useRef<chokidar.FSWatcher | null>(null);
-  const logsWatcherRef = useRef<chokidar.FSWatcher | null>(null);
-  const detachLogsWatcherRef = useRef<(() => void) | null>(null);
-  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const controllerRef = useRef<WatchController | null>(null);
   const historySeq = useRef(0);
-  const readNewMcpActivityRef = useRef<(() => McpActivityNotice[]) | null>(null);
-  const missingWriteBackWarningActiveRef = useRef(false);
   const sessionStatesRef = useRef<McpSessionState[]>([]);
-  const inactivityTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastScanHistoryRef = useRef<string | null>(null);
-  const stoppedRef = useRef(false);
   const installVerification = getMcpInstallVerification(sessionStates);
   const headline = trustHeadline(installVerification, sessionStates);
   const visibleSessions = sessionStates.slice(0, 4);
@@ -246,26 +222,16 @@ export function Watch() {
     setSessionStates(next);
   }
 
-  function applyActivityNotice(notice: McpActivityNotice): void {
-    const next = upsertMcpSessionState(sessionStatesRef.current, notice);
-    syncSessionStates(next);
-    const display = getMcpSessionDisplayLabel(next.find((state) => state.sessionKey === notice.sessionKey) ?? next[0]!, next);
+  function applyActivityNotice(notice: McpActivityNotice, nextStates: McpSessionState[]): void {
+    syncSessionStates(nextStates);
+    const display = getMcpSessionDisplayLabel(nextStates.find((state) => state.sessionKey === notice.sessionKey) ?? nextStates[0]!, nextStates);
     pushHistory(noticeToHistoryLevel(notice.category), `[${display}] ${notice.message}`);
   }
 
-  function runInactivityCycle(): void {
-    const result = collectMcpInactivityWarnings(sessionStatesRef.current);
-    syncSessionStates(result.states);
-    for (const warning of result.warnings) {
-      pushHistory("warn", warning);
-    }
-  }
-
-  function runScan(reason = "scan") {
+  function runScan(reason = "scan", changedFiles = getChangedFiles(), nextSessions = sessionStatesRef.current) {
     const startedAt = Date.now();
     const spec = readSpec();
     if (!spec) return;
-    const changedFiles = getChangedFiles();
 
     setProjectName(spec.project);
 
@@ -281,20 +247,7 @@ export function Watch() {
     setDriftCount(unresolvedCount);
     setLastScan(new Date().toLocaleTimeString());
     setMemoryWarnings(getMemoryWarnings(changedFiles));
-
-    let nextSessions = refreshMcpSessionStates(sessionStatesRef.current);
-    if (changedFiles.length > 0) {
-      nextSessions = markMcpSessionsRepoChanged(nextSessions);
-    }
     syncSessionStates(nextSessions);
-
-    const riskySessions = nextSessions.filter((state) => state.awaitingWriteBack && state.repoChangedAfterRead);
-    if (riskySessions.length > 0 && !missingWriteBackWarningActiveRef.current) {
-      pushHistory("warn", `${riskySessions.map((state) => getMcpSessionDisplayLabel(state, nextSessions)).join(", ")} waiting on write-back after repo changes`);
-      missingWriteBackWarningActiveRef.current = true;
-    } else if (riskySessions.length === 0) {
-      missingWriteBackWarningActiveRef.current = false;
-    }
 
     const scanSummary =
       unresolvedCount === 0
@@ -328,32 +281,6 @@ export function Watch() {
     }
   }
 
-  function stopWatchRuntime(): void {
-    if (stoppedRef.current) {
-      return;
-    }
-    stoppedRef.current = true;
-
-    detachLogsWatcherRef.current?.();
-    detachLogsWatcherRef.current = null;
-
-    const watcher = watcherRef.current;
-    const logsWatcher = logsWatcherRef.current;
-    watcherRef.current = null;
-    logsWatcherRef.current = null;
-    void watcher?.close();
-    void logsWatcher?.close();
-
-    if (debounceTimer.current) {
-      clearTimeout(debounceTimer.current);
-      debounceTimer.current = null;
-    }
-    if (inactivityTimerRef.current) {
-      clearInterval(inactivityTimerRef.current);
-      inactivityTimerRef.current = null;
-    }
-  }
-
   useEffect(() => {
     const spec = readSpec();
     if (!spec) {
@@ -363,58 +290,37 @@ export function Watch() {
       return;
     }
 
-    stoppedRef.current = false;
     setFatalError(null);
-    syncSessionStates(getRecentMcpSessionStates());
-    runScan();
-    readNewMcpActivityRef.current = createMcpActivityMonitor();
-
-    const watcher = createRepoWatcher();
-    const logsWatcher = createMcpLogsWatcher();
-
-    const onRepoEvent = (event: string, filepath: string) => {
-      if (shouldIgnoreRepoWatchPath(filepath)) return;
-      if (debounceTimer.current) clearTimeout(debounceTimer.current);
-      debounceTimer.current = setTimeout(() => {
-        runScan(`change (${event})`);
-      }, WATCH_DEBOUNCE_MS);
-    };
-    const onLogActivity = () => {
-      const notices = readNewMcpActivityRef.current?.() ?? [];
-      for (const notice of notices) {
-        applyActivityNotice(notice);
-      }
-    };
-    const onWatcherError = (err: unknown) => {
-      const message = `Watch repo error: ${getWatchErrorMessage(err)}`;
-      pushHistory("warn", message);
-      setFatalError(message);
-      stopWatchRuntime();
-    };
-    const onLogsWatcherError = (err: unknown) => {
-      const message = `Watch activity log error: ${getWatchErrorMessage(err)}`;
-      pushHistory("warn", message);
-      setFatalError(message);
-      stopWatchRuntime();
-    };
-
-    watcher.on("all", onRepoEvent);
-    watcher.on("error", onWatcherError);
-    logsWatcher.on("error", onLogsWatcherError);
-    detachLogsWatcherRef.current = attachMcpLogWatcher(logsWatcher, onLogActivity);
-
-    inactivityTimerRef.current = setInterval(() => {
-      runInactivityCycle();
-    }, 30000);
-
-    watcherRef.current = watcher;
-    logsWatcherRef.current = logsWatcher;
+    const controller = createWatchController({
+      onActivityNotice: (notice, nextStates) => {
+        applyActivityNotice(notice, nextStates);
+      },
+      onError: (message) => {
+        pushHistory("warn", message);
+        setFatalError(message);
+      },
+      onRepoScan: ({ changedFiles, event, filepath, sessionStates: nextStates }) => {
+        runScan(`change (${event})`, changedFiles, nextStates);
+      },
+      onRepoWarning: (warning) => {
+        pushHistory("warn", warning);
+      },
+      onSessionsChanged: (nextStates) => {
+        syncSessionStates(nextStates);
+      },
+      onSessionWarning: (warning, nextStates) => {
+        syncSessionStates(nextStates);
+        pushHistory("warn", warning);
+      },
+    });
+    controllerRef.current = controller;
+    syncSessionStates(controller.getSessionStates());
+    runScan("scan", getChangedFiles(), controller.getSessionStates());
+    controller.start();
 
     return () => {
-      watcher.off("all", onRepoEvent);
-      watcher.off("error", onWatcherError);
-      logsWatcher.off("error", onLogsWatcherError);
-      stopWatchRuntime();
+      void controller.stop();
+      controllerRef.current = null;
     };
   }, [exit]);
 
@@ -426,7 +332,7 @@ export function Watch() {
 
   useInput((input) => {
     if (input === "q") {
-      stopWatchRuntime();
+      void controllerRef.current?.stop();
       exit();
       return;
     }

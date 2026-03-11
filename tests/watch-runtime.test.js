@@ -139,3 +139,76 @@ test("shared watch controller routes activity notices and repo scans", async () 
   assert.strictEqual(repoWatcher.closed, true);
   assert.strictEqual(logsWatcher.closed, true);
 });
+
+test("shared watch controller keeps hydrated session state and labels same-agent reconnects", async () => {
+  const repoWatcher = new FakeWatcher();
+  const logsWatcher = new FakeWatcher();
+  const activityMessages = [];
+  const sessionSnapshots = [];
+  const notices = [
+    {
+      event: {
+        ts: "2026-03-11T20:05:00.000Z",
+        event: "mcp:ready",
+        transport: "stdio",
+        agent: "codex",
+        agent_type: "codex",
+        session_id: "session-b",
+      },
+      agent: "codex",
+      agentType: "codex",
+      sessionId: "session-b",
+      sessionKey: "codex:session-b",
+      category: "ready",
+      message: "connected to Tack MCP",
+    },
+  ];
+
+  const controller = createWatchController({
+    createLogsWatcher: () => logsWatcher,
+    createMcpActivityMonitor: () => () => notices.splice(0),
+    createRepoWatcher: () => repoWatcher,
+    getChangedFiles: () => [],
+    getRecentMcpSessionStates: () => [
+      {
+        agent: "codex",
+        agentType: "codex",
+        sessionId: "session-a",
+        sessionKey: "codex:session-a",
+        connectedAt: 1,
+        lastEventAt: 2,
+        lastReadAt: null,
+        lastCheckAt: null,
+        lastWriteAt: null,
+        lastAction: "ready",
+        lastMessage: "connected to Tack MCP",
+        hasReadSessionContext: false,
+        awaitingWriteBack: false,
+        repoChangedAfterRead: false,
+        health: "active",
+        warnedIdle: false,
+        warnedStale: false,
+      },
+    ],
+    onActivityNotice: (notice, sessionStates) => {
+      activityMessages.push(notice.message);
+      sessionSnapshots.push(sessionStates.map((state) => state.sessionKey));
+    },
+    onSessionsChanged: (sessionStates) => {
+      sessionSnapshots.push(sessionStates.map((state) => state.sessionKey));
+    },
+    setIntervalFn: () => 1,
+    clearIntervalFn: () => {},
+  });
+
+  assert.deepStrictEqual(controller.getSessionStates().map((state) => state.sessionKey), ["codex:session-a"]);
+
+  controller.start();
+  logsWatcher.emit("add");
+
+  assert.deepStrictEqual(activityMessages, ["reconnected to Tack MCP (new session)"]);
+  assert.deepStrictEqual(sessionSnapshots[0], ["codex:session-a"]);
+  assert.deepStrictEqual(sessionSnapshots.at(-1), ["codex:session-b", "codex:session-a"]);
+
+  await controller.stop();
+});

@@ -49,6 +49,8 @@ type WatchControllerOptions = {
   clearTimeoutFn?: typeof clearTimeout;
   debounceMs?: number;
   inactivityMs?: number;
+  /** How long a session can be inactive before being dropped from watch output (ms). */
+  disconnectMs?: number;
   handleProcessSignals?: boolean;
 };
 
@@ -64,7 +66,7 @@ function toSessionSnapshot(states: McpSessionState[]): McpSessionState[] {
 }
 
 export function formatRepoWriteBackWarning(states: McpSessionState[]): string | null {
-  const awaiting = states.filter((state) => state.awaitingWriteBack && state.repoChangedAfterRead);
+  const awaiting = states.filter((state) => state.disconnectedAt == null && state.awaitingWriteBack && state.repoChangedAfterRead);
   if (awaiting.length === 0) {
     return null;
   }
@@ -96,8 +98,30 @@ export function createWatchController(options: WatchControllerOptions = {}): Wat
     clearTimeoutFn = clearTimeout,
     debounceMs = WATCH_DEBOUNCE_MS,
     inactivityMs = 30000,
+    disconnectMs = 60 * 1000,
     handleProcessSignals = false,
   } = options;
+
+  function pruneDisconnectedSessions(states: McpSessionState[], now: number): { states: McpSessionState[]; warnings: string[] } {
+    const warnings: string[] = [];
+    const nextStates = states.filter((state) => {
+      if (state.disconnectedAt != null) {
+        return Math.max(0, now - state.disconnectedAt) <= disconnectMs;
+      }
+
+      const ageMs = Math.max(0, now - state.lastEventAt);
+      if (ageMs <= disconnectMs) {
+        return true;
+      }
+
+      if (state.awaitingWriteBack || state.repoChangedAfterRead) {
+        warnings.push(`${getMcpSessionDisplayLabel(state, states)} disconnected before write-back after repo changes`);
+      }
+
+      return false;
+    });
+    return { states: nextStates, warnings };
+  }
 
   let sessionStates = getRecentMcpSessionStatesOption();
   let watcher: WatchLike | null = null;
@@ -129,9 +153,14 @@ export function createWatchController(options: WatchControllerOptions = {}): Wat
   }
 
   function runInactivityCycle(): void {
-    const result = collectMcpInactivityWarnings(sessionStates);
-    updateSessionStates(result.states);
+    const now = Date.now();
+    const result = collectMcpInactivityWarnings(sessionStates, now);
+    const pruned = pruneDisconnectedSessions(result.states, now);
+    updateSessionStates(pruned.states);
     for (const warning of result.warnings) {
+      onSessionWarning?.(warning, toSessionSnapshot(sessionStates));
+    }
+    for (const warning of pruned.warnings) {
       onSessionWarning?.(warning, toSessionSnapshot(sessionStates));
     }
   }
@@ -162,9 +191,14 @@ export function createWatchController(options: WatchControllerOptions = {}): Wat
         missingWriteBackWarningActive = false;
       }
 
-      const inactivityResult = collectMcpInactivityWarnings(sessionStates);
-      updateSessionStates(inactivityResult.states);
+      const now = Date.now();
+      const inactivityResult = collectMcpInactivityWarnings(sessionStates, now);
+      const pruned = pruneDisconnectedSessions(inactivityResult.states, now);
+      updateSessionStates(pruned.states);
       for (const warning of inactivityResult.warnings) {
+        onSessionWarning?.(warning, toSessionSnapshot(sessionStates));
+      }
+      for (const warning of pruned.warnings) {
         onSessionWarning?.(warning, toSessionSnapshot(sessionStates));
       }
 

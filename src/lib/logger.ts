@@ -11,9 +11,9 @@ const MCP_STALE_MS = 15 * 60 * 1000;
 const MCP_SESSION_RETENTION_MS = 60 * 60 * 1000;
 const MCP_WRITE_TOOLS = new Set(["checkpoint_work", "log_decision", "log_agent_note"]);
 
-export type McpActivityEvent = Extract<LogEvent, { event: "mcp:ready" | "mcp:resource" | "mcp:tool" }>;
-export type McpActivityCategory = "ready" | "read" | "check" | "write";
-export type McpSessionHealth = "active" | "idle" | "stale";
+export type McpActivityEvent = Extract<LogEvent, { event: "mcp:ready" | "mcp:disconnect" | "mcp:resource" | "mcp:tool" }>;
+export type McpActivityCategory = "ready" | "disconnect" | "read" | "check" | "write";
+export type McpSessionHealth = "active" | "idle" | "stale" | "disconnected";
 export type McpActivityNotice = {
   event: McpActivityEvent;
   agent: string;
@@ -39,6 +39,7 @@ export type McpSessionState = {
   awaitingWriteBack: boolean;
   repoChangedAfterRead: boolean;
   health: McpSessionHealth;
+  disconnectedAt: number | null;
   warnedIdle: boolean;
   warnedStale: boolean;
 };
@@ -104,6 +105,10 @@ export function classifyMcpActivityEvent(event: McpActivityEvent): McpActivityCa
     return "ready";
   }
 
+  if (event.event === "mcp:disconnect") {
+    return "disconnect";
+  }
+
   if (event.event === "mcp:resource") {
     return "read";
   }
@@ -162,7 +167,7 @@ export function hasRecentMcpWriteBack(windowMs = RECENT_WRITE_WINDOW_MS, agent?:
 }
 
 export function isMcpActivityEvent(event: LogEvent): event is McpActivityEvent {
-  return event.event === "mcp:ready" || event.event === "mcp:resource" || event.event === "mcp:tool";
+  return event.event === "mcp:ready" || event.event === "mcp:disconnect" || event.event === "mcp:resource" || event.event === "mcp:tool";
 }
 
 export function readRecentMcpActivity(limit = 50): McpActivityEvent[] {
@@ -171,6 +176,9 @@ export function readRecentMcpActivity(limit = 50): McpActivityEvent[] {
 
 export function mcpActivityEventKey(event: McpActivityEvent): string {
   const sessionKey = getMcpSessionKey(event);
+  if (event.event === "mcp:disconnect") {
+    return `${event.ts}:${sessionKey}:${event.event}:${event.summary ?? ""}`;
+  }
   if (event.event === "mcp:resource") {
     return `${event.ts}:${sessionKey}:${event.event}:${event.resource}:${event.summary ?? ""}`;
   }
@@ -189,6 +197,12 @@ export function formatMcpActivityEvent(event: McpActivityEvent): string {
       return "connected (new session; identity unknown)";
     }
     return "connected to Tack MCP";
+  }
+
+  if (event.event === "mcp:disconnect") {
+    return event.summary && event.summary.trim().length > 0
+      ? event.summary
+      : "disconnected from Tack MCP";
   }
 
   if (event.event === "mcp:resource") {
@@ -307,7 +321,9 @@ export function createMcpActivityMonitor(): () => McpActivityNotice[] {
             : `${notice.sessionKey}:resource:${event.resource}`
           : event.event === "mcp:tool"
             ? `${notice.sessionKey}:tool:${event.tool}:${notice.category === "write" ? "" : event.summary ?? ""}`
-            : `${notice.sessionKey}:ready:${event.transport}`;
+            : event.event === "mcp:disconnect"
+              ? `${notice.sessionKey}:disconnect:${event.summary ?? ""}`
+              : `${notice.sessionKey}:ready:${event.transport}`;
       const tsMs = eventTimeMs(event);
       const lastMs = lastShownAt.get(kind) ?? 0;
 
@@ -360,6 +376,7 @@ export function upsertMcpSessionState(states: McpSessionState[], notice: McpActi
       awaitingWriteBack: false,
       repoChangedAfterRead: false,
       health: "active" as McpSessionHealth,
+      disconnectedAt: null,
       warnedIdle: false,
       warnedStale: false,
     };
@@ -373,11 +390,12 @@ export function upsertMcpSessionState(states: McpSessionState[], notice: McpActi
     lastEventAt: eventMs,
     lastAction: notice.category,
     lastMessage: notice.message,
-    health: computeSessionHealth(eventMs, now),
+    health: notice.category === "disconnect" ? "disconnected" : computeSessionHealth(eventMs, now),
   };
 
   if (notice.category === "ready") {
     next.connectedAt = eventMs;
+    next.disconnectedAt = null;
   }
   if (notice.category === "read") {
     next.lastReadAt = eventMs;
@@ -386,16 +404,26 @@ export function upsertMcpSessionState(states: McpSessionState[], notice: McpActi
     }
     next.awaitingWriteBack = true;
     next.repoChangedAfterRead = false;
+    next.disconnectedAt = null;
     next.warnedIdle = false;
     next.warnedStale = false;
   }
   if (notice.category === "check") {
     next.lastCheckAt = eventMs;
+    next.disconnectedAt = null;
   }
   if (notice.category === "write") {
     next.lastWriteAt = eventMs;
     next.awaitingWriteBack = false;
     next.repoChangedAfterRead = false;
+    next.disconnectedAt = null;
+    next.warnedIdle = false;
+    next.warnedStale = false;
+  }
+  if (notice.category === "disconnect") {
+    next.awaitingWriteBack = false;
+    next.repoChangedAfterRead = false;
+    next.disconnectedAt = eventMs;
     next.warnedIdle = false;
     next.warnedStale = false;
   }
@@ -406,13 +434,13 @@ export function upsertMcpSessionState(states: McpSessionState[], notice: McpActi
 export function refreshMcpSessionStates(states: McpSessionState[], now = Date.now()): McpSessionState[] {
   return states.map((state) => ({
     ...state,
-    health: computeSessionHealth(state.lastEventAt, now),
+    health: state.disconnectedAt != null ? "disconnected" : computeSessionHealth(state.lastEventAt, now),
   }));
 }
 
 export function markMcpSessionsRepoChanged(states: McpSessionState[]): McpSessionState[] {
   const candidate = states
-    .filter((state) => state.awaitingWriteBack)
+    .filter((state) => state.awaitingWriteBack && state.disconnectedAt == null)
     .sort((a, b) => (b.lastReadAt ?? b.lastEventAt) - (a.lastReadAt ?? a.lastEventAt))[0];
 
   if (!candidate) {
@@ -442,7 +470,7 @@ export function getMcpSessionDisplayLabel(state: McpSessionState, allStates: Mcp
 export function getMcpInstallVerification(states: McpSessionState[]): McpInstallVerification {
   const readState =
     states
-      .filter((state) => state.hasReadSessionContext && state.lastReadAt !== null)
+      .filter((state) => state.disconnectedAt == null && state.hasReadSessionContext && state.lastReadAt !== null)
       .sort((a, b) => (b.lastReadAt ?? 0) - (a.lastReadAt ?? 0))[0] ?? null;
   const writeState =
     states.filter((state) => state.lastWriteAt !== null).sort((a, b) => (b.lastWriteAt ?? 0) - (a.lastWriteAt ?? 0))[0] ?? null;
@@ -477,7 +505,7 @@ export function collectMcpInactivityWarnings(states: McpSessionState[], now = Da
   const refreshed = refreshMcpSessionStates(states, now);
   const warnings: string[] = [];
   const nextStates = refreshed.map((state, _, allStates) => {
-    if (!state.awaitingWriteBack || !state.repoChangedAfterRead) {
+    if (state.disconnectedAt != null || !state.awaitingWriteBack || !state.repoChangedAfterRead) {
       return state;
     }
 

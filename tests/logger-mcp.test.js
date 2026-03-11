@@ -93,6 +93,21 @@ test("formats unknown ready activity as a new session with missing identity", ()
   assert.strictEqual(formatMcpActivityEvent(event), "connected (new session; identity unknown)");
 });
 
+test("formats MCP disconnect activity events", () => {
+  const event = {
+    ts: "2026-03-11T20:10:00.000Z",
+    event: "mcp:disconnect",
+    transport: "stdio",
+    agent: "codex",
+    agent_type: "codex",
+    session_id: "session-x",
+    summary: "disconnected from Tack MCP",
+  };
+
+  assert.strictEqual(classifyMcpActivityEvent(event), "disconnect");
+  assert.strictEqual(formatMcpActivityEvent(event), "disconnected from Tack MCP");
+});
+
 test("contextualizes ready activity as a reconnect when the same agent opens a new session", () => {
   const notice = contextualizeMcpActivityNotice(
     [
@@ -410,6 +425,38 @@ test("tracks install verification milestones from first read to write-back", () 
   });
 });
 
+test("install verification ignores disconnected read-only sessions", () => {
+  const states = [
+    {
+      agent: "codex",
+      agentType: "codex",
+      sessionId: "session-a",
+      sessionKey: "codex:session-a",
+      connectedAt: 1,
+      lastEventAt: 3,
+      lastReadAt: 2,
+      lastCheckAt: null,
+      lastWriteAt: null,
+      lastAction: "disconnect",
+      lastMessage: "disconnected from Tack MCP",
+      hasReadSessionContext: true,
+      awaitingWriteBack: false,
+      repoChangedAfterRead: false,
+      health: "disconnected",
+      disconnectedAt: 3,
+      warnedIdle: false,
+      warnedStale: false,
+    },
+  ];
+
+  assert.deepStrictEqual(getMcpInstallVerification(states), {
+    status: "waiting_for_first_read",
+    summary: "waiting for first agent read",
+    readLabel: null,
+    writeLabel: null,
+  });
+});
+
 test("hydrates session state from recent MCP logs at watch startup", () => {
   const originalCwd = process.cwd();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tack-logger-hydrate-"));
@@ -690,4 +737,41 @@ test("relabels an existing session when identity is registered after connect", (
   assert.strictEqual(states[0]?.agent, "codex");
   assert.strictEqual(states[0]?.sessionKey, "codex:session-a");
   assert.strictEqual(states[0]?.lastMessage, "registered identity as codex");
+});
+
+test("marks a session disconnected and clears pending write-back on disconnect", () => {
+  const readNotice = {
+    event: { ts: "2026-03-11T20:00:00.000Z", event: "mcp:resource", resource: "tack://session", agent: "codex", agent_type: "codex", session_id: "session-a" },
+    agent: "codex",
+    agentType: "codex",
+    sessionId: "session-a",
+    sessionKey: "codex:session-a",
+    category: "read",
+    message: "read session context",
+  };
+  const disconnectNotice = {
+    event: {
+      ts: "2026-03-11T20:01:00.000Z",
+      event: "mcp:disconnect",
+      transport: "stdio",
+      agent: "codex",
+      agent_type: "codex",
+      session_id: "session-a",
+      summary: "disconnected from Tack MCP",
+    },
+    agent: "codex",
+    agentType: "codex",
+    sessionId: "session-a",
+    sessionKey: "codex:session-a",
+    category: "disconnect",
+    message: "disconnected from Tack MCP",
+  };
+
+  let states = upsertMcpSessionState([], readNotice, Date.parse("2026-03-11T20:00:00.000Z"));
+  states = upsertMcpSessionState(states, disconnectNotice, Date.parse("2026-03-11T20:01:00.000Z"));
+
+  assert.strictEqual(states[0]?.health, "disconnected");
+  assert.strictEqual(states[0]?.awaitingWriteBack, false);
+  assert.strictEqual(states[0]?.repoChangedAfterRead, false);
+  assert.strictEqual(states[0]?.disconnectedAt, Date.parse("2026-03-11T20:01:00.000Z"));
 });

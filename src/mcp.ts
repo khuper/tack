@@ -197,6 +197,22 @@ async function main(): Promise<void> {
           }
     );
   };
+  let mcpReadyLogged = false;
+  let mcpDisconnectLogged = false;
+  const logMcpDisconnect = (summary = "disconnected from Tack MCP"): void => {
+    if (!mcpReadyLogged || mcpDisconnectLogged) {
+      return;
+    }
+    mcpDisconnectLogged = true;
+    log({
+      event: "mcp:disconnect",
+      transport: "stdio",
+      summary,
+      agent: mcpAgentIdentity.name,
+      agent_type: mcpAgentIdentity.name,
+      session_id: mcpSessionId,
+    });
+  };
 
   server.registerResource(
     "intent",
@@ -860,6 +876,12 @@ async function main(): Promise<void> {
     agent_type: mcpAgentIdentity.name,
     session_id: mcpSessionId,
   });
+  mcpReadyLogged = true;
+  process.once("SIGINT", () => logMcpDisconnect());
+  process.once("SIGTERM", () => logMcpDisconnect());
+  process.once("beforeExit", () => logMcpDisconnect());
+  process.stdin.once("end", () => logMcpDisconnect());
+  process.stdin.once("close", () => logMcpDisconnect());
   announceMcpReady(mcpAgentIdentity.name, mcpSessionId);
 }
 

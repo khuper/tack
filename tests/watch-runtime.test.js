@@ -78,10 +78,11 @@ test("shared watch controller routes activity notices and repo scans", async () 
   const repoWatcher = new FakeWatcher();
   const logsWatcher = new FakeWatcher();
   let debounceFn = null;
+  const nowIso = new Date().toISOString();
   const notices = [
     {
       event: {
-        ts: "2026-03-11T20:00:00.000Z",
+        ts: nowIso,
         event: "mcp:resource",
         resource: "tack://session",
         agent: "codex",
@@ -138,6 +139,196 @@ test("shared watch controller routes activity notices and repo scans", async () 
   await controller.stop();
   assert.strictEqual(repoWatcher.closed, true);
   assert.strictEqual(logsWatcher.closed, true);
+});
+
+test("watch controller prunes long-inactive MCP sessions without pending write-back", async () => {
+  const repoWatcher = new FakeWatcher();
+  const logsWatcher = new FakeWatcher();
+  let tickInactivity = null;
+  const sessionSnapshots = [];
+
+  const controller = createWatchController({
+    createLogsWatcher: () => logsWatcher,
+    createMcpActivityMonitor: () => () => [],
+    createRepoWatcher: () => repoWatcher,
+    getChangedFiles: () => [],
+    // Start with a single very old session that has no outstanding write-back.
+    getRecentMcpSessionStates: () => [
+      {
+        agent: "codex",
+        agentType: "codex",
+        sessionId: "session-a",
+        sessionKey: "codex:session-a",
+        connectedAt: 0,
+        lastEventAt: 0,
+        lastReadAt: null,
+        lastCheckAt: null,
+        lastWriteAt: null,
+        lastAction: "ready",
+        lastMessage: "connected to Tack MCP",
+        hasReadSessionContext: false,
+        awaitingWriteBack: false,
+        repoChangedAfterRead: false,
+        health: "active",
+        warnedIdle: false,
+        warnedStale: false,
+      },
+    ],
+    onSessionsChanged: (states) => {
+      sessionSnapshots.push(states.map((state) => state.sessionKey));
+    },
+    setIntervalFn: (fn) => {
+      tickInactivity = fn;
+      return 1;
+    },
+    clearIntervalFn: () => {},
+    inactivityMs: 10,
+    disconnectMs: 1,
+  });
+
+  // Initial hydration shows the legacy session.
+  assert.deepStrictEqual(
+    controller.getSessionStates().map((state) => state.sessionKey),
+    ["codex:session-a"],
+  );
+
+  controller.start();
+
+  // Simulate one inactivity cycle; the session is far older than disconnectMs
+  // and has no pending write-back, so it should be pruned from watch output.
+  tickInactivity();
+
+  assert.deepStrictEqual(controller.getSessionStates(), []);
+  assert.deepStrictEqual(sessionSnapshots.at(-1), []);
+
+  await controller.stop();
+});
+
+test("watch controller drops disappeared risky sessions after timeout and emits one warning", async () => {
+  const repoWatcher = new FakeWatcher();
+  const logsWatcher = new FakeWatcher();
+  let tickInactivity = null;
+  const warnings = [];
+  const now = Date.now();
+
+  const controller = createWatchController({
+    createLogsWatcher: () => logsWatcher,
+    createMcpActivityMonitor: () => () => [],
+    createRepoWatcher: () => repoWatcher,
+    getChangedFiles: () => [],
+    getRecentMcpSessionStates: () => [
+      {
+        agent: "codex",
+        agentType: "codex",
+        sessionId: "session-a",
+        sessionKey: "codex:session-a",
+        connectedAt: now - 50,
+        lastEventAt: now - 50,
+        lastReadAt: now - 50,
+        lastCheckAt: null,
+        lastWriteAt: null,
+        lastAction: "read",
+        lastMessage: "read session context",
+        hasReadSessionContext: true,
+        awaitingWriteBack: true,
+        repoChangedAfterRead: true,
+        health: "active",
+        disconnectedAt: null,
+        warnedIdle: false,
+        warnedStale: false,
+      },
+    ],
+    onSessionWarning: (warning) => {
+      warnings.push(warning);
+    },
+    setIntervalFn: (fn) => {
+      tickInactivity = fn;
+      return 1;
+    },
+    clearIntervalFn: () => {},
+    inactivityMs: 10,
+    disconnectMs: 1,
+  });
+
+  controller.start();
+  tickInactivity();
+
+  assert.deepStrictEqual(controller.getSessionStates(), []);
+  assert.deepStrictEqual(warnings, ["codex disconnected before write-back after repo changes"]);
+
+  await controller.stop();
+});
+
+test("watch controller marks an explicitly disconnected session as disconnected before pruning it", async () => {
+  const repoWatcher = new FakeWatcher();
+  const logsWatcher = new FakeWatcher();
+  let tickInactivity = null;
+  const notices = [
+    {
+      event: {
+        ts: "2026-03-11T20:01:00.000Z",
+        event: "mcp:disconnect",
+        transport: "stdio",
+        agent: "codex",
+        agent_type: "codex",
+        session_id: "session-a",
+        summary: "disconnected from Tack MCP",
+      },
+      agent: "codex",
+      agentType: "codex",
+      sessionId: "session-a",
+      sessionKey: "codex:session-a",
+      category: "disconnect",
+      message: "disconnected from Tack MCP",
+    },
+  ];
+
+  const controller = createWatchController({
+    createLogsWatcher: () => logsWatcher,
+    createMcpActivityMonitor: () => () => notices.splice(0),
+    createRepoWatcher: () => repoWatcher,
+    getChangedFiles: () => [],
+    getRecentMcpSessionStates: () => [
+      {
+        agent: "codex",
+        agentType: "codex",
+        sessionId: "session-a",
+        sessionKey: "codex:session-a",
+        connectedAt: 0,
+        lastEventAt: 0,
+        lastReadAt: 0,
+        lastCheckAt: null,
+        lastWriteAt: null,
+        lastAction: "read",
+        lastMessage: "read session context",
+        hasReadSessionContext: true,
+        awaitingWriteBack: true,
+        repoChangedAfterRead: true,
+        health: "active",
+        disconnectedAt: null,
+        warnedIdle: false,
+        warnedStale: false,
+      },
+    ],
+    setIntervalFn: (fn) => {
+      tickInactivity = fn;
+      return 1;
+    },
+    clearIntervalFn: () => {},
+    inactivityMs: 10,
+    disconnectMs: 1,
+  });
+
+  controller.start();
+  logsWatcher.emit("add");
+
+  assert.strictEqual(controller.getSessionStates()[0]?.health, "disconnected");
+  assert.strictEqual(controller.getSessionStates()[0]?.awaitingWriteBack, false);
+
+  tickInactivity();
+  assert.deepStrictEqual(controller.getSessionStates(), []);
+
+  await controller.stop();
 });
 
 test("shared watch controller keeps hydrated session state and labels same-agent reconnects", async () => {

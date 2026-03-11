@@ -140,6 +140,7 @@ export type LogEvent =
   | { ts: string; event: "repair"; files: string[] }
   | { ts: string; event: "scan"; systems_detected: number; drift_items: number; duration_ms: number }
   | { ts: string; event: "mcp:ready"; transport: "stdio"; agent?: string; agent_type?: string; session_id?: string }
+  | { ts: string; event: "mcp:disconnect"; transport: "stdio"; summary?: string; agent?: string; agent_type?: string; session_id?: string }
   | { ts: string; event: "mcp:resource"; resource: string; summary?: string; agent?: string; agent_type?: string; session_id?: string }
   | { ts: string; event: "mcp:tool"; tool: string; summary?: string; agent?: string; agent_type?: string; session_id?: string }
   | { ts: string; event: "drift:detected"; system: string; message: string; source: string }

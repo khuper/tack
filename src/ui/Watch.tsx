@@ -101,7 +101,7 @@ function historyLevelColor(level: HistoryLevel): "green" | "red" | "yellow" | "c
 }
 
 function noticeToHistoryLevel(category: McpActivityCategory): HistoryLevel {
-  return category === "ready" ? "ready" : category === "read" ? "read" : category === "check" ? "check" : "write";
+  return category === "ready" ? "ready" : category === "read" ? "read" : category === "check" ? "check" : category === "disconnect" ? "warn" : "write";
 }
 
 function formatAge(ms: number, now = Date.now()): string {
@@ -116,6 +116,9 @@ function formatAge(ms: number, now = Date.now()): string {
 }
 
 function sessionSummary(state: McpSessionState): { text: string; color: "green" | "yellow" | "cyan" | "magenta" | "blue" | "red" } {
+  if (state.disconnectedAt != null || state.health === "disconnected") {
+    return { text: "disconnected", color: "red" };
+  }
   if (state.awaitingWriteBack && state.repoChangedAfterRead && state.health === "stale") {
     return { text: "stale after repo changes", color: "red" };
   }
@@ -144,7 +147,7 @@ function sessionSummary(state: McpSessionState): { text: string; color: "green" 
 }
 
 function healthLabel(health: McpSessionHealth): string {
-  return health === "active" ? "active" : health === "idle" ? "idle" : "stale";
+  return health === "active" ? "active" : health === "idle" ? "idle" : health === "stale" ? "stale" : "disconnected";
 }
 
 function trustHeadline(
@@ -154,6 +157,7 @@ function trustHeadline(
   const staleOrRisky = sessionStates.filter(
     (state) =>
       state.health === "stale" ||
+      state.health === "disconnected" ||
       (state.awaitingWriteBack && state.repoChangedAfterRead)
   ).length;
 

@@ -26,17 +26,25 @@ Initialize Tack in your project:
 tack init
 ```
 
-Start the MCP server from the repo root:
+Install startup instructions once so your agent actually starts with Tack context:
 
 ```bash
-tack mcp
+tack setup-agent
 ```
 
-Watch live reads, writes, and drift while agents work:
+Start `tack watch` in a second terminal so you can see live proof when the agent connects:
 
 ```bash
 tack watch
 ```
+
+Then start the MCP server from the repo root with a visible agent label:
+
+```bash
+TACK_AGENT_NAME=claude tack mcp
+```
+
+That first-run loop is the trust check: `tack setup-agent` installs the startup instructions, `TACK_AGENT_NAME` labels the connected agent session, and `tack watch` shows live proof that the agent actually read or wrote Tack memory.
 
 At the end of a session, package a handoff:
 
@@ -55,22 +63,23 @@ tack init
 Install agent instructions once per repo:
 
 ```bash
-tack setup-agent --target claude
-tack setup-agent --target codex
-tack setup-agent --target generic
+tack setup-agent
 ```
+
+Use this first-run proof loop when wiring up an agent:
+
+```bash
+tack watch
+TACK_AGENT_NAME=claude tack mcp
+```
+
+`tack watch` is the live proof. If the agent reads `tack://session`, checks a rule, or writes memory back, you will see it.
 
 During normal work:
 
 ```bash
 tack status
 tack watch
-```
-
-For agent-driven work, start the MCP server from the project root:
-
-```bash
-TACK_AGENT_NAME=claude tack mcp
 ```
 
 If you use more than one agent, give each MCP server its own `TACK_AGENT_NAME` so `tack watch` can show who read context, who checked rules, and who wrote memory back.

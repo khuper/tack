@@ -86,12 +86,13 @@ tack mcp
 
 ## `tack setup-agent`
 
-Install startup instructions for a supported agent:
+Install or update startup instructions automatically:
 
 ```bash
+tack setup-agent
 tack setup-agent --target claude
-tack setup-agent --target codex
-tack setup-agent --target generic
+tack setup-agent --target cursor
+tack setup-agent --list
 ```
 
 ## `tack help`

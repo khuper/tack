@@ -10,6 +10,7 @@ import {
   formatMcpActivityEvent,
   getMcpAgentLabel,
   getMcpAgentType,
+  getMcpInstallVerification,
   getMcpSessionId,
   getMcpSessionKey,
   getMcpSessionDisplayLabel,
@@ -245,6 +246,68 @@ test("tracks session state and inactivity warnings after repo changes", () => {
   assert.match(result.warnings[0], /stale after repo changes with no write-back yet/);
 });
 
+test("tracks install verification milestones from first read to write-back", () => {
+  const readyNotice = {
+    event: { ts: "2026-03-07T20:00:00.000Z", event: "mcp:ready", transport: "stdio", agent: "claude", agent_type: "claude", session_id: "session-a" },
+    agent: "claude",
+    agentType: "claude",
+    sessionId: "session-a",
+    sessionKey: "claude:session-a",
+    category: "ready",
+    message: "connected to Tack MCP",
+  };
+  const readNotice = {
+    event: { ts: "2026-03-07T20:01:00.000Z", event: "mcp:resource", resource: "tack://session", agent: "claude", agent_type: "claude", session_id: "session-a" },
+    agent: "claude",
+    agentType: "claude",
+    sessionId: "session-a",
+    sessionKey: "claude:session-a",
+    category: "read",
+    message: "read session context",
+  };
+  const writeNotice = {
+    event: {
+      ts: "2026-03-07T20:02:00.000Z",
+      event: "mcp:tool",
+      tool: "checkpoint_work",
+      summary: 'saved: "captured work"',
+      agent: "claude",
+      agent_type: "claude",
+      session_id: "session-a",
+    },
+    agent: "claude",
+    agentType: "claude",
+    sessionId: "session-a",
+    sessionKey: "claude:session-a",
+    category: "write",
+    message: "checkpointed work",
+  };
+
+  let states = upsertMcpSessionState([], readyNotice, Date.parse("2026-03-07T20:00:00.000Z"));
+  assert.deepStrictEqual(getMcpInstallVerification(states), {
+    status: "waiting_for_first_read",
+    summary: "waiting for first agent read",
+    readLabel: null,
+    writeLabel: null,
+  });
+
+  states = upsertMcpSessionState(states, readNotice, Date.parse("2026-03-07T20:01:00.000Z"));
+  assert.deepStrictEqual(getMcpInstallVerification(states), {
+    status: "read_seen",
+    summary: "agent read tack://session",
+    readLabel: "claude",
+    writeLabel: null,
+  });
+
+  states = upsertMcpSessionState(states, writeNotice, Date.parse("2026-03-07T20:02:00.000Z"));
+  assert.deepStrictEqual(getMcpInstallVerification(states), {
+    status: "write_seen",
+    summary: "agent wrote memory back",
+    readLabel: "claude",
+    writeLabel: "claude",
+  });
+});
+
 test("attributes repo changes to the freshest reading session", () => {
   const olderReadNotice = {
     event: { ts: "2026-03-07T20:00:00.000Z", event: "mcp:resource", resource: "tack://session", agent: "claude", agent_type: "claude", session_id: "session-a" },
@@ -287,6 +350,7 @@ test("adds a short session suffix when the same agent has multiple sessions", ()
       lastWriteAt: null,
       lastAction: "ready",
       lastMessage: "connected",
+      hasReadSessionContext: false,
       awaitingWriteBack: false,
       repoChangedAfterRead: false,
       health: "active",
@@ -305,6 +369,7 @@ test("adds a short session suffix when the same agent has multiple sessions", ()
       lastWriteAt: null,
       lastAction: "ready",
       lastMessage: "connected",
+      hasReadSessionContext: false,
       awaitingWriteBack: false,
       repoChangedAfterRead: false,
       health: "active",

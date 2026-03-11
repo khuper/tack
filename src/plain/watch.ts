@@ -5,6 +5,7 @@ import { runStatusScan } from "../engine/status.js";
 import {
   collectMcpInactivityWarnings,
   createMcpActivityMonitor,
+  getMcpInstallVerification,
   getMcpSessionDisplayLabel,
   markMcpSessionsRepoChanged,
   upsertMcpSessionState,
@@ -65,6 +66,22 @@ function printWatchGuide(): void {
   console.log("");
 }
 
+function printInstallVerification(sessions: McpSessionState[]): void {
+  const verification = getMcpInstallVerification(sessions);
+  console.log(gray("Install verification:"));
+  console.log(
+    verification.status === "waiting_for_first_read"
+      ? `${mcpBadge()}  [WAIT] ${yellow("waiting for first agent read")}`
+      : `${mcpBadge()}  [OK] ${green("agent read tack://session")}${verification.readLabel ? gray(` via ${verification.readLabel}`) : ""}`
+  );
+  console.log(
+    verification.status === "write_seen"
+      ? `${mcpBadge()}  [OK] ${green("agent wrote memory back")}${gray(` via ${verification.writeLabel}`)}`
+      : `${mcpBadge()}  [WAIT] ${yellow("waiting for first memory write-back")}`
+  );
+  console.log("");
+}
+
 function printMcpNotice(notice: McpActivityNotice, sessions: McpSessionState[]): void {
   const state = sessions.find((candidate) => candidate.sessionKey === notice.sessionKey);
   const label = state ? getMcpSessionDisplayLabel(state, sessions) : notice.agent;
@@ -87,6 +104,7 @@ export async function runWatchPlain(): Promise<void> {
   if (!ok) return;
 
   printWatchGuide();
+  printInstallVerification([]);
   console.log(`${gray("Watching for changes and MCP activity (plain mode). Press Ctrl+C to stop.")}`);
 
   const watcher = chokidar.watch(".", {
@@ -134,6 +152,12 @@ export async function runWatchPlain(): Promise<void> {
     for (const notice of readNewMcpActivity()) {
       sessionStates = upsertMcpSessionState(sessionStates, notice);
       printMcpNotice(notice, sessionStates);
+      if (
+        (notice.event.event === "mcp:resource" && notice.event.resource === "tack://session") ||
+        (notice.event.event === "mcp:tool" && notice.category === "write")
+      ) {
+        printInstallVerification(sessionStates);
+      }
     }
   });
 

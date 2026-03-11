@@ -81,7 +81,7 @@ ${ASCII_LOGO}
     npx tack note                  View/add agent notes
     npx tack diff <base-branch>    Compare architecture vs base branch (plain)
     npx tack mcp                   Start MCP server (for Cursor / agent integrations)
-    npx tack setup-agent --target  Install Tack startup instructions for a supported agent
+    npx tack setup-agent [--target] Install or update Tack startup instructions
     npx tack help                  Show this help text
 
   Output mode:

@@ -34,11 +34,19 @@ export type McpSessionState = {
   lastWriteAt: number | null;
   lastAction: McpActivityCategory;
   lastMessage: string;
+  hasReadSessionContext: boolean;
   awaitingWriteBack: boolean;
   repoChangedAfterRead: boolean;
   health: McpSessionHealth;
   warnedIdle: boolean;
   warnedStale: boolean;
+};
+
+export type McpInstallVerification = {
+  status: "waiting_for_first_read" | "read_seen" | "write_seen";
+  summary: string;
+  readLabel: string | null;
+  writeLabel: string | null;
 };
 
 export function log(event: LogEventInput): void {
@@ -283,6 +291,7 @@ export function upsertMcpSessionState(states: McpSessionState[], notice: McpActi
       lastWriteAt: null,
       lastAction: notice.category,
       lastMessage: notice.message,
+      hasReadSessionContext: false,
       awaitingWriteBack: false,
       repoChangedAfterRead: false,
       health: "active" as McpSessionHealth,
@@ -307,6 +316,9 @@ export function upsertMcpSessionState(states: McpSessionState[], notice: McpActi
   }
   if (notice.category === "read") {
     next.lastReadAt = eventMs;
+    if (notice.event.event === "mcp:resource" && notice.event.resource === "tack://session") {
+      next.hasReadSessionContext = true;
+    }
     next.awaitingWriteBack = true;
     next.repoChangedAfterRead = false;
     next.warnedIdle = false;
@@ -360,6 +372,40 @@ export function markMcpSessionsRepoChanged(states: McpSessionState[]): McpSessio
 export function getMcpSessionDisplayLabel(state: McpSessionState, allStates: McpSessionState[]): string {
   const siblingCount = allStates.filter((candidate) => candidate.agent === state.agent).length;
   return siblingCount > 1 ? `${state.agent}#${state.sessionId.slice(0, 4)}` : state.agent;
+}
+
+export function getMcpInstallVerification(states: McpSessionState[]): McpInstallVerification {
+  const readState =
+    states
+      .filter((state) => state.hasReadSessionContext && state.lastReadAt !== null)
+      .sort((a, b) => (b.lastReadAt ?? 0) - (a.lastReadAt ?? 0))[0] ?? null;
+  const writeState =
+    states.filter((state) => state.lastWriteAt !== null).sort((a, b) => (b.lastWriteAt ?? 0) - (a.lastWriteAt ?? 0))[0] ?? null;
+
+  if (writeState) {
+    return {
+      status: "write_seen",
+      summary: "agent wrote memory back",
+      readLabel: readState ? getMcpSessionDisplayLabel(readState, states) : null,
+      writeLabel: getMcpSessionDisplayLabel(writeState, states),
+    };
+  }
+
+  if (readState) {
+    return {
+      status: "read_seen",
+      summary: "agent read tack://session",
+      readLabel: getMcpSessionDisplayLabel(readState, states),
+      writeLabel: null,
+    };
+  }
+
+  return {
+    status: "waiting_for_first_read",
+    summary: "waiting for first agent read",
+    readLabel: null,
+    writeLabel: null,
+  };
 }
 
 export function collectMcpInactivityWarnings(states: McpSessionState[], now = Date.now()): { states: McpSessionState[]; warnings: string[] } {

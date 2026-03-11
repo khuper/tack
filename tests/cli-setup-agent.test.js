@@ -61,17 +61,26 @@ test("setup-agent --list prints usage and targets", () => {
 
     assert.strictEqual(result.code, 0);
     assert.match(result.stdout, /Usage:/);
-    assert.match(result.stdout, /Available targets: claude, codex, generic/);
+    assert.match(result.stdout, /Canonical targets: claude, codex, generic/);
+    assert.match(result.stdout, /All target names: claude, claude-code, codex, cursor, cline, windsurf, continue, generic/);
   });
 });
 
-test("setup-agent with no args prints usage instead of error", () => {
-  withTempProject(() => {
+test("setup-agent with no args bootstraps the default agent files", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+
     const result = captureOutput(() => runSetupAgent({ _: ["setup-agent"] }, pkg.version));
 
     assert.strictEqual(result.code, 0);
-    assert.match(result.stdout, /Usage:/);
-    assert.strictEqual(result.stderr, "");
+    assert.match(result.stdout, /Configured Tack startup instructions:/);
+    assert.match(result.stdout, /installed\s+AGENTS\.md/);
+    assert.match(result.stdout, /installed\s+CLAUDE\.md/);
+    assert.match(result.stdout, /installed\s+\.tack[\\/]AGENT\.md/);
+
+    assert.ok(fs.existsSync(path.join(tmpDir, "AGENTS.md")));
+    assert.ok(fs.existsSync(path.join(tmpDir, "CLAUDE.md")));
+    assert.ok(fs.existsSync(path.join(tmpDir, ".tack", "AGENT.md")));
   });
 });
 
@@ -82,7 +91,7 @@ test("setup-agent writes the generic target into .tack/AGENT.md", () => {
     const result = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "generic" }, pkg.version));
 
     assert.strictEqual(result.code, 0);
-    assert.match(result.stdout, /Wrote tack agent instructions to \.tack[\\/]AGENT\.md/);
+    assert.match(result.stdout, /installed\s+\.tack[\\/]AGENT\.md/);
 
     const content = fs.readFileSync(path.join(tmpDir, ".tack", "AGENT.md"), "utf-8");
     assert.match(content, new RegExp(`<!-- BEGIN TACK AGENT INSTRUCTIONS v${pkg.version.replace(/\./g, "\\.")} -->`));
@@ -99,6 +108,7 @@ test("setup-agent creates CLAUDE.md when it does not exist", () => {
     const result = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "claude" }, pkg.version));
 
     assert.strictEqual(result.code, 0);
+    assert.match(result.stdout, /installed\s+CLAUDE\.md/);
 
     const content = fs.readFileSync(path.join(tmpDir, "CLAUDE.md"), "utf-8");
     assert.match(content, /<!-- BEGIN TACK AGENT INSTRUCTIONS v/);
@@ -106,25 +116,26 @@ test("setup-agent creates CLAUDE.md when it does not exist", () => {
   });
 });
 
-test("setup-agent appends to an existing shared file and detects duplicates", () => {
+test("setup-agent appends to an existing shared file and reruns as unchanged", () => {
   withTempProject((tmpDir) => {
     fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, "CLAUDE.md"), "# Existing instructions\nKeep this.\n", "utf-8");
 
     const first = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "claude" }, pkg.version));
     assert.strictEqual(first.code, 0);
+    assert.match(first.stdout, /installed\s+CLAUDE\.md/);
 
     const content = fs.readFileSync(path.join(tmpDir, "CLAUDE.md"), "utf-8");
     assert.ok(content.startsWith("# Existing instructions\nKeep this.\n"));
     assert.match(content, /\n\n<!-- BEGIN TACK AGENT INSTRUCTIONS v/);
 
     const second = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "claude" }, pkg.version));
-    assert.strictEqual(second.code, 1);
-    assert.match(second.stderr, /Tack instructions already present in CLAUDE\.md\. Use --force to replace\./);
+    assert.strictEqual(second.code, 0);
+    assert.match(second.stdout, /unchanged\s+CLAUDE\.md/);
   });
 });
 
-test("setup-agent --force replaces only the existing block", () => {
+test("setup-agent updates only the existing managed block without --force", () => {
   withTempProject((tmpDir) => {
     fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
     const original = [
@@ -136,10 +147,9 @@ test("setup-agent --force replaces only the existing block", () => {
     ].join("\n");
     fs.writeFileSync(path.join(tmpDir, "CLAUDE.md"), original, "utf-8");
 
-    const result = captureOutput(() =>
-      runSetupAgent({ _: ["setup-agent"], target: "claude", force: true }, pkg.version)
-    );
+    const result = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "claude" }, pkg.version));
     assert.strictEqual(result.code, 0);
+    assert.match(result.stdout, /updated\s+CLAUDE\.md/);
 
     const updated = fs.readFileSync(path.join(tmpDir, "CLAUDE.md"), "utf-8");
     assert.ok(updated.startsWith("before\n"));
@@ -149,7 +159,46 @@ test("setup-agent --force replaces only the existing block", () => {
   });
 });
 
-test("setup-agent --force refuses malformed markers in shared files", () => {
+test("setup-agent supports target aliases that resolve to shared files", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+
+    const result = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "cursor" }, pkg.version));
+    assert.strictEqual(result.code, 0);
+    assert.match(result.stdout, /installed\s+AGENTS\.md/);
+    assert.ok(fs.existsSync(path.join(tmpDir, "AGENTS.md")));
+  });
+});
+
+test("setup-agent with no target updates detected shared files and generic fallback", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "AGENTS.md"), "# Existing AGENTS\n", "utf-8");
+
+    const result = captureOutput(() => runSetupAgent({ _: ["setup-agent"] }, pkg.version));
+    assert.strictEqual(result.code, 0);
+    assert.match(result.stdout, /installed\s+AGENTS\.md/);
+    assert.match(result.stdout, /installed\s+\.tack[\\/]AGENT\.md/);
+    assert.doesNotMatch(result.stdout, /CLAUDE\.md/);
+    assert.ok(fs.existsSync(path.join(tmpDir, ".tack", "AGENT.md")));
+    assert.ok(!fs.existsSync(path.join(tmpDir, "CLAUDE.md")));
+  });
+});
+
+test("setup-agent appends to shared files without breaking CRLF line endings", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "AGENTS.md"), "# Existing\r\nKeep this.\r\n", "utf-8");
+
+    const result = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "codex" }, pkg.version));
+    assert.strictEqual(result.code, 0);
+
+    const content = fs.readFileSync(path.join(tmpDir, "AGENTS.md"), "utf-8");
+    assert.match(content, /# Existing\r\nKeep this\.\r\n\r\n<!-- BEGIN TACK AGENT INSTRUCTIONS v/);
+  });
+});
+
+test("setup-agent refuses malformed markers in shared files even with --force", () => {
   withTempProject((tmpDir) => {
     fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
     fs.writeFileSync(
@@ -163,5 +212,43 @@ test("setup-agent --force refuses malformed markers in shared files", () => {
     );
     assert.strictEqual(result.code, 1);
     assert.match(result.stderr, /Malformed Tack instruction markers in CLAUDE\.md\. Fix the file manually\./);
+  });
+});
+
+test("setup-agent default mode fails before writing anything when a target is malformed", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "CLAUDE.md"),
+      "<!-- BEGIN TACK AGENT INSTRUCTIONS v0.0.1 -->\n# incomplete\n",
+      "utf-8"
+    );
+
+    const result = captureOutput(() => runSetupAgent({ _: ["setup-agent"] }, pkg.version));
+    assert.strictEqual(result.code, 1);
+    assert.match(result.stderr, /Malformed Tack instruction markers in CLAUDE\.md\. Fix the file manually\./);
+    assert.ok(!fs.existsSync(path.join(tmpDir, "AGENTS.md")));
+    assert.ok(!fs.existsSync(path.join(tmpDir, ".tack", "AGENT.md")));
+  });
+});
+
+test("setup-agent --force repairs malformed markers in the generic fallback file", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "AGENT.md"),
+      "<!-- BEGIN TACK AGENT INSTRUCTIONS v0.0.1 -->\n# incomplete\n",
+      "utf-8"
+    );
+
+    const result = captureOutput(() =>
+      runSetupAgent({ _: ["setup-agent"], target: "generic", force: true }, pkg.version)
+    );
+    assert.strictEqual(result.code, 0);
+    assert.match(result.stdout, /updated\s+\.tack[\\/]AGENT\.md/);
+
+    const repaired = fs.readFileSync(path.join(tmpDir, ".tack", "AGENT.md"), "utf-8");
+    assert.match(repaired, /<!-- BEGIN TACK AGENT INSTRUCTIONS v/);
+    assert.match(repaired, /<!-- END TACK AGENT INSTRUCTIONS -->/);
   });
 });

@@ -18,6 +18,7 @@ import {
   log,
   collectMcpInactivityWarnings,
   createMcpActivityMonitor,
+  getMcpInstallVerification,
   getMcpSessionDisplayLabel,
   markMcpSessionsRepoChanged,
   refreshMcpSessionStates,
@@ -163,6 +164,17 @@ function healthLabel(health: McpSessionHealth): string {
   return health === "active" ? "active" : health === "idle" ? "idle" : "stale";
 }
 
+function renderVerificationStatus(status: "pending" | "done", text: string, detail?: string): React.JSX.Element {
+  return (
+    <Box>
+      <Text color={status === "done" ? "green" : "yellow"}>{status === "done" ? "[done]" : "[wait]"}</Text>
+      <Text> </Text>
+      <Text color={status === "done" ? "green" : "yellow"}>{text}</Text>
+      {detail ? <Text dimColor>{`  ${detail}`}</Text> : null}
+    </Box>
+  );
+}
+
 export function Watch({ animationsEnabled }: WatchProps) {
   const { exit } = useApp();
   const [systemCount, setSystemCount] = useState(0);
@@ -186,6 +198,7 @@ export function Watch({ animationsEnabled }: WatchProps) {
   const missingWriteBackWarningActiveRef = useRef(false);
   const sessionStatesRef = useRef<McpSessionState[]>([]);
   const inactivityTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const installVerification = getMcpInstallVerification(sessionStates);
 
   function pushHistory(level: HistoryLevel, text: string): void {
     historySeq.current += 1;
@@ -421,6 +434,23 @@ export function Watch({ animationsEnabled }: WatchProps) {
         <Text dimColor>- File changes trigger fresh scans against your spec and drift rules.</Text>
         <Text dimColor>- READY/READ/CHECK/WRITE events show which session is grounding itself in Tack and preserving memory.</Text>
         <Text dimColor>- Idle or stale sessions after repo changes are the risky cases: those may leave the next session cold.</Text>
+      </Box>
+
+      <Box marginTop={1} flexDirection="column">
+        <Text bold>Install Verification</Text>
+        <Text color={installVerification.status === "write_seen" ? "green" : installVerification.status === "read_seen" ? "cyan" : "yellow"}>
+          {installVerification.summary}
+        </Text>
+        {renderVerificationStatus(
+          installVerification.status === "waiting_for_first_read" ? "pending" : "done",
+          installVerification.status === "waiting_for_first_read" ? "waiting for first agent read" : "agent read tack://session",
+          installVerification.readLabel ? `via ${installVerification.readLabel}` : "keep tack watch open while the agent starts"
+        )}
+        {renderVerificationStatus(
+          installVerification.status === "write_seen" ? "done" : "pending",
+          installVerification.status === "write_seen" ? "agent wrote memory back" : "waiting for first memory write-back",
+          installVerification.writeLabel ? `via ${installVerification.writeLabel}` : "look for checkpoint_work, log_decision, or log_agent_note"
+        )}
       </Box>
 
       {sessionStates.length > 0 && (

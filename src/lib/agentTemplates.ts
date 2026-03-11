@@ -1,11 +1,40 @@
 import * as path from "node:path";
 
 export type AgentTarget = "claude" | "codex" | "generic";
+export type AgentTargetDefinition = {
+  key: AgentTarget;
+  aliases: string[];
+  destinationPath: (repoRoot: string) => string;
+  sharedFile: boolean;
+  description: string;
+};
 
 export const MARKER_BEGIN_PREFIX = "<!-- BEGIN TACK AGENT INSTRUCTIONS";
 export const MARKER_END = "<!-- END TACK AGENT INSTRUCTIONS -->";
 
-const AGENT_TARGETS: AgentTarget[] = ["claude", "codex", "generic"];
+const AGENT_TARGET_DEFINITIONS: AgentTargetDefinition[] = [
+  {
+    key: "claude",
+    aliases: ["claude", "claude-code"],
+    destinationPath: (repoRoot) => path.join(repoRoot, "CLAUDE.md"),
+    sharedFile: true,
+    description: "Claude Code startup instructions in CLAUDE.md",
+  },
+  {
+    key: "codex",
+    aliases: ["codex", "cursor", "cline", "windsurf", "continue"],
+    destinationPath: (repoRoot) => path.join(repoRoot, "AGENTS.md"),
+    sharedFile: true,
+    description: "AGENTS.md startup instructions for Codex-compatible agents",
+  },
+  {
+    key: "generic",
+    aliases: ["generic"],
+    destinationPath: (repoRoot) => path.join(repoRoot, ".tack", "AGENT.md"),
+    sharedFile: false,
+    description: "Portable fallback instructions in .tack/AGENT.md",
+  },
+];
 
 const TEMPLATE = [
   "# Tack Workflow",
@@ -78,7 +107,13 @@ function getLineRanges(content: string): LineRange[] {
 }
 
 export function isAgentTarget(value: string): value is AgentTarget {
-  return AGENT_TARGETS.includes(value as AgentTarget);
+  return AGENT_TARGET_DEFINITIONS.some((target) => target.key === value);
+}
+
+export function resolveAgentTarget(value: string): AgentTarget | null {
+  const normalized = value.trim().toLowerCase();
+  const match = AGENT_TARGET_DEFINITIONS.find((target) => target.aliases.includes(normalized));
+  return match?.key ?? null;
 }
 
 export function buildBlock(version: string): string {
@@ -86,18 +121,11 @@ export function buildBlock(version: string): string {
 }
 
 export function getDestinationPath(target: AgentTarget, repoRoot: string): string {
-  switch (target) {
-    case "claude":
-      return path.join(repoRoot, "CLAUDE.md");
-    case "codex":
-      return path.join(repoRoot, "AGENTS.md");
-    case "generic":
-      return path.join(repoRoot, ".tack", "AGENT.md");
-  }
+  return getTargetDefinition(target).destinationPath(repoRoot);
 }
 
 export function isSharedFile(target: AgentTarget): boolean {
-  return target === "claude" || target === "codex";
+  return getTargetDefinition(target).sharedFile;
 }
 
 export function findExistingBlock(content: string): { start: number; end: number } | null {
@@ -140,5 +168,25 @@ export function replaceBlock(content: string, newBlock: string): string {
 }
 
 export function getAvailableTargets(): AgentTarget[] {
-  return [...AGENT_TARGETS];
+  return AGENT_TARGET_DEFINITIONS.map((target) => target.key);
+}
+
+export function getAvailableTargetAliases(): string[] {
+  return AGENT_TARGET_DEFINITIONS.flatMap((target) => target.aliases);
+}
+
+export function listAgentTargets(): AgentTargetDefinition[] {
+  return AGENT_TARGET_DEFINITIONS.map((target) => ({ ...target, aliases: [...target.aliases] }));
+}
+
+export function getRecommendedTargets(): AgentTarget[] {
+  return ["codex", "claude", "generic"];
+}
+
+function getTargetDefinition(target: AgentTarget): AgentTargetDefinition {
+  const match = AGENT_TARGET_DEFINITIONS.find((entry) => entry.key === target);
+  if (!match) {
+    throw new Error(`Unknown agent target: ${target}`);
+  }
+  return match;
 }

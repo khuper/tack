@@ -84,6 +84,12 @@ Start the MCP server:
 tack mcp
 ```
 
+For the canonical trust-loop path, run it from the repo root with a label:
+
+```bash
+TACK_AGENT_NAME=claude tack mcp
+```
+
 ## `tack setup-agent`
 
 Install or update startup instructions automatically:
@@ -94,6 +100,12 @@ tack setup-agent --target claude
 tack setup-agent --target cursor
 tack setup-agent --list
 ```
+
+After `tack setup-agent`, use the same proof loop every time:
+
+1. `tack watch`
+2. `TACK_AGENT_NAME=<agent> tack mcp`
+3. confirm `READY`, then `READ`, then `WRITE`
 
 ## `tack help`
 

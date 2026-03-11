@@ -77,6 +77,10 @@ test("setup-agent with no args bootstraps the default agent files", () => {
     assert.match(result.stdout, /installed\s+AGENTS\.md/);
     assert.match(result.stdout, /installed\s+CLAUDE\.md/);
     assert.match(result.stdout, /installed\s+\.tack[\\/]AGENT\.md/);
+    assert.match(result.stdout, /Canonical trust-loop proof:/);
+    assert.match(result.stdout, /1\. Keep `tack watch` open in one terminal/);
+    assert.match(result.stdout, /2\. Start your MCP server with `TACK_AGENT_NAME=<agent> tack mcp` in another/);
+    assert.match(result.stdout, /3\. Look for `READY`, then `READ`, then `WRITE` in watch output/);
 
     assert.ok(fs.existsSync(path.join(tmpDir, "AGENTS.md")));
     assert.ok(fs.existsSync(path.join(tmpDir, "CLAUDE.md")));

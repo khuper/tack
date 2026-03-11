@@ -170,9 +170,10 @@ function printSetupSummary(results: SetupAgentResult[]): void {
     console.log(`- ${result.status.padEnd(9)} ${result.destinationLabel}`);
   }
   console.log("");
-  console.log("Next:");
-  console.log("- Keep `tack watch` open in one terminal");
-  console.log("- Start your MCP server with `TACK_AGENT_NAME=<agent> tack mcp` in another");
+  console.log("Canonical trust-loop proof:");
+  console.log("1. Keep `tack watch` open in one terminal");
+  console.log("2. Start your MCP server with `TACK_AGENT_NAME=<agent> tack mcp` in another");
+  console.log("3. Look for `READY`, then `READ`, then `WRITE` in watch output");
 }
 
 export function runSetupAgent(args: SetupAgentArgs, version: string): number {

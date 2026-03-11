@@ -20,6 +20,8 @@ npx tack-cli@latest init
 
 ## First Run
 
+This is the canonical proof loop for a new Tack setup. Use this exact path first before trying optional variants.
+
 Initialize Tack in your project:
 
 ```bash
@@ -44,7 +46,14 @@ Then start the MCP server from the repo root with a visible agent label:
 TACK_AGENT_NAME=claude tack mcp
 ```
 
-That first-run loop is the trust check: `tack setup-agent` installs the startup instructions, `TACK_AGENT_NAME` labels the connected agent session, and `tack watch` shows live proof that the agent actually read or wrote Tack memory.
+The canonical proof loop is:
+
+1. `tack setup-agent`
+2. `tack watch`
+3. `TACK_AGENT_NAME=<agent> tack mcp`
+4. confirm `READY`, then `READ`, then `WRITE` in watch output
+
+That is the trust check: `tack setup-agent` installs the startup instructions, `TACK_AGENT_NAME` labels the connected agent session, and `tack watch` shows live proof that the agent actually read or wrote Tack memory.
 
 At the end of a session, package a handoff:
 
@@ -68,14 +77,14 @@ Install agent instructions once per repo:
 tack setup-agent
 ```
 
-Use this first-run proof loop when wiring up an agent:
+Use this canonical proof loop when wiring up an agent:
 
 ```bash
 tack watch
 TACK_AGENT_NAME=claude tack mcp
 ```
 
-`tack watch` is the live proof. If the agent reads `tack://session`, checks a rule, or writes memory back, you will see it.
+`tack watch` is the live proof. The happy path is `READY`, then `READ`, then `WRITE`.
 
 During normal work:
 

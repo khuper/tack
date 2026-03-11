@@ -32,6 +32,7 @@ function printSnapshot(reason: string, result = runStatusScan()): boolean {
 }
 
 function printWatchGuide(): void {
+  console.log(gray("Canonical trust loop: keep watch open, start a labeled MCP session, then look for READY, READ, and WRITE."));
   console.log(gray("Watch answers four questions: did the agent connect, read context, write memory back, or leave anything risky behind?"));
   console.log("");
 }

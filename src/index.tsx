@@ -87,6 +87,12 @@ ${ASCII_LOGO}
     npx tack setup-agent [--target] Install or update Tack startup instructions
     npx tack help                  Show this help text
 
+  Canonical proof loop:
+    1. npx tack setup-agent
+    2. npx tack watch
+    3. TACK_AGENT_NAME=<agent> npx tack mcp
+    4. confirm READY, READ, then WRITE in watch
+
   Output mode:
     default: plain output for all commands except watch
     --ink: force Ink UI for init/status/handoff

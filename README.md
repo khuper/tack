@@ -33,7 +33,13 @@ tack watch
 TACK_AGENT_NAME=claude tack mcp
 ```
 
-If `tack watch` shows `READY`, `READ`, and `WRITE` activity, the agent is actually using Tack.
+5. Confirm the canonical trust loop in `tack watch`:
+
+- `READY` means the MCP session connected
+- `READ` means the agent read `tack://session` or another Tack context resource
+- `WRITE` means the agent wrote memory back with `checkpoint_work`, `log_decision`, or `log_agent_note`
+
+If you see `READY`, `READ`, and `WRITE`, the agent is actually using Tack.
 
 At the end of a session, package a handoff:
 
@@ -81,14 +87,14 @@ Install agent instructions once per repo:
 tack setup-agent
 ```
 
-Use this first-run proof loop when wiring up an agent:
+Use this canonical proof loop when wiring up an agent:
 
 ```bash
 tack watch
 TACK_AGENT_NAME=claude tack mcp
 ```
 
-`tack watch` is the live proof. If the agent reads `tack://session`, checks a rule, or writes memory back, you will see it immediately.
+`tack watch` is the live proof. The happy path is simple: `READY`, then `READ`, then `WRITE`.
 
 v1 does not ship a standalone `tack check-in` command. Write-back stays behind MCP tools like `checkpoint_work` plus `tack handoff`.
 

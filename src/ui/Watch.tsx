@@ -372,7 +372,7 @@ export function Watch() {
               <Text bold color={headline.color}>
                 {headline.text}
               </Text>
-              <Text dimColor>Watch answers four questions: connected, read, wrote, and attention needed. Press q to quit.</Text>
+              <Text dimColor>Canonical proof loop: keep watch open, start a labeled MCP session, then look for READY, READ, and WRITE. Press q to quit.</Text>
             </Box>
           )}
         </>

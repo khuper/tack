@@ -11,6 +11,13 @@
 tack watch
 ```
 
+Canonical proof loop:
+
+1. run `tack setup-agent` once
+2. keep `tack watch` open
+3. start a labeled MCP session with `TACK_AGENT_NAME=<agent> tack mcp`
+4. confirm `READY`, then `READ`, then `WRITE`
+
 If you want watch to distinguish multiple concurrent agents, start each MCP server with a label:
 
 ```bash
@@ -68,6 +75,8 @@ That is the case most likely to leave the next session cold.
 - `CHECK` - an agent called `check_rule`
 - `WRITE` - an agent called `checkpoint_work`, `log_decision`, or `log_agent_note`
 - `WARN` - a session may be leaving work behind without preserving memory
+
+The canonical happy path is `READY`, then `READ`, then `WRITE`.
 
 ## Best Practice
 

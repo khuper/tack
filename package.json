@@ -2,6 +2,10 @@
   "name": "tack-cli",
   "version": "0.1.3",
   "description": "Accurate project memory for coding agents, kept in sync with the codebase.",
+  "homepage": "https://github.com/khuper/tack#readme",
+  "bugs": {
+    "url": "https://github.com/khuper/tack/issues"
+  },
   "keywords": [
     "ai-agents",
     "project-memory",
@@ -35,6 +39,9 @@
   ],
   "bin": {
     "tack": "dist/index.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "scripts": {
     "test": "npm run build && node --test tests/agentTemplates.test.js tests/cli-default-command.test.js tests/cli-context.test.js tests/cli-animations.test.js tests/cli-setup-agent.test.js tests/git-changed-files.test.js tests/watch-runtime.test.js tests/logger-mcp.test.js tests/ndjson-tail.test.js",

@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import * as yaml from "js-yaml";
 import { createAudit, createEmptySpec, type Spec, type Audit, type DriftState } from "./signals.js";
@@ -63,10 +64,24 @@ function normalizeProjectLookupStart(start = process.cwd()): string {
   return current;
 }
 
+function isWithinBoundary(target: string, boundary: string): boolean {
+  return target === boundary || target.startsWith(boundary + path.sep);
+}
+
+function shouldStopAtTempBoundary(current: string, start: string): boolean {
+  const tempRoot = path.resolve(os.tmpdir());
+  return isWithinBoundary(start, tempRoot) && !isWithinBoundary(current, tempRoot);
+}
+
 function findGitRepoBoundary(start = process.cwd()): string | null {
-  let current = normalizeProjectLookupStart(start);
+  const normalizedStart = normalizeProjectLookupStart(start);
+  let current = normalizedStart;
 
   while (true) {
+    if (shouldStopAtTempBoundary(current, normalizedStart)) {
+      return null;
+    }
+
     try {
       if (fs.existsSync(path.join(current, ".git"))) {
         return current;
@@ -84,10 +99,15 @@ function findGitRepoBoundary(start = process.cwd()): string | null {
 }
 
 function findNearestProjectRootWithContext(start = process.cwd()): string | null {
-  let current = normalizeProjectLookupStart(start);
+  const normalizedStart = normalizeProjectLookupStart(start);
+  let current = normalizedStart;
   const repoBoundary = findGitRepoBoundary(current);
 
   while (true) {
+    if (shouldStopAtTempBoundary(current, normalizedStart)) {
+      return null;
+    }
+
     const tackDir = path.join(current, TACK_DIRNAME);
     try {
       if (fs.existsSync(tackDir) && fs.statSync(tackDir).isDirectory()) {

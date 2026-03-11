@@ -3,14 +3,15 @@ import assert from "node:assert";
 import { execFileSync } from "node:child_process";
 
 test("package includes only allowed files", () => {
+  const cacheDir = ".npm-cache";
   const output =
     process.platform === "win32"
-      ? execFileSync("cmd.exe", ["/d", "/s", "/c", "npm.cmd pack --dry-run --json"], {
+      ? execFileSync("cmd.exe", ["/d", "/s", "/c", `npm.cmd pack --dry-run --json --cache ${cacheDir}`], {
           encoding: "utf-8",
           cwd: process.cwd(),
           stdio: ["ignore", "pipe", "pipe"],
         })
-      : execFileSync("npm", ["pack", "--dry-run", "--json"], {
+      : execFileSync("npm", ["pack", "--dry-run", "--json", "--cache", cacheDir], {
           encoding: "utf-8",
           cwd: process.cwd(),
           stdio: ["ignore", "pipe", "pipe"],

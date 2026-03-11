@@ -257,6 +257,34 @@ export function toMcpActivityNotice(event: McpActivityEvent): McpActivityNotice 
   };
 }
 
+export function contextualizeMcpActivityNotice(
+  states: McpSessionState[],
+  notice: McpActivityNotice
+): McpActivityNotice {
+  if (notice.category !== "ready" || notice.event.event !== "mcp:ready") {
+    return notice;
+  }
+
+  if (notice.agent === "unknown") {
+    return {
+      ...notice,
+      message: "connected (new session; identity unknown)",
+    };
+  }
+
+  const priorSession = states.find(
+    (state) => state.agent === notice.agent && state.sessionId !== notice.sessionId
+  );
+  if (!priorSession) {
+    return notice;
+  }
+
+  return {
+    ...notice,
+    message: "reconnected to Tack MCP (new session)",
+  };
+}
+
 export function createMcpActivityMonitor(): () => McpActivityNotice[] {
   const seen = new Set(safeReadNdjson<LogEvent>(logsPath()).filter(isMcpActivityEvent).map(mcpActivityEventKey));
   const lastShownAt = new Map<string, number>();
@@ -303,7 +331,7 @@ export function getRecentMcpSessionStates(limit = 200, now = Date.now()): McpSes
   let states: McpSessionState[] = [];
 
   for (const event of events) {
-    states = upsertMcpSessionState(states, toMcpActivityNotice(event), now);
+    states = upsertMcpSessionState(states, contextualizeMcpActivityNotice(states, toMcpActivityNotice(event)), now);
   }
 
   return refreshMcpSessionStates(pruneMcpSessionStates(states, now), now);

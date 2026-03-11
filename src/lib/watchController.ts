@@ -1,5 +1,6 @@
 import {
   collectMcpInactivityWarnings,
+  contextualizeMcpActivityNotice,
   createMcpActivityMonitor,
   getMcpSessionDisplayLabel,
   getRecentMcpSessionStates,
@@ -181,7 +182,8 @@ export function createWatchController(options: WatchControllerOptions = {}): Wat
       return;
     }
 
-    for (const notice of readNewMcpActivity()) {
+    for (const rawNotice of readNewMcpActivity()) {
+      const notice = contextualizeMcpActivityNotice(sessionStates, rawNotice);
       updateSessionStates(upsertMcpSessionState(sessionStates, notice));
       onActivityNotice?.(notice, toSessionSnapshot(sessionStates));
     }

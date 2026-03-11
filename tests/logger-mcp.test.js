@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   classifyMcpActivityEvent,
   collectMcpInactivityWarnings,
+  contextualizeMcpActivityNotice,
   createMcpActivityMonitor,
   formatMcpActivityEvent,
   getMcpAgentLabel,
@@ -90,6 +91,50 @@ test("formats unknown ready activity as a new session with missing identity", ()
   };
 
   assert.strictEqual(formatMcpActivityEvent(event), "connected (new session; identity unknown)");
+});
+
+test("contextualizes ready activity as a reconnect when the same agent opens a new session", () => {
+  const notice = contextualizeMcpActivityNotice(
+    [
+      {
+        agent: "codex",
+        agentType: "codex",
+        sessionId: "session-a",
+        sessionKey: "codex:session-a",
+        connectedAt: 1,
+        lastEventAt: 2,
+        lastReadAt: null,
+        lastCheckAt: null,
+        lastWriteAt: null,
+        lastAction: "ready",
+        lastMessage: "connected to Tack MCP",
+        hasReadSessionContext: false,
+        awaitingWriteBack: false,
+        repoChangedAfterRead: false,
+        health: "active",
+        warnedIdle: false,
+        warnedStale: false,
+      },
+    ],
+    {
+      event: {
+        ts: "2026-03-11T20:05:00.000Z",
+        event: "mcp:ready",
+        transport: "stdio",
+        agent: "codex",
+        agent_type: "codex",
+        session_id: "session-b",
+      },
+      agent: "codex",
+      agentType: "codex",
+      sessionId: "session-b",
+      sessionKey: "codex:session-b",
+      category: "ready",
+      message: "connected to Tack MCP",
+    }
+  );
+
+  assert.strictEqual(notice.message, "reconnected to Tack MCP (new session)");
 });
 
 test("derives agent names from explicit config and MCP client info", () => {
@@ -384,6 +429,30 @@ test("hydrates session state from recent MCP logs at watch startup", () => {
     assert.strictEqual(states[0].hasReadSessionContext, true);
     assert.strictEqual(states[0].awaitingWriteBack, false);
     assert.strictEqual(getMcpInstallVerification(states).status, "write_seen");
+  } finally {
+    process.chdir(originalCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("hydrates reconnect semantics from recent MCP logs at watch startup", () => {
+  const originalCwd = process.cwd();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tack-logger-reconnect-"));
+
+  try {
+    process.chdir(tmpDir);
+    ensureTackDir();
+    fs.writeFileSync(logsPath(), "", "utf-8");
+
+    log({ event: "mcp:ready", agent: "codex", agent_type: "codex", session_id: "session-a", transport: "stdio" });
+    log({ event: "mcp:ready", agent: "codex", agent_type: "codex", session_id: "session-b", transport: "stdio" });
+
+    const states = getRecentMcpSessionStates();
+    assert.strictEqual(states.length, 2);
+    assert.strictEqual(states[0]?.sessionKey, "codex:session-b");
+    assert.strictEqual(states[0]?.lastMessage, "reconnected to Tack MCP (new session)");
+    assert.strictEqual(states[1]?.sessionKey, "codex:session-a");
+    assert.strictEqual(states[1]?.lastMessage, "connected to Tack MCP");
   } finally {
     process.chdir(originalCwd);
     fs.rmSync(tmpDir, { recursive: true, force: true });

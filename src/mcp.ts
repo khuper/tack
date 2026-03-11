@@ -61,6 +61,7 @@ function latestHandoffJsonPath(): string | null {
 }
 
 function announceMcpReady(agentType: string, sessionId: string): void {
+  const unknownIdentity = agentType === "unknown";
   const lines = process.stderr.isTTY
     ? [
         "",
@@ -69,10 +70,15 @@ function announceMcpReady(agentType: string, sessionId: string): void {
         "  transport: stdio",
         `  agent: ${agentType}`,
         `  session: ${sessionId}`,
+        ...(unknownIdentity ? ["  hint: set TACK_AGENT_NAME or call register_agent_identity once"] : []),
         "  waiting for MCP client requests...",
         "",
       ]
-    : [`tack-mcp ready (cwd: ${process.cwd()}, transport: stdio, agent: ${agentType}, session: ${sessionId})\n`];
+    : [
+        `tack-mcp ready (cwd: ${process.cwd()}, transport: stdio, agent: ${agentType}, session: ${sessionId}${
+          unknownIdentity ? ", hint: set TACK_AGENT_NAME or call register_agent_identity once" : ""
+        })\n`,
+      ];
 
   process.stderr.write(lines.join("\n"));
 }

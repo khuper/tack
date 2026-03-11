@@ -20,6 +20,26 @@ That label is written into MCP activity logs so `tack watch` can show which agen
 
 If your MCP client provides neither `TACK_AGENT_NAME` nor `initialize.clientInfo.name`, call `register_agent_identity` once near session start. That gives the current session a stable label without overloading `get_briefing` or requiring manual log edits.
 
+## Session Continuity
+
+Tack treats MCP identity and MCP session ids as separate things:
+
+- `TACK_AGENT_NAME` is the strongest identity source and should be set whenever your client allows custom env vars.
+- If `TACK_AGENT_NAME` is missing, Tack falls back to `initialize.clientInfo.name` and normalizes common clients like Codex, Claude Code, and Cursor automatically.
+- If both are missing, the session shows up as `unknown` until you call `register_agent_identity`.
+
+In `tack watch`, this means:
+
+- `connected to Tack MCP` means the agent label is known and this is the first visible session for that agent.
+- `reconnected to Tack MCP (new session)` means the same labeled agent started a fresh MCP session, usually after a mode/model switch or client restart.
+- `connected (new session; identity unknown)` means the transport is live, but Tack still needs a stable label.
+
+The recommended order is:
+
+1. set `TACK_AGENT_NAME` in MCP config
+2. rely on client handshake identity when the client already identifies itself clearly
+3. call `register_agent_identity` once at session start only as a fallback
+
 ## Cursor
 
 Add an MCP server with:

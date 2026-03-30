@@ -244,9 +244,24 @@ export type AgentGuide = {
   };
 };
 
+export type HandoffLifecycleStatus = "open" | "picked_up" | "working" | "superseded" | "done";
+
+export type HandoffMetadata = {
+  id: string;
+  to: string | null;
+  lifecycle: {
+    status: HandoffLifecycleStatus;
+    created_at: string;
+    updated_at: string;
+    pickup_at: string | null;
+    pickup_by: string | null;
+  };
+};
+
 export type HandoffReport = {
-  schema_version: "1.0.0";
+  schema_version: "1.0.0" | "1.1.0";
   generated_at: string;
+  handoff: HandoffMetadata;
   agent_safety: AgentSafety;
   agent_guide: AgentGuide;
   project: {

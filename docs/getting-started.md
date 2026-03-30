@@ -61,6 +61,12 @@ At the end of a session, package a handoff:
 tack handoff
 ```
 
+If you already know who should pick it up next, target the handoff explicitly:
+
+```bash
+tack handoff --to developer
+```
+
 ## Common Workflow
 
 The goal is simple: stop re-explaining the same codebase facts every time a new agent session starts.

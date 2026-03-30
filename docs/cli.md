@@ -26,6 +26,13 @@
 - writes `.tack/handoffs/<timestamp>.md`
 - writes `.tack/handoffs/<timestamp>.json`
 - includes verification steps from `.tack/verification.md`
+- supports `--to <role-or-recipient>` to persist an intended next owner in the handoff metadata
+
+Example:
+
+```bash
+tack handoff --to developer
+```
 
 ## `tack log`
 

@@ -6,9 +6,10 @@ import { Handoff } from "./ui/Handoff.js";
 
 type AppProps = {
   command: "init" | "status" | "watch" | "handoff";
+  handoffTo?: string;
 };
 
-export function App({ command }: AppProps) {
+export function App({ command, handoffTo }: AppProps) {
   switch (command) {
     case "init":
       return <Init />;
@@ -17,6 +18,6 @@ export function App({ command }: AppProps) {
     case "watch":
       return <Watch />;
     case "handoff":
-      return <Handoff />;
+      return <Handoff to={handoffTo} />;
   }
 }

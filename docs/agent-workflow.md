@@ -25,6 +25,25 @@ Optional supporting resources:
 
 The point is to start compact, then expand only if the task requires it.
 
+## Handoff Lifecycle
+
+`tack handoff` now emits a top-level `handoff` metadata block in the JSON artifact.
+
+Fields:
+
+- `handoff.id` - stable artifact identifier derived from the handoff filename
+- `handoff.to` - optional intended next recipient or role, usually set with `tack handoff --to <value>`
+- `handoff.lifecycle.status` - one of `open`, `picked_up`, `working`, `superseded`, or `done`
+- `handoff.lifecycle.pickup_at` / `handoff.lifecycle.pickup_by` - reserved for the first pickup event when a later workflow claims the handoff
+
+Current generation behavior:
+
+- new handoffs are created as `open`
+- pickup fields start as `null`
+- older handoff JSON without this block should be treated as legacy `open` handoffs
+
+This keeps handoffs file-based and local while establishing the state model for future `tack resume` and directed agent-routing flows.
+
 ## Mid-Task Safety Check
 
 Before structural changes, use `check_rule`.

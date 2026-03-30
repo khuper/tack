@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { generateHandoff, filterChangedPaths } from "../../src/engine/handoff.js";
+import { generateHandoff, filterChangedPaths, normalizeHandoffReport } from "../../src/engine/handoff.js";
 import { ensureTackDir, writeSpec, writeAudit, writeDrift } from "../../src/lib/files.js";
 import { createAudit, createSignal } from "../../src/lib/signals.js";
 
@@ -50,8 +50,14 @@ describe("handoff", () => {
     const json = JSON.parse(fs.readFileSync(result.jsonPath, "utf-8"));
 
     // Core schema fields
-    expect(json.schema_version).toBe("1.0.0");
+    expect(json.schema_version).toBe("1.1.0");
     expect(typeof json.generated_at).toBe("string");
+    expect(typeof json.handoff).toBe("object");
+    expect(typeof json.handoff.id).toBe("string");
+    expect(json.handoff.to).toBeNull();
+    expect(json.handoff.lifecycle.status).toBe("open");
+    expect(json.handoff.lifecycle.pickup_at).toBeNull();
+    expect(json.handoff.lifecycle.pickup_by).toBeNull();
 
     // Agent safety
     expect(typeof json.agent_safety).toBe("object");
@@ -136,6 +142,41 @@ describe("handoff", () => {
     expect(Array.isArray(json.next_steps)).toBeTrue();
     expect(json.next_steps.some((s: { text: string }) => s.text.includes("Resolve drift"))).toBeTrue();
     expect(typeof json.next_steps[0]?.source).toBe("object");
+  });
+
+  it("persists an optional handoff target and renders lifecycle metadata", () => {
+    const result = generateHandoff({ to: "developer" });
+    const json = JSON.parse(fs.readFileSync(result.jsonPath, "utf-8"));
+    const md = fs.readFileSync(result.markdownPath, "utf-8");
+
+    expect(json.handoff.to).toBe("developer");
+    expect(json.handoff.lifecycle.status).toBe("open");
+    expect(md).toContain("Target: developer");
+    expect(md).toContain("Lifecycle: open");
+  });
+
+  it("normalizes legacy handoff JSON without lifecycle metadata", () => {
+    const normalized = normalizeHandoffReport(
+      {
+        schema_version: "1.0.0",
+        generated_at: "2026-03-11T21:35:24.000Z",
+        summary: "legacy handoff",
+      },
+      { handoffId: "handoff_20260311T213524Z" }
+    );
+
+    expect(normalized).not.toBeNull();
+    expect(normalized?.handoff).toEqual({
+      id: "handoff_20260311T213524Z",
+      to: null,
+      lifecycle: {
+        status: "open",
+        created_at: "2026-03-11T21:35:24.000Z",
+        updated_at: "2026-03-11T21:35:24.000Z",
+        pickup_at: null,
+        pickup_by: null,
+      },
+    });
   });
 
   it("propagates verification steps from .tack/verification.md into report and markdown", () => {

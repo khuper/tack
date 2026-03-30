@@ -18,6 +18,7 @@ import {
   buildSessionLines,
   buildWorkspaceSnapshotLines,
 } from "./engine/memory.js";
+import { normalizeHandoffReport } from "./engine/handoff.js";
 import { wrapUntrustedContext } from "./lib/promptSafety.js";
 import { appendDecision, normalizeDecisionActor } from "./engine/decisions.js";
 import { log } from "./lib/logger.js";
@@ -401,6 +402,25 @@ async function main(): Promise<void> {
       }
 
       const text = safeReadFile(jsonPath) ?? "";
+      try {
+        const parsed = JSON.parse(text) as unknown;
+        const normalized = normalizeHandoffReport(parsed, {
+          handoffId: path.basename(jsonPath, ".json"),
+        });
+        if (normalized) {
+          return {
+            contents: [
+              {
+                uri: uri.href,
+                text: `${JSON.stringify(normalized, null, 2)}\n`,
+              },
+            ],
+          };
+        }
+      } catch {
+        // Fall through to the raw file contents.
+      }
+
       return {
         contents: [
           {

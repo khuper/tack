@@ -78,7 +78,7 @@ ${ASCII_LOGO}
     npx tack init [--ink]          Set up spec.yaml from detected architecture
     npx tack status [--ink]        Run a scan and show current state
     npx tack watch [--plain]       Persistent watcher with live drift alerts
-    npx tack handoff [--ink]       Generate agent handoff artifacts
+    npx tack handoff [--ink] [--to role] Generate agent handoff artifacts
     npx tack log                   View decisions or append a manual decision
     npx tack log events [N]        Show last N raw log events (default 50)
     npx tack note                  View/add agent notes
@@ -153,6 +153,24 @@ function printFatal(err: unknown): never {
   // eslint-disable-next-line no-console
   console.error(`✗ ${message}`);
   process.exit(1);
+}
+
+function normalizeHandoffTargetArg(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    // eslint-disable-next-line no-console
+    console.error('Invalid value for --to. Usage: tack handoff --to developer');
+    process.exit(1);
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    // eslint-disable-next-line no-console
+    console.error('Invalid value for --to. Usage: tack handoff --to developer');
+    process.exit(1);
+  }
+
+  return trimmed;
 }
 
 if (normalizedCommand === "status" || normalizedCommand === "watch" || normalizedCommand === "handoff") {
@@ -318,14 +336,19 @@ if (!shouldUseInk) {
   }
 
   if (normalizedCommand === "handoff") {
+    const handoffTo = normalizeHandoffTargetArg(args.to);
     try {
-      const generated = generateHandoff();
+      const generated = generateHandoff({ to: handoffTo });
       log({
         event: "handoff",
         markdown_path: generated.markdownPath,
         json_path: generated.jsonPath,
       });
-      printHandoffPlain(generated.markdownPath, generated.jsonPath, generated.report.generated_at);
+      printHandoffPlain(generated.markdownPath, generated.jsonPath, generated.report.generated_at, {
+        id: generated.report.handoff.id,
+        to: generated.report.handoff.to,
+        status: generated.report.handoff.lifecycle.status,
+      });
       process.exit(0);
     } catch (err) {
       printFatal(err);
@@ -360,4 +383,9 @@ if (!shouldUseInk) {
   }
 }
 
-render(<App command={normalizedCommand as "init" | "status" | "watch" | "handoff"} />);
+render(
+  <App
+    command={normalizedCommand as "init" | "status" | "watch" | "handoff"}
+    handoffTo={normalizedCommand === "handoff" ? normalizeHandoffTargetArg(args.to) : undefined}
+  />
+);

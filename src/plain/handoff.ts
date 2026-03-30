@@ -1,8 +1,16 @@
 import { blue, bold, green, gray } from "./colors.js";
 
-export function printHandoffPlain(markdownPath: string, jsonPath: string, generatedAt: string): void {
+export function printHandoffPlain(
+  markdownPath: string,
+  jsonPath: string,
+  generatedAt: string,
+  handoff: { id: string; to: string | null; status: string }
+): void {
   console.log(green("Handoff generated"));
   console.log(`${gray("Time:")}     ${blue(generatedAt)}`);
+  console.log(`${gray("ID:")}       ${handoff.id}`);
+  console.log(`${gray("Target:")}   ${handoff.to ?? "unassigned"}`);
+  console.log(`${gray("Status:")}   ${handoff.status}`);
   console.log(`${bold("Markdown:")} ${markdownPath}`);
   console.log(`${bold("JSON:")}     ${jsonPath}`);
   console.log("");

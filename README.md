@@ -2,11 +2,11 @@
 
 [![npm version](https://img.shields.io/npm/v/tack-cli.svg)](https://www.npmjs.com/package/tack-cli) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Tack gives your agents persistent project memory that stays accurate instead of going stale.
+Tack gives your agents a shared memory for the repo, so each new session can pick up where the last one left off.
 
-Static instruction files drift the moment the code changes. Tack keeps a shared record in `./.tack/` and checks that memory against the actual codebase, so the next agent starts from context that is still trustworthy.
+Static instruction files go out of date as soon as the code changes. Tack keeps a shared record in `./.tack/` and checks that memory against the codebase, so the next agent starts with context that still matches reality.
 
-## Install And Prove It Works
+## Install
 
 1. Install Tack. If you prefer not to install globally, use `npx tack-cli@latest` instead of `tack`.
 
@@ -21,7 +21,7 @@ tack init
 tack setup-agent
 ```
 
-3. Keep `tack watch` open in a second terminal as live proof.
+3. Keep `tack watch` open in a second terminal so you can see what the agent is doing.
 
 ```bash
 tack watch
@@ -40,7 +40,7 @@ $env:TACK_AGENT_NAME="claude"
 tack.cmd mcp
 ```
 
-5. Confirm the canonical trust loop in `tack watch`:
+5. Check `tack watch` for these events:
 
 - `READY` means the MCP session connected
 - `READ` means the agent read `tack://session` or another Tack context resource
@@ -48,7 +48,7 @@ tack.cmd mcp
 
 If you see `READY`, `READ`, and `WRITE`, the agent is actually using Tack.
 
-At the end of a session, package a handoff:
+When you wrap up a session, create a handoff:
 
 ```bash
 tack handoff
@@ -69,18 +69,18 @@ Read the full guides:
 - Keep implementation facts aligned with the real codebase
 - Stop stale project instructions from misleading the next agent
 - Preserve decisions, blockers, discoveries, and partial work across sessions
-- Show live proof that agents are reading current context and writing memory back
-- Carry context across session boundaries with handoffs and MCP startup resources
+- Show when agents are reading current context and writing memory back
+- Carry context across sessions with handoffs and MCP context resources
 
 ## Why This Matters
 
-- The real failure mode is stale context, not just missing context
+- The bigger problem is stale context, not just missing context
 - Every repeated question like "what framework are we using?" is a context failure
-- Drift detection keeps Tack from lying to the next agent when the code has changed
+- Drift detection helps keep Tack honest when the code has changed
 - Decisions explain why the system looks the way it does before the agent asks
 - Handoffs let context survive session boundaries without another interview
 
-## Common Workflow
+## Typical Workflow
 
 Initialize Tack once at the repo root:
 
@@ -94,7 +94,7 @@ Install agent instructions once per repo:
 tack setup-agent
 ```
 
-Use this canonical proof loop when wiring up an agent:
+When you connect an agent, run:
 
 ```bash
 tack watch
@@ -109,7 +109,7 @@ $env:TACK_AGENT_NAME="claude"
 tack.cmd mcp
 ```
 
-`tack watch` is the live proof. The happy path is simple: `READY`, then `READ`, then `WRITE`.
+`tack watch` shows whether the agent connected, read context, and wrote work back. The usual flow is `READY`, then `READ`, then `WRITE`.
 
 Example:
 
@@ -119,7 +119,7 @@ Example:
 [WRITE][claude] checkpointed work
 ```
 
-v1 does not ship a standalone `tack check-in` command. Write-back stays behind MCP tools like `checkpoint_work` plus `tack handoff`.
+There is no standalone `tack check-in` command in v1. Write-back happens through MCP tools like `checkpoint_work`, plus `tack handoff`.
 
 During normal work:
 
@@ -149,19 +149,19 @@ $env:TACK_AGENT_NAME="claude"
 tack.cmd mcp
 ```
 
-The agent reads `tack://session`, sees the current focus and recent work, and starts from maintained context instead of re-learning the repo. `tack watch` shows the read live so you know the agent is grounded in current project memory.
+The agent reads `tack://session`, sees the current focus and recent work, and starts with current context instead of re-learning the repo. `tack watch` shows that read as it happens, so you can tell the agent is working from real project memory.
 
 ### Structural Change
 
 The agent wants to add a dependency or introduce a new boundary.
 
-Instead of guessing from stale instructions, it calls `check_rule` first. That gives a compact yes/no-with-context guardrail check before the architecture changes.
+Instead of guessing from old instructions, it calls `check_rule` first. That gives a quick guardrail check before the architecture changes.
 
 ### End Of Session
 
 The agent made changes, found one blocker, and left partial work.
 
-Instead of making the next session reconstruct what happened, it calls `checkpoint_work` once. Tack saves a summary, discoveries, decisions, and related files so the next session inherits usable context immediately.
+Instead of making the next session piece things together, it calls `checkpoint_work` once. Tack saves a summary, discoveries, decisions, and related files so the next session can pick up quickly.
 
 ## Learn More
 

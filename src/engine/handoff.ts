@@ -45,7 +45,7 @@ import type {
 import { archiveOldHandoffs } from "./compaction.js";
 import { contextRefToString, parseContextPack } from "./contextPack.js";
 import { readNotes, formatRelativeTime } from "../lib/notes.js";
-import { getMemoryWarnings } from "./memory.js";
+import { buildRecentWorkItems, getMemoryWarnings } from "./memory.js";
 import { TACK_MCP_RESOURCES, TACK_MCP_TOOLS } from "../lib/mcpCatalog.js";
 
 function sourceFile(file: string, line?: number): SourceRef {
@@ -417,6 +417,31 @@ function toMarkdown(report: HandoffReport): string {
 
   lines.push("## Summary");
   lines.push(sanitizeMd(report.summary));
+  if (report.recent_work.length > 0) {
+    lines.push("");
+    lines.push("## Recent Work");
+    renderList(
+      lines,
+      report.recent_work.map((item) => {
+        if (item.kind === "changed_files") {
+          return `[changed] ${sanitizeMd(item.summary)}`;
+        }
+
+        if (item.kind === "decision") {
+          return `[decision][${sanitizeMd(item.date ?? "unknown")}] ${sanitizeMd(item.summary)}`;
+        }
+
+        const age = item.ts ? formatRelativeTime(item.ts, report.generated_at) : "unknown time";
+        const actor = item.actor ?? "unknown actor";
+        const files =
+          item.related_files && item.related_files.length > 0
+            ? `, files: ${sanitizeMdList(item.related_files.slice(0, 2)).join(", ")}${item.related_files.length > 2 ? ` (+${item.related_files.length - 2} more)` : ""}`
+            : "";
+        return `[${sanitizeMd(item.note_type ?? "note")}][${sanitizeMd(age)}] ${sanitizeMd(item.summary)} (${sanitizeMd(actor)}${files})`;
+      }),
+      4
+    );
+  }
   if (report.memory_warnings.length > 0) {
     lines.push("");
     lines.push("## Memory Hygiene");
@@ -661,6 +686,11 @@ export function generateHandoff(options: { to?: string } = {}): {
   const changedFiles = toChangedFiles();
   const openQuestions = openQuestionsOnly(context.open_questions);
   const agentNotes = toAgentNotes();
+  const recentWork = buildRecentWorkItems({
+    pack: context,
+    changedFiles: changedFiles.map((file) => file.path),
+    notes: agentNotes,
+  });
 
   const generatedAt = new Date().toISOString();
   const branch = getCurrentBranch();
@@ -668,7 +698,7 @@ export function generateHandoff(options: { to?: string } = {}): {
   const baseName = `${handoffLabel(branch)}_${tsId}`;
 
   const report: HandoffReport = {
-    schema_version: "1.1.0",
+    schema_version: "1.2.0",
     generated_at: generatedAt,
     handoff: {
       id: baseName,
@@ -746,6 +776,7 @@ export function generateHandoff(options: { to?: string } = {}): {
     detected_systems: detectedSystems,
     open_drift_items: openDrift,
     changed_files: changedFiles,
+    recent_work: recentWork,
     open_questions: openQuestions,
     assumptions: context.assumptions,
     recent_decisions: context.decisions.slice(-5),

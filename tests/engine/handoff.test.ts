@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -50,7 +51,7 @@ describe("handoff", () => {
     const json = JSON.parse(fs.readFileSync(result.jsonPath, "utf-8"));
 
     // Core schema fields
-    expect(json.schema_version).toBe("1.1.0");
+    expect(json.schema_version).toBe("1.2.0");
     expect(typeof json.generated_at).toBe("string");
     expect(typeof json.handoff).toBe("object");
     expect(typeof json.handoff.id).toBe("string");
@@ -123,6 +124,7 @@ describe("handoff", () => {
       "detected_systems",
       "open_drift_items",
       "changed_files",
+      "recent_work",
       "open_questions",
       "assumptions",
       "recent_decisions",
@@ -216,6 +218,65 @@ describe("handoff", () => {
     expect(md).toContain("- npm run lint");
     expect(md).toContain("- npx tsc --noEmit");
     expect(md).toContain("- echo done");
+  });
+
+  it("surfaces compact recent work in handoff json and markdown", () => {
+    execFileSync("git", ["init"], { cwd: tmpDir, stdio: ["ignore", "pipe", "pipe"] });
+    execFileSync("git", ["config", "user.email", "test@example.com"], {
+      cwd: tmpDir,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    execFileSync("git", ["config", "user.name", "Tack Test"], {
+      cwd: tmpDir,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    fs.writeFileSync(path.join(tmpDir, "tracked.txt"), "one\n", "utf-8");
+    execFileSync("git", ["add", "tracked.txt"], { cwd: tmpDir, stdio: ["ignore", "pipe", "pipe"] });
+    execFileSync("git", ["commit", "-m", "first"], { cwd: tmpDir, stdio: ["ignore", "pipe", "pipe"] });
+
+    fs.writeFileSync(path.join(tmpDir, "tracked.txt"), "two\n", "utf-8");
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "decisions.md"),
+      ["# Decisions", "", "- [2026-03-11] Keep session output compact - agents should read it first", ""].join("\n"),
+      "utf-8"
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "_notes.ndjson"),
+      `${JSON.stringify({
+        ts: "2026-03-11T10:00:00.000Z",
+        type: "unfinished",
+        message: "Partial: wire recent work summary into handoff output",
+        actor: "agent:codex",
+        related_files: ["src/engine/handoff.ts"],
+      })}\n`,
+      "utf-8"
+    );
+
+    const result = generateHandoff();
+    const json = JSON.parse(fs.readFileSync(result.jsonPath, "utf-8"));
+    const md = fs.readFileSync(result.markdownPath, "utf-8");
+
+    expect(json.recent_work.some((item: { kind: string }) => item.kind === "changed_files")).toBeTrue();
+    expect(
+      json.recent_work.some(
+        (item: { kind: string; note_type?: string; summary: string }) =>
+          item.kind === "note" &&
+          item.note_type === "unfinished" &&
+          item.summary.includes("wire recent work summary into handoff output")
+      )
+    ).toBeTrue();
+    expect(
+      json.recent_work.some(
+        (item: { kind: string; summary: string }) =>
+          item.kind === "decision" && item.summary.includes("Keep session output compact")
+      )
+    ).toBeTrue();
+
+    expect(md).toContain("## Recent Work");
+    expect(md).toContain("wire recent work summary into handoff output");
+    expect(md).toContain("Keep session output compact");
+    expect(md).toContain("tracked.txt");
   });
 
   it("handles empty or placeholder verification files gracefully", () => {

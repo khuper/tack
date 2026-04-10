@@ -54,7 +54,7 @@ export const TACK_MCP_RESOURCES: TackMcpResourceGuide[] = [
   {
     uri: "tack://handoff/latest",
     title: "Tack Handoff - Latest",
-    description: "Latest structured handoff JSON with summary, next steps, and verification guidance.",
+    description: "Latest structured handoff JSON with summary, recent work, next steps, and verification guidance.",
     mimeType: "application/json",
   },
 ];

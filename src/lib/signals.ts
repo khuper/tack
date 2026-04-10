@@ -228,6 +228,17 @@ export type HandoffAgentNote = AgentNote & {
   source: SourceRef;
 };
 
+export type RecentWorkItem = {
+  kind: "note" | "decision" | "changed_files";
+  summary: string;
+  source: SourceRef;
+  ts?: string;
+  date?: string;
+  actor?: string;
+  note_type?: AgentNoteType;
+  related_files?: string[];
+};
+
 export type AgentSafety = {
   notice: string;
   generated_by: string;
@@ -259,7 +270,7 @@ export type HandoffMetadata = {
 };
 
 export type HandoffReport = {
-  schema_version: "1.0.0" | "1.1.0";
+  schema_version: "1.0.0" | "1.1.0" | "1.2.0";
   generated_at: string;
   handoff: HandoffMetadata;
   agent_safety: AgentSafety;
@@ -286,6 +297,7 @@ export type HandoffReport = {
   detected_systems: HandoffDetectedSystem[];
   open_drift_items: HandoffDriftItem[];
   changed_files: HandoffChangedFile[];
+  recent_work: RecentWorkItem[];
   open_questions: ContextQuestion[];
   assumptions: ContextQuestion[];
   recent_decisions: DecisionEntry[];

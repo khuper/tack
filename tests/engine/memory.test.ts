@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -95,6 +96,8 @@ describe("memory summaries", () => {
 
     expect(text).toContain("# Session Start");
     expect(text).toContain("tack://context/workspace");
+    expect(text).toContain("## Recent Work");
+    expect(text).toContain("[decision][2026-03-09] Prefer session-first MCP flow - improves agent startup");
     expect(text).toContain("## Write Back Triggers");
     expect(text).toContain("Before finishing each meaningful task, call checkpoint_work");
     expect(text).toContain("with what changed and why");
@@ -106,6 +109,40 @@ describe("memory summaries", () => {
     expect(text).toContain("without waiting to be asked");
     expect(text).toContain("Mid-task, use check_rule briefly before structural changes");
     expect(text).toContain("Reduce agent prompting");
+  });
+
+  it("surfaces changed files and recent notes in the session summary", () => {
+    execFileSync("git", ["init"], { cwd: tmpDir, stdio: ["ignore", "pipe", "pipe"] });
+    execFileSync("git", ["config", "user.email", "test@example.com"], {
+      cwd: tmpDir,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    execFileSync("git", ["config", "user.name", "Tack Test"], {
+      cwd: tmpDir,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    fs.writeFileSync(path.join(tmpDir, "tracked.txt"), "one\n", "utf-8");
+    execFileSync("git", ["add", "tracked.txt"], { cwd: tmpDir, stdio: ["ignore", "pipe", "pipe"] });
+    execFileSync("git", ["commit", "-m", "first"], { cwd: tmpDir, stdio: ["ignore", "pipe", "pipe"] });
+
+    fs.writeFileSync(path.join(tmpDir, "tracked.txt"), "two\n", "utf-8");
+    writeNotes([
+      {
+        ts: "2026-03-10T10:00:00.000Z",
+        type: "unfinished",
+        message: "Partial: wire recent work summary into the session resource",
+        actor: "agent:codex",
+        related_files: ["src/engine/memory.ts"],
+      },
+    ]);
+
+    const text = buildSessionLines().join("\n");
+
+    expect(text).toContain("[changed] 1 file currently differs from git: tracked.txt");
+    expect(text).toContain("[unfinished]");
+    expect(text).toContain("wire recent work summary into the session resource");
+    expect(text).toContain(".tack/_notes.ndjson");
   });
 
   it("builds a compact workspace snapshot with guardrails and unresolved drift", () => {

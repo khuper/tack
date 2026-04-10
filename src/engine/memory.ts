@@ -2,7 +2,7 @@ import { getChangedFiles } from "../lib/git.js";
 import { readRecentLogs } from "../lib/logger.js";
 import { formatRelativeTime, readNotes } from "../lib/notes.js";
 import { TACK_MCP_TOOLS } from "../lib/mcpCatalog.js";
-import type { AgentNote, LogEvent } from "../lib/signals.js";
+import type { AgentNote, ContextPack, LogEvent, RecentWorkItem, SourceRef } from "../lib/signals.js";
 import { parseContextPack, contextRefToString } from "./contextPack.js";
 import { readAudit, readDrift, readSpec } from "../lib/files.js";
 
@@ -323,6 +323,87 @@ function formatFilesSuffix(files: string[]): string {
   return files.length > 0 ? ` (files: ${files.slice(0, 2).join(", ")})` : "";
 }
 
+function summarizePaths(paths: string[], max = 3): string {
+  if (paths.length === 0) {
+    return "none";
+  }
+
+  const visible = paths.slice(0, max);
+  const suffix = paths.length > max ? ` (+${paths.length - max} more)` : "";
+  return `${visible.join(", ")}${suffix}`;
+}
+
+function sourceRefToString(ref: SourceRef): string {
+  if ("file" in ref) {
+    return typeof ref.line === "number" ? `${ref.file}:${ref.line}` : ref.file;
+  }
+
+  return `derived from ${ref.derived_from.join(", ")}`;
+}
+
+export function buildRecentWorkItems(options: {
+  pack?: ContextPack;
+  changedFiles?: string[];
+  notes?: AgentNote[];
+} = {}): RecentWorkItem[] {
+  const pack = options.pack ?? parseContextPack();
+  const changedFiles = options.changedFiles ?? getChangedFiles();
+  const notes = options.notes ?? readNotes({ limit: 3 });
+  const items: RecentWorkItem[] = [];
+
+  if (changedFiles.length > 0) {
+    const noun = changedFiles.length === 1 ? "file" : "files";
+    const verb = changedFiles.length === 1 ? "differs" : "differ";
+    items.push({
+      kind: "changed_files",
+      summary: `${changedFiles.length} ${noun} currently ${verb} from git: ${summarizePaths(changedFiles)}`,
+      source: { derived_from: ["git diff", "filesystem"] },
+      related_files: changedFiles,
+    });
+  }
+
+  for (const note of notes.slice(0, 2)) {
+    items.push({
+      kind: "note",
+      note_type: note.type,
+      summary: truncateText(stripCheckpointPrefix(note.message), 96),
+      source: { file: ".tack/_notes.ndjson" },
+      ts: note.ts,
+      actor: note.actor,
+      related_files: note.related_files,
+    });
+  }
+
+  for (const decision of [...pack.decisions].slice(-2).reverse().slice(0, 1)) {
+    items.push({
+      kind: "decision",
+      summary: `${decision.decision} - ${truncateText(decision.reasoning, 80)}`,
+      source: decision.source,
+      date: decision.date,
+    });
+  }
+
+  return items.slice(0, 4);
+}
+
+function formatRecentWorkLine(item: RecentWorkItem): string {
+  if (item.kind === "changed_files") {
+    return `[changed] ${item.summary} (${sourceRefToString(item.source)})`;
+  }
+
+  if (item.kind === "decision") {
+    return `[decision][${item.date ?? "unknown"}] ${item.summary} (${sourceRefToString(item.source)})`;
+  }
+
+  const age = item.ts ? formatRelativeTime(item.ts) : "unknown time";
+  const actor = item.actor ?? "unknown actor";
+  const files =
+    item.related_files && item.related_files.length > 0
+      ? `, files: ${summarizePaths(item.related_files, 2)}`
+      : "";
+  return `[${item.note_type ?? "note"}][${age}] ${item.summary} (${actor}${files}; ${sourceRefToString(item.source)})`;
+}
+
 function buildSessionWindows(logs: LogEvent[]): SessionWindow[] {
   if (!logs.some((event) => event.event === "mcp:resource" && event.resource === "tack://session")) {
     return [];
@@ -573,6 +654,7 @@ export function buildSessionLines(): string[] {
   const changedFiles = getChangedFiles();
   const warnings = getMemoryWarnings(changedFiles);
   const recentNotes = readNotes({ limit: 3 });
+  const recentWork = buildRecentWorkItems({ pack, changedFiles, notes: recentNotes });
   const patterns = analyzeSessionPatterns();
   const lines: string[] = ["# Session Start", ""];
 
@@ -609,12 +691,7 @@ export function buildSessionLines(): string[] {
     pack.decisions.map((item) => `[${item.date}] ${item.decision} - ${item.reasoning}`)
   );
 
-  pushBullets(
-    lines,
-    "Recent Agent Notes",
-    recentNotes.map((item) => `[${item.type}] ${item.message} (${item.actor})`),
-    3
-  );
+  pushBullets(lines, "Recent Work", recentWork.map((item) => formatRecentWorkLine(item)), 4);
 
   const patternLines = [...patterns.repeated_blockers, ...patterns.stale_unfinished, ...patterns.rediscovered].slice(0, 3);
   if (patternLines.length > 0) {

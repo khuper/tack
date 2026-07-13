@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MARATHON — Every mile tells a story.</title>
+<style>
+  :root {
+    --cream: #f0e0ae;
+    --cream-dim: #e2d09a;
+    --ink: #2b251d;
+    --ink-2: #332c23;
+    --page: #1d1913;
+    --olive: #6e6526;
+    --olive-deep: #5c541f;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html { background: var(--page); }
+
+  body {
+    font-family: "Courier New", ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--cream);
+    background: var(--page);
+    -webkit-font-smoothing: none;
+  }
+
+  canvas { image-rendering: pixelated; display: block; }
+
+  a { color: inherit; text-decoration: none; }
+
+  .page {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 18px;
+    display: grid;
+    gap: 20px;
+  }
+
+  /* ---------- top bar ---------- */
+  .topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 6px 4px;
+    font-size: 12px;
+    font-weight: bold;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+  .topbar nav { display: flex; gap: 22px; flex-wrap: wrap; }
+  .topbar nav a { padding: 2px 4px; }
+  .topbar nav a:hover { background: var(--cream); color: var(--page); }
+
+  /* ---------- panels ---------- */
+  .panel {
+    position: relative;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .panel.dark  { background: var(--ink);   color: var(--cream); }
+  .panel.cream { background: var(--cream); color: var(--ink); }
+
+  .frame {
+    position: absolute;
+    inset: 22px;
+    border: 1px dashed currentColor;
+    opacity: .55;
+    pointer-events: none;
+  }
+  .marks {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .marks span {
+    position: absolute;
+    width: 9px;
+    height: 9px;
+    background: currentColor;
+    pointer-events: none;
+  }
+  .marks span:nth-child(1) { top: 18px;    left: 18px; }
+  .marks span:nth-child(2) { top: 18px;    right: 18px; }
+  .marks span:nth-child(3) { bottom: 18px; left: 18px; }
+  .marks span:nth-child(4) { bottom: 18px; right: 18px; }
+
+  .label {
+    font-size: 11px;
+    font-weight: bold;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+  .slashes {
+    font-size: 11px;
+    letter-spacing: 1px;
+    opacity: .8;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  /* ---------- hero ---------- */
+  .hero {
+    min-height: 560px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 72px 48px;
+  }
+  .hero .ghost {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: .13;
+    pointer-events: none;
+  }
+  .hero .ghost canvas { width: 96%; max-width: none; }
+  .hero .tag-tr { position: absolute; top: 40px; right: 52px; }
+  .hero .tag-bl { position: absolute; bottom: 44px; left: 52px; text-align: left; }
+  .hero .tag-bl .slashes { margin-top: 6px; }
+  .hero-mark canvas { width: min(190px, 40vw); }
+  .hero-word { margin-top: 34px; }
+  .hero-word canvas { width: min(680px, 82vw); }
+  .hero-sub { margin-top: 26px; opacity: .75; }
+
+  /* ---------- ticket ---------- */
+  .ticket-wrap {
+    padding: 64px 40px;
+    display: flex;
+    justify-content: center;
+  }
+  .ticket {
+    display: flex;
+    width: min(640px, 100%);
+    border: 2px solid var(--olive);
+  }
+  .ticket-notch {
+    width: 42px;
+    flex: 0 0 42px;
+    background: var(--olive);
+    -webkit-clip-path: polygon(0 0, 100% 0, 100% 8%, 55% 8%, 55% 20%, 100% 20%, 100% 78%, 55% 78%, 55% 90%, 100% 90%, 100% 100%, 0 100%);
+    clip-path: polygon(0 0, 100% 0, 100% 8%, 55% 8%, 55% 20%, 100% 20%, 100% 78%, 55% 78%, 55% 90%, 100% 90%, 100% 100%, 0 100%);
+  }
+  .ticket-body { flex: 1; padding: 18px 22px 20px; color: var(--olive-deep); }
+  .ticket-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    background: var(--olive);
+    color: var(--cream);
+    padding: 6px 10px;
+    font-size: 11px;
+    font-weight: bold;
+    letter-spacing: 2px;
+  }
+  .ticket-cols {
+    display: flex;
+    justify-content: space-between;
+    gap: 18px;
+    margin-top: 14px;
+  }
+  .ticket-list { font-size: 11px; font-weight: bold; letter-spacing: 1.5px; line-height: 1.9; text-transform: uppercase; }
+  .ticket-cols canvas { width: 132px; }
+  .ticket-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    letter-spacing: 2px;
+    font-weight: bold;
+    margin-top: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--olive);
+  }
+  .ticket-foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 18px;
+    margin-top: 12px;
+  }
+  .ticket-foot canvas { width: 96px; }
+  .ticket-big { font-size: 20px; font-weight: bold; letter-spacing: 4px; margin-top: 10px; }
+
+  /* ---------- studio / about ---------- */
+  .about {
+    display: grid;
+    grid-template-columns: minmax(260px, 420px) 1fr;
+    gap: 48px;
+    padding: 64px 56px;
+    align-items: center;
+  }
+  .about-years {
+    background: var(--ink);
+    color: var(--cream);
+    padding: 48px 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    align-items: flex-start;
+  }
+  .about-years canvas { width: min(190px, 100%); }
+  .about-copy h2 { font-size: 22px; letter-spacing: 6px; margin-bottom: 20px; }
+  .about-copy p { font-size: 13px; line-height: 1.75; max-width: 52ch; }
+  .about-copy .slashes { margin-top: 22px; }
+
+  /* ---------- work ---------- */
+  .work { padding: 56px 48px 60px; }
+  .work-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 16px;
+    margin-bottom: 22px;
+    flex-wrap: wrap;
+  }
+  .work-grid {
+    background: var(--ink);
+    padding: 34px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 26px;
+  }
+  .work-item { color: var(--cream); }
+  .work-item .shot { border: 1px solid var(--cream); padding: 6px; }
+  .work-item canvas { width: 100%; }
+  .work-item figcaption { margin-top: 10px; font-size: 10px; font-weight: bold; letter-spacing: 1.5px; text-transform: uppercase; opacity: .85; }
+
+  /* ---------- marquee ---------- */
+  .marquee {
+    border-top: 1px solid var(--cream);
+    border-bottom: 1px solid var(--cream);
+    overflow: hidden;
+    padding: 8px 0;
+    opacity: .9;
+  }
+  .marquee-inner {
+    display: inline-block;
+    white-space: nowrap;
+    font-size: 11px;
+    font-weight: bold;
+    letter-spacing: 3px;
+    animation: slide 28s linear infinite;
+  }
+  @keyframes slide {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-50%); }
+  }
+
+  /* ---------- dossier ---------- */
+  .dossier {
+    display: grid;
+    grid-template-columns: 1fr minmax(240px, 340px);
+    gap: 48px;
+    padding: 72px 56px;
+    align-items: center;
+  }
+  .dossier-id { display: flex; gap: 24px; align-items: flex-start; }
+  .dossier-id .stack canvas { width: 84px; }
+  .dossier-list { font-size: 12px; font-weight: bold; letter-spacing: 1.5px; line-height: 2.1; text-transform: uppercase; }
+  .dossier-contact { margin-top: 26px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    display: inline-block;
+    border: 2px solid var(--cream);
+    padding: 10px 18px;
+    font-size: 11px;
+    font-weight: bold;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+  }
+  .btn:hover { background: var(--cream); color: var(--ink); }
+  .dossier-glitch canvas { width: 100%; }
+
+  /* ---------- footer ---------- */
+  .footer { padding: 40px 0 0; }
+  .footer .tag-top { padding: 0 56px 26px; text-align: left; }
+  .footer .tag-top .slashes { margin-top: 6px; }
+  .foot-band {
+    background: var(--ink);
+    color: var(--cream);
+    padding: 40px 56px;
+    position: relative;
+  }
+  .foot-band .lines {
+    position: absolute;
+    left: 0; right: 0;
+    top: 50%;
+    height: 26px;
+    transform: translateY(-50%);
+    background:
+      linear-gradient(currentColor, currentColor) 0 0 / 100% 2px no-repeat,
+      linear-gradient(currentColor, currentColor) 0 50% / 100% 2px no-repeat,
+      linear-gradient(currentColor, currentColor) 0 100% / 100% 2px no-repeat;
+    opacity: .8;
+  }
+  .foot-band .lockup {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 26px;
+  }
+  .foot-band .lockup .mark  { flex: 0 0 auto; background: var(--ink); padding: 0 8px; }
+  .foot-band .lockup .word  { background: var(--ink); padding: 0 12px; flex: 0 1 auto; min-width: 0; }
+  .foot-band .lockup .mark canvas { width: 58px; }
+  .foot-band .lockup .word canvas { width: 100%; max-width: 640px; }
+  .footer .tag-bot { padding: 26px 56px 34px; text-align: right; }
+  .footer .tag-bot .slashes { margin-top: 6px; }
+  .footer .fine {
+    padding: 0 56px 30px;
+    font-size: 10px;
+    letter-spacing: 2px;
+    font-weight: bold;
+    opacity: .55;
+    text-transform: uppercase;
+  }
+
+  @media (max-width: 860px) {
+    .about, .dossier { grid-template-columns: 1fr; padding: 48px 28px; }
+    .work { padding: 44px 22px; }
+    .work-grid { grid-template-columns: 1fr; }
+    .hero { padding: 72px 24px; min-height: 480px; }
+    .hero .tag-tr { right: 28px; }
+    .hero .tag-bl { left: 28px; }
+    .footer .tag-top, .foot-band, .footer .tag-bot, .footer .fine { padding-left: 28px; padding-right: 28px; }
+    .foot-band .lockup { gap: 14px; }
+    .foot-band .lockup .mark canvas { width: 40px; }
+    .ticket-wrap { padding: 44px 20px; }
+    .ticket-cols { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- top bar -->
+  <header class="topbar">
+    <span>MARATHON-01 // CREATIVE STUDIO</span>
+    <nav>
+      <a href="#index">Index</a>
+      <a href="#work">Work</a>
+      <a href="#studio">Studio</a>
+      <a href="#contact">Contact</a>
+    </nav>
+  </header>
+
+  <!-- hero -->
+  <section class="panel dark hero" id="index">
+    <div class="marks"><span></span><span></span><span></span><span></span></div>
+    <div class="frame"></div>
+    <div class="ghost"><canvas id="ghost-word" aria-hidden="true"></canvas></div>
+
+    <div class="label tag-tr">Every mile tells a story.</div>
+
+    <div class="hero-mark"><canvas id="hero-mark" role="img" aria-label="Marathon pixel mark"></canvas></div>
+    <div class="hero-word"><canvas id="hero-word" role="img" aria-label="MARATHON"></canvas></div>
+    <div class="label hero-sub">Creative portfolio — est. km 0 — ©MR26</div>
+
+    <div class="tag-bl">
+      <div class="label">Every mile tells a story.</div>
+      <div class="slashes">//////////////////////////</div>
+    </div>
+  </section>
+
+  <!-- ticket -->
+  <section class="panel cream ticket-wrap">
+    <div class="marks"><span></span><span></span><span></span><span></span></div>
+    <div class="frame"></div>
+
+    <div class="ticket">
+      <div class="ticket-notch"></div>
+      <div class="ticket-body">
+        <div class="ticket-head">
+          <span>MR</span>
+          <span>LONG DISTANCE CLUB</span>
+          <span>©MR26</span>
+        </div>
+        <div class="ticket-cols">
+          <div class="ticket-list">
+            //Disciplines<br>
+            Brand systems<br>
+            Web experiences<br>
+            Motion &amp; 3D<br>
+            Custom ASCII code
+          </div>
+          <canvas id="ticket-dither" aria-hidden="true"></canvas>
+        </div>
+        <div class="ticket-meta">
+          <span>Created with stamina</span>
+          <span>©2026</span>
+        </div>
+        <div class="ticket-foot">
+          <div>
+            <div class="label">Dither x ASCII<br>///</div>
+            <div class="ticket-big">NEGATIVE SPLITS</div>
+          </div>
+          <canvas id="ticket-dissolve" aria-hidden="true"></canvas>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- studio / about -->
+  <section class="panel cream about" id="studio">
+    <div class="marks"><span></span><span></span><span></span><span></span></div>
+    <div class="frame"></div>
+
+    <div class="about-years">
+      <canvas id="year-20" aria-hidden="true"></canvas>
+      <canvas id="year-26" aria-hidden="true"></canvas>
+    </div>
+    <div class="about-copy">
+      <h2>MARATHON</h2>
+      <p>
+        At MARATHON, we design and build digital experiences made to go the
+        distance. Our team focuses on deliberate brand systems, engaging
+        interfaces, and durable engineering for people who think in years,
+        not sprints. From first sketch to final release, we combine craft,
+        technology, and patience to turn long roads into finished work —
+        pixel by pixel, mile by mile.
+      </p>
+      <div class="slashes">////////////////////////////////////</div>
+    </div>
+  </section>
+
+  <!-- work -->
+  <section class="panel cream work" id="work">
+    <div class="marks"><span></span><span></span><span></span><span></span></div>
+    <div class="frame"></div>
+
+    <div class="work-head">
+      <span class="label">Selected work //</span>
+      <span class="label">03 routes logged</span>
+    </div>
+    <div class="work-grid">
+      <figure class="work-item">
+        <div class="shot"><canvas id="shot-signal" role="img" aria-label="Dithered cloud study"></canvas></div>
+        <figcaption>01 / Signal — ident &amp; motion system</figcaption>
+      </figure>
+      <figure class="work-item">
+        <div class="shot"><canvas id="shot-ridge" role="img" aria-label="Dithered mountain ridge at sunrise"></canvas></div>
+        <figcaption>02 / Ridgeline — interactive terrain atlas</figcaption>
+      </figure>
+      <figure class="work-item">
+        <div class="shot"><canvas id="shot-road" role="img" aria-label="Dithered road to the horizon"></canvas></div>
+        <figcaption>03 / KM 42 — long-form web documentary</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- marquee -->
+  <div class="marquee" aria-hidden="true">
+    <div class="marquee-inner" id="marquee"></div>
+  </div>
+
+  <!-- dossier / contact -->
+  <section class="panel dark dossier" id="contact">
+    <div class="marks"><span></span><span></span><span></span><span></span></div>
+    <div class="frame"></div>
+
+    <div class="dossier-id">
+      <div class="stack"><canvas id="id-stack" aria-hidden="true"></canvas></div>
+      <div>
+        <div class="dossier-list">
+          Studio ID: MARATHON-01<br>
+          Division: Design &amp; Eng'g<br>
+          Status: Active<br>
+          Clearance: Public<br>
+          Role: Brand, Web &amp; Worlds<br>
+          Location: KM 42.195
+        </div>
+        <div class="dossier-contact">
+          <a class="btn" href="mailto:hello@marathon.run">Start a project</a>
+          <span class="label">hello@marathon.run</span>
+        </div>
+      </div>
+    </div>
+    <div class="dossier-glitch"><canvas id="glitch" aria-hidden="true"></canvas></div>
+  </section>
+
+  <!-- footer -->
+  <footer class="panel cream footer">
+    <div class="marks"><span></span><span></span><span></span><span></span></div>
+    <div class="frame"></div>
+
+    <div class="tag-top">
+      <div class="slashes">//////////////////////////////</div>
+      <div class="label">Every mile tells a story.</div>
+    </div>
+
+    <div class="foot-band">
+      <div class="lines" aria-hidden="true"></div>
+      <div class="lockup">
+        <div class="mark"><canvas id="foot-mark" aria-hidden="true"></canvas></div>
+        <div class="word"><canvas id="foot-word" role="img" aria-label="MARATHON"></canvas></div>
+      </div>
+    </div>
+
+    <div class="tag-bot">
+      <div class="label">Start. Endure. Repeat.</div>
+      <div class="slashes">//////////////////////////////</div>
+    </div>
+
+    <div class="fine">© 2026 Marathon Creative Studio — every pixel earned its place.</div>
+  </footer>
+
+</div>
+
+<script>
+/* ============ tiny deterministic PRNG ============ */
+function prng(seed) {
+  let s = seed >>> 0;
+  return function () {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+/* ============ 5x7 pixel font ============ */
+const GLYPHS = {
+  M: ["#...#","##.##","#.#.#","#.#.#","#...#","#...#","#...#"],
+  A: [".###.","#...#","#...#","#####","#...#","#...#","#...#"],
+  R: ["####.","#...#","#...#","####.","#.#..","#..#.","#...#"],
+  T: ["#####","..#..","..#..","..#..","..#..","..#..","..#.."],
+  H: ["#...#","#...#","#...#","#####","#...#","#...#","#...#"],
+  O: [".###.","#...#","#...#","#...#","#...#","#...#",".###."],
+  N: ["#...#","##..#","##..#","#.#.#","#..##","#..##","#...#"],
+  "2": [".###.","#...#","....#","..##.",".#...","#....","#####"],
+  "0": [".###.","#...#","#..##","#.#.#","##..#","#...#",".###."],
+  "6": [".###.","#....","#....","####.","#...#","#...#",".###."],
+  " ": ["..","..","..","..","..","..",".."]
+};
+
+function drawPixelText(canvasId, text, color, unit) {
+  const cv = document.getElementById(canvasId);
+  if (!cv) return;
+  unit = unit || 8;
+  const rows = 7, gap = 1;
+  let cols = 0;
+  for (const ch of text) cols += GLYPHS[ch][0].length + gap;
+  cols -= gap;
+  cv.width = cols * unit;
+  cv.height = rows * unit;
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = color;
+  let x = 0;
+  for (const ch of text) {
+    const g = GLYPHS[ch];
+    for (let r = 0; r < rows; r++)
+      for (let c = 0; c < g[r].length; c++)
+        if (g[r][c] === "#") ctx.fillRect((x + c) * unit, r * unit, unit, unit);
+    x += g[0].length + gap;
+  }
+}
+
+/* ============ bitmap mark (stride bolt) ============ */
+const MARK = [
+  "......######",
+  "##...######.",
+  "##..######..",
+  "...######...",
+  "..######....",
+  ".########...",
+  "..########..",
+  "...######...",
+  "..######....",
+  ".######.....",
+  "######......",
+  "#####.......",
+  "####........",
+  "###........."
+];
+
+function drawBitmap(canvasId, bitmap, color, unit) {
+  const cv = document.getElementById(canvasId);
+  if (!cv) return;
+  unit = unit || 8;
+  cv.width = bitmap[0].length * unit;
+  cv.height = bitmap.length * unit;
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = color;
+  for (let r = 0; r < bitmap.length; r++)
+    for (let c = 0; c < bitmap[r].length; c++)
+      if (bitmap[r][c] === "#") ctx.fillRect(c * unit, r * unit, unit, unit);
+}
+
+/* ============ Bayer 8x8 ordered dithering ============ */
+const BAYER = [
+  [0,32,8,40,2,34,10,42],[48,16,56,24,50,18,58,26],
+  [12,44,4,36,14,46,6,38],[60,28,52,20,62,30,54,22],
+  [3,35,11,43,1,33,9,41],[51,19,59,27,49,17,57,25],
+  [15,47,7,39,13,45,5,37],[63,31,55,23,61,29,53,21]
+];
+
+function hexRGB(hex) {
+  return [parseInt(hex.slice(1,3),16), parseInt(hex.slice(3,5),16), parseInt(hex.slice(5,7),16)];
+}
+const CREAM = hexRGB("#f0e0ae"), INK = hexRGB("#2b251d");
+
+function ditherScene(canvasId, w, h, lum) {
+  const cv = document.getElementById(canvasId);
+  if (!cv) return;
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext("2d");
+  const img = ctx.createImageData(w, h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const L = Math.max(0, Math.min(1, lum(x / w, y / h, x, y)));
+      const on = L > (BAYER[y % 8][x % 8] + 0.5) / 64;
+      const c = on ? CREAM : INK;
+      const i = (y * w + x) * 4;
+      img.data[i] = c[0]; img.data[i+1] = c[1]; img.data[i+2] = c[2]; img.data[i+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+/* ============ value noise / fbm ============ */
+function hash2(ix, iy) {
+  const s = Math.sin(ix * 127.1 + iy * 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+function noise2(x, y) {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+  const a = hash2(ix, iy), b = hash2(ix + 1, iy);
+  const c = hash2(ix, iy + 1), d = hash2(ix + 1, iy + 1);
+  return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
+}
+function fbm(x, y) {
+  let v = 0, amp = 0.5, f = 1;
+  for (let o = 0; o < 4; o++) { v += amp * noise2(x * f, y * f); amp *= 0.5; f *= 2; }
+  return v;
+}
+
+/* ============ page assembly ============ */
+const cream = "#f0e0ae", olive = "#6e6526";
+
+drawPixelText("ghost-word", "MARATHON", cream, 8);
+drawPixelText("hero-word",  "MARATHON", cream, 8);
+drawBitmap("hero-mark", MARK, cream, 8);
+drawPixelText("year-20", "20", cream, 8);
+drawPixelText("year-26", "26", cream, 8);
+drawBitmap("foot-mark", MARK, cream, 8);
+drawPixelText("foot-word", "MARATHON", cream, 8);
+
+/* ticket checker block: checkerboard rows with dissolving right edge */
+(function () {
+  const cv = document.getElementById("ticket-dither");
+  if (!cv) return;
+  const w = 44, h = 24;
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext("2d");
+  const rnd = prng(7);
+  ctx.fillStyle = olive;
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const keep = 1 - Math.max(0, (x / w - 0.55) * 2.2);
+      if ((x + y) % 2 === 0 && rnd() < keep) ctx.fillRect(x, y, 1, 1);
+    }
+})();
+
+/* ticket dissolve strip */
+(function () {
+  const cv = document.getElementById("ticket-dissolve");
+  if (!cv) return;
+  const w = 36, h = 14;
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext("2d");
+  const rnd = prng(23);
+  ctx.fillStyle = olive;
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++)
+      if (rnd() < 1 - x / w) ctx.fillRect(x, y, 1, 1);
+})();
+
+/* work shot 1 — SIGNAL: dithered cloud bank */
+ditherScene("shot-signal", 120, 156, (u, v) => {
+  const n = fbm(u * 5 + 11, v * 4 + 3);
+  const sky = 0.85 - v * 0.5;
+  return Math.min(1, sky * 0.45 + n * 1.15 - 0.18);
+});
+
+/* work shot 2 — RIDGELINE: sunrise over mountains */
+ditherScene("shot-ridge", 120, 156, (u, v) => {
+  const sun = Math.hypot(u - 0.62, (v - 0.30) * 1.3) < 0.13 ? 1 : 0;
+  const ridge1 = 0.55 + 0.08 * Math.sin(u * 9) + 0.05 * noise2(u * 8, 2);
+  const ridge2 = 0.72 + 0.06 * Math.sin(u * 6 + 2) + 0.05 * noise2(u * 10, 9);
+  if (v > ridge2) return 0.08 + 0.05 * noise2(u * 30, v * 30);
+  if (v > ridge1) return 0.22 + 0.08 * noise2(u * 24, v * 24);
+  const sky = 0.9 - v * 0.75;
+  return Math.min(1, sky + sun);
+});
+
+/* work shot 3 — KM 42: road to the vanishing point */
+ditherScene("shot-road", 120, 156, (u, v) => {
+  const horizon = 0.42;
+  if (v < horizon) {
+    const sun = Math.hypot(u - 0.5, (v - 0.26) * 1.4) < 0.09 ? 1 : 0;
+    return Math.min(1, 0.78 - v * 0.5 + sun);
+  }
+  const t = (v - horizon) / (1 - horizon);           // 0 at horizon, 1 at bottom
+  const half = 0.02 + t * 0.46;                      // road half-width
+  const d = Math.abs(u - 0.5);
+  if (d < half) {
+    const center = d < half * 0.06 && (Math.floor(v * 26) % 2 === 0);
+    return center ? 0.75 : 0.30 + t * 0.12;          // dashed centerline
+  }
+  const pole = Math.abs(d - half * 1.35) < 0.008 && v < horizon + t * 0.3;
+  return pole ? 0.05 : 0.55 - t * 0.28 + 0.05 * noise2(u * 40, v * 40);
+});
+
+/* dossier id stack — barcode-ish line glyph */
+(function () {
+  const cv = document.getElementById("id-stack");
+  if (!cv) return;
+  const w = 14, h = 18;
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext("2d");
+  const rnd = prng(99);
+  ctx.fillStyle = cream;
+  for (let y = 0; y < h; y++) {
+    if (y % 3 === 2) continue;
+    const start = Math.floor(rnd() * 4);
+    const len = 6 + Math.floor(rnd() * (w - 6 - start));
+    ctx.fillRect(start, y, len, 1);
+  }
+})();
+
+/* dossier glitch collage */
+(function () {
+  const cv = document.getElementById("glitch");
+  if (!cv) return;
+  const cells = 13, cell = 8;
+  cv.width = cells * cell; cv.height = cells * cell;
+  const ctx = cv.getContext("2d");
+  const rnd = prng(4242);
+  for (let gy = 0; gy < cells; gy++) {
+    for (let gx = 0; gx < cells; gx++) {
+      const n = noise2(gx * 0.45 + 5, gy * 0.45 + 5);
+      const r = rnd();
+      const x0 = gx * cell, y0 = gy * cell;
+      if (n < 0.32) continue;                                   // leave ink
+      ctx.fillStyle = cream;
+      if (n > 0.72 && r < 0.7) { ctx.fillRect(x0, y0, cell, cell); continue; }
+      if (r < 0.45) {                                           // fine checker
+        for (let y = 0; y < cell; y++)
+          for (let x = 0; x < cell; x++)
+            if ((x + y) % 2 === 0) ctx.fillRect(x0 + x, y0 + y, 1, 1);
+      } else if (r < 0.8) {                                     // stripes
+        for (let y = 0; y < cell; y += 2) ctx.fillRect(x0, y0 + y, cell, 1);
+      } else {                                                  // coarse checker
+        for (let y = 0; y < cell; y += 4)
+          for (let x = 0; x < cell; x += 4)
+            if (((x + y) / 4) % 2 === 0) ctx.fillRect(x0 + x, y0 + y, 4, 4);
+      }
+    }
+  }
+})();
+
+/* marquee */
+(function () {
+  const el = document.getElementById("marquee");
+  if (!el) return;
+  const unit = "MARATHON /// EVERY MILE TELLS A STORY /// KM 42.195 /// ©MR26 /// ";
+  el.textContent = (unit.repeat(6) + unit.repeat(6));
+})();
+</script>
+</body>
+</html>

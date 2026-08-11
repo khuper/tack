@@ -28,7 +28,7 @@ import {
   getShortRef,
 } from "../lib/git.js";
 import { getProjectName } from "../lib/project.js";
-import { wrapUntrustedContext } from "../lib/promptSafety.js";
+import { sanitizeUntrustedLine, wrapUntrustedContext } from "../lib/promptSafety.js";
 export { getChangedFiles, filterChangedPaths } from "../lib/git.js";
 import type {
   ContextQuestion,
@@ -66,6 +66,18 @@ function readNonEmptyString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/**
+ * Same as `readNonEmptyString`, but for values read back from an on-disk handoff.
+ * Those files are project data an attacker can edit or commit, so identifiers and
+ * timestamps are sanitized before they are handed to an agent.
+ */
+function readUntrustedString(value: unknown): string | null {
+  const raw = readNonEmptyString(value);
+  if (raw === null) return null;
+  const sanitized = sanitizeUntrustedLine(raw, 200);
+  return sanitized.length > 0 ? sanitized : null;
+}
+
 function timestampIdFromIso(iso: string): string {
   return iso.replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
 }
@@ -96,7 +108,7 @@ function handoffLabel(branch: string): string {
 }
 
 function normalizeHandoffTarget(to?: unknown): string | null {
-  return readNonEmptyString(to) ?? null;
+  return readUntrustedString(to) ?? null;
 }
 
 function isLifecycleStatus(value: unknown): value is HandoffLifecycleStatus {
@@ -117,25 +129,25 @@ export function normalizeHandoffReport(
     return null;
   }
 
-  const generatedAt = readNonEmptyString(value.generated_at) ?? fallback.generatedAt ?? new Date(0).toISOString();
+  const generatedAt = readUntrustedString(value.generated_at) ?? fallback.generatedAt ?? new Date(0).toISOString();
   const handoff = isRecord(value.handoff) ? value.handoff : {};
   const lifecycle = isRecord(handoff.lifecycle) ? handoff.lifecycle : {};
-  const createdAt = readNonEmptyString(lifecycle.created_at) ?? generatedAt;
-  const updatedAt = readNonEmptyString(lifecycle.updated_at) ?? createdAt;
+  const createdAt = readUntrustedString(lifecycle.created_at) ?? generatedAt;
+  const updatedAt = readUntrustedString(lifecycle.updated_at) ?? createdAt;
 
   return {
     ...value,
     handoff: {
       ...handoff,
-      id: readNonEmptyString(handoff.id) ?? fallback.handoffId,
+      id: readUntrustedString(handoff.id) ?? fallback.handoffId,
       to: normalizeHandoffTarget(handoff.to),
       lifecycle: {
         ...lifecycle,
         status: isLifecycleStatus(lifecycle.status) ? lifecycle.status : "open",
         created_at: createdAt,
         updated_at: updatedAt,
-        pickup_at: readNonEmptyString(lifecycle.pickup_at),
-        pickup_by: readNonEmptyString(lifecycle.pickup_by),
+        pickup_at: readUntrustedString(lifecycle.pickup_at),
+        pickup_by: readUntrustedString(lifecycle.pickup_by),
       },
     },
   };

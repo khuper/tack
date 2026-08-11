@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, renameSync } from "node:fs";
 import * as path from "node:path";
-import { handoffsDirPath } from "../lib/files.js";
+import { assertNotSymlink, handoffsDirPath } from "../lib/files.js";
 import { log } from "../lib/logger.js";
 
 /**
@@ -9,9 +9,12 @@ import { log } from "../lib/logger.js";
  */
 export function archiveOldHandoffs(keepRecent = 10): void {
   const handoffsDir = handoffsDirPath();
+  // A symlinked handoffs/ directory would move repo state outside the .tack boundary.
+  assertNotSymlink(handoffsDir);
   if (!existsSync(handoffsDir)) return;
 
   const entries = readdirSync(handoffsDir, { withFileTypes: true });
+  // `isFile()` is lstat-based, so symlinked handoff entries are skipped rather than moved.
   const files = entries
     .filter((e) => e.isFile() && (e.name.endsWith(".json") || e.name.endsWith(".md")))
     .map((e) => e.name);
@@ -31,6 +34,7 @@ export function archiveOldHandoffs(keepRecent = 10): void {
   if (toArchive.length === 0) return;
 
   const archiveDir = path.join(handoffsDir, "archive");
+  assertNotSymlink(archiveDir);
   mkdirSync(archiveDir, { recursive: true });
 
   let archivedCount = 0;

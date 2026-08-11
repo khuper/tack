@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -226,14 +227,159 @@ function ensurePrivateLocalStateIgnored(): void {
   }
 }
 
+const WRITE_BLOCKED_PREFIX = "WRITE BLOCKED";
+
+function normalizePathCase(target: string): string {
+  return process.platform === "win32" ? target.toLowerCase() : target;
+}
+
+/** True when `child` is `parent` or lives underneath it (no lexical `..` escapes). */
+function isPathInside(child: string, parent: string): boolean {
+  const relative = path.relative(normalizePathCase(parent), normalizePathCase(child));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function pathEntryExists(target: string): boolean {
+  try {
+    fs.lstatSync(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Throws when `target` exists and is a symlink.
+ *
+ * Git stores symlinks (mode 120000), so a cloned repo can ship `.tack/` or
+ * `.tack/handoffs/` as a link pointing anywhere on disk. Writes follow those links,
+ * so Tack refuses to use them at all.
+ */
+export function assertNotSymlink(target: string): void {
+  let stats: fs.Stats;
+  try {
+    stats = fs.lstatSync(target);
+  } catch {
+    return; // Missing entries are fine; Tack creates them itself.
+  }
+
+  if (stats.isSymbolicLink()) {
+    throw new Error(
+      `${WRITE_BLOCKED_PREFIX}: "${target}" is a symlink. ` +
+        "Tack never writes through symlinks inside .tack/ because a checked-in symlink can redirect writes " +
+        "outside the repository. Delete it and let Tack recreate a real file or directory."
+    );
+  }
+}
+
+/** Rejects a symlink at `root` or at any path segment between `root` and `target`. */
+function assertNoSymlinkComponents(root: string, target: string): void {
+  assertNotSymlink(root);
+
+  const relative = path.relative(root, target);
+  if (relative.length === 0) return;
+
+  let current = root;
+  for (const segment of relative.split(path.sep)) {
+    if (segment.length === 0) continue;
+    current = path.join(current, segment);
+    assertNotSymlink(current);
+  }
+}
+
+/** Deepest ancestor of `target` (including itself) that currently exists on disk. */
+function deepestExistingPath(target: string): string {
+  let current = path.resolve(target);
+  while (!pathEntryExists(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) return current;
+    current = parent;
+  }
+  return current;
+}
+
+/**
+ * Real on-disk path `target` would resolve to, resolving symlinks on the part of the
+ * path that already exists and appending the segments Tack would create.
+ */
+function realPathForWrite(target: string): string {
+  const resolved = path.resolve(target);
+  const existing = deepestExistingPath(resolved);
+
+  let realExisting: string;
+  try {
+    realExisting = fs.realpathSync(existing);
+  } catch {
+    throw new Error(
+      `${WRITE_BLOCKED_PREFIX}: "${resolved}" cannot be resolved to a real path ` +
+        `(a broken symlink or removed directory at "${existing}"). Fix or delete that entry and retry.`
+    );
+  }
+
+  const remainder = path.relative(existing, resolved);
+  return remainder.length > 0 ? path.join(realExisting, remainder) : realExisting;
+}
+
 function assertInsideTackDir(filepath: string): void {
   const resolved = path.resolve(filepath);
   const tackDir = getTackDir();
-  if (!resolved.startsWith(tackDir + path.sep) && resolved !== tackDir) {
+
+  if (!isPathInside(resolved, tackDir)) {
     throw new Error(
-      `WRITE BLOCKED: "${resolved}" is outside /.tack/ directory. ` +
+      `${WRITE_BLOCKED_PREFIX}: "${resolved}" is outside the .tack/ directory. ` +
         `Tack only writes to ${tackDir}. This is a bug — report it.`
     );
+  }
+
+  // Lexical containment is not enough: writes follow symlinks, the check does not.
+  assertNoSymlinkComponents(tackDir, resolved);
+
+  const realTackDir = realPathForWrite(tackDir);
+  const realTarget = realPathForWrite(resolved);
+  if (!isPathInside(realTarget, realTackDir)) {
+    throw new Error(
+      `${WRITE_BLOCKED_PREFIX}: "${resolved}" really resolves to "${realTarget}", which is outside ` +
+        `"${realTackDir}". Something inside .tack/ is redirecting writes out of the repository. ` +
+        "Inspect .tack/ for symlinks, remove them, and retry."
+    );
+  }
+}
+
+function isWriteBlockedError(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith(WRITE_BLOCKED_PREFIX);
+}
+
+/**
+ * Writes `content` by creating a sibling temp file and renaming it over `filepath`.
+ * `rename(2)` is atomic within a directory, so a crash or a concurrent agent can never
+ * observe a torn or truncated `.tack/` state file. No cross-process locking is implied:
+ * concurrent writers still race, but each reader sees one complete version.
+ */
+function writeFileAtomic(filepath: string, content: string): void {
+  const dir = path.dirname(filepath);
+  const suffix = `${process.pid}-${crypto.randomBytes(4).toString("hex")}`;
+  const tempPath = path.join(dir, `.${path.basename(filepath)}.${suffix}.tmp`);
+
+  let existingMode: number | null = null;
+  try {
+    existingMode = fs.statSync(filepath).mode;
+  } catch {
+    // No existing file: the temp file keeps the default mode.
+  }
+
+  try {
+    fs.writeFileSync(tempPath, content, "utf-8");
+    if (existingMode !== null) {
+      fs.chmodSync(tempPath, existingMode);
+    }
+    fs.renameSync(tempPath, filepath);
+  } catch (err) {
+    try {
+      fs.rmSync(tempPath, { force: true });
+    } catch {
+      // Best-effort cleanup only.
+    }
+    throw err;
   }
 }
 
@@ -245,8 +391,9 @@ export function writeSafe(filepath: string, content: string): void {
       assertInsideTackDir(dir);
       fs.mkdirSync(dir, { recursive: true });
     }
-    fs.writeFileSync(filepath, content, "utf-8");
+    writeFileAtomic(filepath, content);
   } catch (err) {
+    if (isWriteBlockedError(err)) throw err;
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes("EACCES") || message.includes("EPERM")) {
       throw new Error(`Permission denied writing ${filepath}. Check .tack permissions.`);
@@ -268,6 +415,7 @@ export function appendSafe(filepath: string, content: string): void {
     }
     fs.appendFileSync(filepath, content, "utf-8");
   } catch (err) {
+    if (isWriteBlockedError(err)) throw err;
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes("EACCES") || message.includes("EPERM")) {
       throw new Error(`Permission denied writing ${filepath}. Check .tack permissions.`);
@@ -282,6 +430,7 @@ export function appendSafe(filepath: string, content: string): void {
 export function ensureTackDir(): void {
   migrateLegacyDirIfNeeded();
   const tackDir = getTackDir();
+  assertNotSymlink(tackDir);
   if (!fs.existsSync(tackDir)) {
     fs.mkdirSync(tackDir, { recursive: true });
   }
@@ -289,6 +438,7 @@ export function ensureTackDir(): void {
   ensurePrivateLocalStateIgnored();
 
   const handoffsDir = path.join(tackDir, "handoffs");
+  assertNotSymlink(handoffsDir);
   if (!fs.existsSync(handoffsDir)) {
     fs.mkdirSync(handoffsDir, { recursive: true });
   }

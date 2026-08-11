@@ -412,7 +412,12 @@ async function main(): Promise<void> {
             contents: [
               {
                 uri: uri.href,
-                text: `${JSON.stringify(normalized, null, 2)}\n`,
+                // Handoff JSON is project data an attacker can commit, so it gets the
+                // same untrusted-context wrapper as every other .tack-derived resource.
+                text: wrapUntrustedContext(
+                  `${JSON.stringify(normalized, null, 2)}\n`,
+                  "tack://handoff/latest"
+                ),
               },
             ],
           };
@@ -425,7 +430,7 @@ async function main(): Promise<void> {
         contents: [
           {
             uri: uri.href,
-            text,
+            text: wrapUntrustedContext(text, "tack://handoff/latest"),
           },
         ],
       };

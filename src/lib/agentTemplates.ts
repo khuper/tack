@@ -1,6 +1,6 @@
 import * as path from "node:path";
 
-export type AgentTarget = "claude" | "codex" | "generic";
+export type AgentTarget = "claude" | "codex" | "gemini" | "generic";
 export type AgentTargetDefinition = {
   key: AgentTarget;
   aliases: string[];
@@ -22,10 +22,29 @@ const AGENT_TARGET_DEFINITIONS: AgentTargetDefinition[] = [
   },
   {
     key: "codex",
-    aliases: ["codex", "cursor", "cline", "windsurf", "continue"],
+    aliases: [
+      "codex",
+      "cursor",
+      "cline",
+      "windsurf",
+      "continue",
+      "opencode",
+      "copilot",
+      "vscode",
+      "zed",
+      "amp",
+      "jules",
+    ],
     destinationPath: (repoRoot) => path.join(repoRoot, "AGENTS.md"),
     sharedFile: true,
-    description: "AGENTS.md startup instructions for Codex-compatible agents",
+    description: "AGENTS.md startup instructions for every agent that reads the AGENTS.md standard",
+  },
+  {
+    key: "gemini",
+    aliases: ["gemini", "gemini-cli"],
+    destinationPath: (repoRoot) => path.join(repoRoot, "GEMINI.md"),
+    sharedFile: true,
+    description: "Gemini CLI startup instructions in GEMINI.md",
   },
   {
     key: "generic",
@@ -40,6 +59,8 @@ const TEMPLATE = [
   "# Tack Workflow",
   "",
   "You have access to the Tack MCP server. It is the project's working memory across sessions.",
+  "",
+  "If the Tack MCP server is not connected, run `tack setup-mcp` from the project root and restart this client.",
   "",
   "## Start",
   "",

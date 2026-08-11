@@ -14,13 +14,37 @@ import {
   replaceBlock,
 } from "../lib/agentTemplates.js";
 import type { AgentTarget } from "../lib/agentTemplates.js";
+import {
+  applyMcpConfig,
+  detectMcpClients,
+  getAvailableMcpClientAliases,
+  getAvailableMcpClients,
+  getMcpConfigPath,
+  listMcpClients,
+  renderMcpSnippet,
+  resolveMcpClient,
+} from "../lib/mcpConfig.js";
+import type { McpClientKey, McpConfigOptions, McpConfigResult, McpServerRunner } from "../lib/mcpConfig.js";
 
 type SetupAgentArgs = {
   _: string[];
   target?: string;
   force?: boolean;
   list?: boolean;
+  mcp?: boolean;
+  runner?: string;
 };
+
+type SetupMcpArgs = {
+  _: string[];
+  client?: string | string[];
+  all?: boolean;
+  list?: boolean;
+  runner?: string;
+  "dry-run"?: boolean;
+};
+
+const DEFAULT_MCP_CLIENT: McpClientKey = "claude-code";
 
 function printSetupAgentUsage(): void {
   const targets = listAgentTargets();
@@ -31,19 +55,54 @@ function printSetupAgentUsage(): void {
       "  tack setup-agent --target claude",
       "  tack setup-agent --target codex",
       "  tack setup-agent --target cursor",
+      "  tack setup-agent --target gemini",
       "  tack setup-agent --target generic",
+      "  tack setup-agent --no-mcp",
+      "  tack setup-agent --runner tack",
       "  tack setup-agent --list",
       "",
       "Default behavior:",
       "  - update any supported agent files already present in the repo",
       "  - always maintain the generic fallback in .tack/AGENT.md",
       "  - if no agent files exist yet, bootstrap AGENTS.md, CLAUDE.md, and .tack/AGENT.md",
+      "  - merge the Tack MCP server into project MCP config (see tack setup-mcp), unless --no-mcp",
       "",
       `Canonical targets: ${getAvailableTargets().join(", ")}`,
       `All target names: ${getAvailableTargetAliases().join(", ")}`,
       "",
       "Target details:",
       ...targets.map((target) => `  - ${target.aliases.join(", ")} -> ${path.basename(getDestinationPath(target.key, "."))} (${target.description})`),
+    ].join("\n")
+  );
+}
+
+function printSetupMcpUsage(): void {
+  const clients = listMcpClients();
+  console.log(
+    [
+      "Usage:",
+      "  tack setup-mcp",
+      "  tack setup-mcp --client claude",
+      "  tack setup-mcp --client cursor --client codex",
+      "  tack setup-mcp --all",
+      "  tack setup-mcp --runner tack",
+      "  tack setup-mcp --dry-run",
+      "  tack setup-mcp --list",
+      "",
+      "Default behavior:",
+      "  - update project MCP config files already present in the repo",
+      "  - if none exist yet, create .mcp.json for Claude Code",
+      "  - only the `tack` server entry is touched; every other entry is preserved",
+      "",
+      "Runner:",
+      "  --runner npx (default)  npx -y tack-cli mcp",
+      "  --runner tack           tack mcp (requires tack on PATH)",
+      "",
+      `Canonical clients: ${getAvailableMcpClients().join(", ")}`,
+      `All client names: ${getAvailableMcpClientAliases().join(", ")}`,
+      "",
+      "Client details:",
+      ...clients.map((client) => `  - ${client.aliases.join(", ")} -> ${client.configPath(".").replace(/^\.[\\/]/, "")} (${client.description})`),
     ].join("\n")
   );
 }
@@ -169,11 +228,98 @@ function printSetupSummary(results: SetupAgentResult[]): void {
   for (const result of sorted) {
     console.log(`- ${result.status.padEnd(9)} ${result.destinationLabel}`);
   }
+}
+
+function printTrustLoopProof(): void {
   console.log("");
   console.log("Canonical trust-loop proof:");
   console.log("1. Keep `tack watch` open in one terminal");
   console.log("2. Start your MCP server with `TACK_AGENT_NAME=<agent> tack mcp` in another");
   console.log("3. Look for `READY`, then `READ`, then `WRITE` in watch output");
+}
+
+function resolveRunner(value: unknown): McpServerRunner {
+  if (value === undefined) {
+    return "npx";
+  }
+
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (normalized === "npx" || normalized === "tack") {
+    return normalized;
+  }
+
+  throw new Error(`Unknown runner: "${String(value)}". Use --runner npx or --runner tack.`);
+}
+
+function parseClientArg(value: string | string[] | undefined): string[] {
+  if (value === undefined) {
+    return [];
+  }
+
+  const raw = Array.isArray(value) ? value : [value];
+  return raw
+    .flatMap((entry) => String(entry).split(","))
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+function resolveRequestedClients(requested: string[]): McpClientKey[] {
+  const resolved: McpClientKey[] = [];
+
+  for (const name of requested) {
+    const client = resolveMcpClient(name);
+    if (!client) {
+      throw new Error(`Unknown MCP client: "${name}". Available clients: ${getAvailableMcpClientAliases().join(", ")}`);
+    }
+    if (!resolved.includes(client)) {
+      resolved.push(client);
+    }
+  }
+
+  return resolved;
+}
+
+function detectDefaultClients(repoRoot: string, targetArg?: string): McpClientKey[] {
+  const clients = detectMcpClients(repoRoot);
+  const implied = targetArg ? resolveMcpClient(targetArg) : null;
+
+  if (implied && !clients.includes(implied)) {
+    clients.push(implied);
+  }
+
+  if (clients.length === 0) {
+    clients.push(DEFAULT_MCP_CLIENT);
+  }
+
+  return clients;
+}
+
+function printMcpSummary(results: McpConfigResult[], options: McpConfigOptions): void {
+  const sorted = [...results].sort((a, b) => a.configLabel.localeCompare(b.configLabel));
+  console.log("");
+  console.log(options.dryRun === true ? "Planned project MCP config (dry run):" : "Configured project MCP config:");
+  for (const result of sorted) {
+    console.log(`- ${result.status.padEnd(9)} ${result.configLabel}`);
+  }
+
+  for (const result of sorted) {
+    if (result.status !== "manual") {
+      continue;
+    }
+    console.log("");
+    console.log(result.detail ?? `Could not update ${result.configLabel} automatically.`);
+    console.log(`Add this to ${result.configLabel}:`);
+    console.log(renderMcpSnippet(result.client, options));
+  }
+
+  if (options.dryRun !== true && sorted.some((result) => result.status !== "manual")) {
+    console.log("");
+    console.log("Commit these config files so every teammate connects to the same Tack MCP server.");
+  }
+}
+
+function applyMcpClients(clients: McpClientKey[], repoRoot: string, options: McpConfigOptions): McpConfigResult[] {
+  return clients.map((client) => applyMcpConfig(client, repoRoot, options));
 }
 
 export function runSetupAgent(args: SetupAgentArgs, version: string): number {
@@ -198,12 +344,56 @@ export function runSetupAgent(args: SetupAgentArgs, version: string): number {
   }
 
   try {
+    const runner = resolveRunner(args.runner);
     const targets = resolvedTarget ? [resolvedTarget] : detectDefaultTargets(repoRoot);
     for (const target of targets) {
       validateTargetBeforeWrite(target, repoRoot, args.force === true);
     }
     const results = targets.map((target) => applyInstructionsToTarget(target, repoRoot, block, args.force === true));
     printSetupSummary(results);
+
+    if (args.mcp !== false) {
+      const options: McpConfigOptions = { runner };
+      const clients = detectDefaultClients(repoRoot, targetArg);
+      printMcpSummary(applyMcpClients(clients, repoRoot, options), options);
+    }
+
+    printTrustLoopProof();
+    return 0;
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+}
+
+export function runSetupMcp(args: SetupMcpArgs): number {
+  if (args.list !== undefined) {
+    printSetupMcpUsage();
+    return 0;
+  }
+
+  if (!tackDirExists()) {
+    console.error("No .tack/ directory found. Run tack init first.");
+    return 1;
+  }
+
+  const repoRoot = findProjectRoot();
+
+  try {
+    const options: McpConfigOptions = { runner: resolveRunner(args.runner), dryRun: args["dry-run"] === true };
+    const requested = resolveRequestedClients(parseClientArg(args.client));
+    const clients =
+      args.all === true ? getAvailableMcpClients() : requested.length > 0 ? requested : detectDefaultClients(repoRoot);
+
+    const results = applyMcpClients(clients, repoRoot, options);
+    printMcpSummary(results, options);
+
+    if (options.dryRun !== true) {
+      console.log("");
+      console.log("Restart your client, then confirm the `tack` server is connected.");
+      console.log(`Config paths: ${clients.map((client) => path.relative(repoRoot, getMcpConfigPath(client, repoRoot))).join(", ")}`);
+    }
+
     return 0;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

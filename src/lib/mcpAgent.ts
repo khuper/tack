@@ -18,6 +18,11 @@ const KNOWN_MCP_AGENT_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /\broo(?:[\s-]?code)?\b/, label: "roo" },
   { pattern: /\bwindsurf\b/, label: "windsurf" },
   { pattern: /\bcontinue\b/, label: "continue" },
+  { pattern: /\bgemini(?:[\s-]?cli)?\b/, label: "gemini" },
+  { pattern: /\bopencode\b/, label: "opencode" },
+  { pattern: /\b(?:github[\s-]?)?copilot\b/, label: "copilot" },
+  { pattern: /\bzed\b/, label: "zed" },
+  { pattern: /\bamp\b/, label: "amp" },
 ];
 
 export function normalizeMcpAgentName(value: string | null | undefined): string {

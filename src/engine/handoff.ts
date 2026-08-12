@@ -380,7 +380,7 @@ function toMarkdown(report: HandoffReport): string {
   lines.push("  tack://context/facts            Implementation status and spec guardrails");
   lines.push("  tack://context/decisions_recent Recent decisions summary");
   lines.push("  tack://context/machine_state    Raw _audit.yaml and _drift.yaml for deep inspection");
-  lines.push("  tack://handoff/latest           Latest handoff JSON (canonical)");
+  lines.push("  tack://handoff/latest           Latest handoff (wrapped text; do not JSON.parse the body)");
   lines.push("");
   lines.push("Write back using MCP tools:");
   for (const toolName of ["checkpoint_work", "check_rule", "log_decision", "log_agent_note"]) {

@@ -289,9 +289,39 @@ export function assertNotSymlink(target: string): void {
   );
 }
 
+/**
+ * Throws when `target` is a symlink, regardless of where it points.
+ *
+ * The in-project allowance in `assertNotSymlink` is safe only for paths *beneath* a real
+ * `.tack/` directory, where the realpath containment check in `assertInsideTackDir` can
+ * still enforce the boundary. For the boundary roots themselves (`.tack/`,
+ * `.tack/handoffs/`) that check is circular — it derives the "real" boundary by following
+ * the very link being checked — so a checked-in `.tack -> .git` would redirect every
+ * write onto real repo files. Boundary roots must therefore be real directories, full stop.
+ * The same applies to NDJSON rotation, which rewrites the whole file in place.
+ */
+export function assertNotSymlinkStrict(target: string): void {
+  let stats: fs.Stats;
+  try {
+    stats = fs.lstatSync(target);
+  } catch {
+    return; // Missing entries are fine; Tack creates them itself.
+  }
+
+  if (!stats.isSymbolicLink()) return;
+
+  throw new Error(
+    `${WRITE_BLOCKED_PREFIX}: "${target}" is a symlink, and Tack requires this path to be a real ` +
+      "file or directory because writes here would follow the link. Delete the symlink and let " +
+      "Tack recreate it."
+  );
+}
+
 /** Rejects a symlink at `root` or at any path segment between `root` and `target`. */
 function assertNoSymlinkComponents(root: string, target: string): void {
-  assertNotSymlink(root);
+  // The boundary root itself must be a real directory (see assertNotSymlinkStrict);
+  // the in-project allowance below only holds for segments beneath it.
+  assertNotSymlinkStrict(root);
 
   const relative = path.relative(root, target);
   if (relative.length === 0) return;
@@ -425,8 +455,11 @@ function renameIntoPlace(tempPath: string, filepath: string, content: string): v
  * fsynced, so power loss or a kernel panic can still leave the file zero-length or lose
  * the rename entirely. No cross-process locking is implied either: concurrent writers
  * still race, but each reader sees one complete version.
+ *
+ * Exported for writers that must be atomic but live outside the `.tack/` boundary
+ * (e.g. MCP client config files); `writeSafe` is the guarded `.tack/`-only wrapper.
  */
-function writeFileAtomic(filepath: string, content: string): void {
+export function writeFileAtomic(filepath: string, content: string): void {
   const dir = path.dirname(filepath);
   const suffix = `${process.pid}-${crypto.randomBytes(4).toString("hex")}`;
   const tempPath = path.join(dir, `.${path.basename(filepath)}.${suffix}.tmp`);
@@ -501,7 +534,7 @@ export function appendSafe(filepath: string, content: string): void {
 export function ensureTackDir(): void {
   migrateLegacyDirIfNeeded();
   const tackDir = getTackDir();
-  assertNotSymlink(tackDir);
+  assertNotSymlinkStrict(tackDir);
   if (!fs.existsSync(tackDir)) {
     fs.mkdirSync(tackDir, { recursive: true });
   }
@@ -509,7 +542,7 @@ export function ensureTackDir(): void {
   ensurePrivateLocalStateIgnored();
 
   const handoffsDir = path.join(tackDir, "handoffs");
-  assertNotSymlink(handoffsDir);
+  assertNotSymlinkStrict(handoffsDir);
   if (!fs.existsSync(handoffsDir)) {
     fs.mkdirSync(handoffsDir, { recursive: true });
   }
@@ -722,6 +755,17 @@ export function readDriftWithError(): { state: DriftState; error: string | null 
   if (error) return { state: { items: [] }, error };
   const validated = validateDriftState(data);
   emitValidationWarnings("_drift.yaml", validated.warnings);
+  // A lossy read parsed fine but held content this version cannot represent (e.g. a file
+  // written by a newer Tack). Rewriting it would silently delete that content, so it is
+  // reported as an error just like a parse failure: readable, but never persisted over.
+  if (validated.lossy) {
+    return {
+      state: validated.data,
+      error:
+        "_drift.yaml holds entries this version of Tack does not recognize; " +
+        "they would be lost on rewrite",
+    };
+  }
   return { state: validated.data, error: null };
 }
 
@@ -741,6 +785,10 @@ export function quarantineCorruptDrift(): string | null {
   const backup = `${source}.corrupt`;
   try {
     if (!fs.existsSync(source)) return null;
+    // Never overwrite an existing backup: the watch loop calls this on every scan, and a
+    // later, differently-corrupt file must not replace the copy that still holds the
+    // accepted/rejected resolutions this function exists to preserve.
+    if (fs.existsSync(backup)) return backup;
     assertInsideTackDir(backup);
     fs.copyFileSync(source, backup);
     return backup;

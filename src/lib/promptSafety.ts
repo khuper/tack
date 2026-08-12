@@ -15,12 +15,17 @@ const MAX_UNTRUSTED_LINE_LENGTH = 500;
  * hidden instruction payload no human reviewing the repo can see.
  *
  * - U+00AD soft hyphen, U+180E Mongolian vowel separator
+ * - U+061C Arabic letter mark (a bidi control in the same family as U+200E/200F)
  * - U+200B..U+200D zero-width space/non-joiner/joiner, U+FEFF byte order mark
  * - U+200E, U+200F, U+202A..U+202E, U+2066..U+2069 bidi marks, embeddings, overrides and isolates
- * - U+2060..U+2064 word joiner and the invisible math operators
+ * - U+2060..U+2065 word joiner and the invisible math operators
+ * - U+3164, U+FFA0 Hangul fillers, which render as blank glyphs
+ * - U+FE00..U+FE0F and U+E0100..U+E01EF variation selectors: one invisible byte each,
+ *   currently the primary ASCII-smuggling carrier (this also strips emoji presentation
+ *   selectors from untrusted text, which is an accepted cosmetic cost)
  * - U+E0000..U+E007F the Unicode Tags block, which mirrors printable ASCII 1:1 ("ASCII smuggling")
  */
-const INVISIBLE_CHARACTERS = /[\u00ad\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]|[\u{e0000}-\u{e007f}]/gu;
+const INVISIBLE_CHARACTERS = /[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2065\u2066-\u2069\u3164\ufe00-\ufe0f\uffa0\ufeff]|[\u{e0000}-\u{e007f}]|[\u{e0100}-\u{e01ef}]/gu;
 
 /**
  * Line terminators that are not ASCII newlines: U+0085 NEL, U+2028 LINE SEPARATOR and
@@ -74,8 +79,13 @@ export function sanitizeUntrustedLine(input: string, maxLength = MAX_UNTRUSTED_L
     .replace(/\s+/g, " ")
     .trim();
   // The ellipsis has to fit inside the budget, otherwise the result is maxLength + 2.
+  // Budgets of 3 or fewer characters cannot fit an ellipsis at all, so just cut.
   const clipped =
-    collapsed.length > maxLength ? `${collapsed.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...` : collapsed;
+    collapsed.length <= maxLength
+      ? collapsed
+      : maxLength <= 3
+        ? collapsed.slice(0, Math.max(0, maxLength))
+        : `${collapsed.slice(0, maxLength - 3).trimEnd()}...`;
   return neutralizeUntrustedBoundary(clipped);
 }
 
@@ -86,10 +96,12 @@ export function sanitizeUntrustedLine(input: string, maxLength = MAX_UNTRUSTED_L
  * then defangs the wrapper tags.
  */
 export function sanitizeUntrustedBlock(content: string): string {
-  const withoutControl = stripInvisible(normalizeUnicode(String(content))).replace(
-    /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g,
-    " "
-  );
+  // CR is a line terminator to terminals and to any consumer splitting on /\r\n?|\n/,
+  // so normalize CRLF and lone CR to LF before stripping: Tack's view of the line
+  // structure then matches every consumer's, and CR can't forge lines LF couldn't.
+  const withoutControl = stripInvisible(normalizeUnicode(String(content)))
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]/g, " ");
   return neutralizeUntrustedBoundary(withoutControl);
 }
 

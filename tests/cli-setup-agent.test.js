@@ -301,15 +301,14 @@ test("setup-mcp creates .mcp.json by default and reruns as unchanged", () => {
     const first = captureOutput(() => runSetupMcp({ _: ["setup-mcp"] }));
     assert.strictEqual(first.code, 0);
     assert.match(first.stdout, /installed\s+\.mcp\.json/);
+    const afterFirstRun = fs.readFileSync(path.join(tmpDir, ".mcp.json"), "utf-8");
 
     const second = captureOutput(() => runSetupMcp({ _: ["setup-mcp"] }));
     assert.strictEqual(second.code, 0);
     assert.match(second.stdout, /unchanged\s+\.mcp\.json/);
 
-    assert.strictEqual(
-      fs.readFileSync(path.join(tmpDir, ".mcp.json"), "utf-8"),
-      fs.readFileSync(path.join(tmpDir, ".mcp.json"), "utf-8")
-    );
+    // The second run must leave the file byte-identical to the first.
+    assert.strictEqual(fs.readFileSync(path.join(tmpDir, ".mcp.json"), "utf-8"), afterFirstRun);
   });
 });
 

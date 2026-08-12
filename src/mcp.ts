@@ -490,10 +490,15 @@ async function main(): Promise<void> {
           contents: [
             {
               uri: uri.href,
-              text: JSON.stringify(
-                { error: "No handoff JSON files found in .tack/handoffs/." },
-                null,
-                2
+              // Even the no-handoff notice keeps the wrapper so this resource's body
+              // shape is uniform: always wrapper text, never bare parseable JSON.
+              text: wrapUntrustedContext(
+                JSON.stringify(
+                  { error: "No handoff JSON files found in .tack/handoffs/." },
+                  null,
+                  2
+                ),
+                "tack://handoff/latest"
               ),
             },
           ],
@@ -1027,22 +1032,28 @@ async function main(): Promise<void> {
   );
 
   const transport = new StdioServerTransport();
+  // Identity is resolved when initialization completes, not right after connect():
+  // for stdio, connect() resolves as soon as the transport starts listening, before the
+  // client's `initialize` request has arrived, so getClientVersion() would still be
+  // undefined and clientInfo-derived names (source: "client") could never be honored.
+  server.server.oninitialized = () => {
+    mcpAgentIdentity = resolveMcpAgentIdentity(process.env.TACK_AGENT_NAME, server.server.getClientVersion());
+    log({
+      event: "mcp:ready",
+      transport: "stdio",
+      agent: mcpAgentIdentity.name,
+      agent_type: mcpAgentIdentity.name,
+      session_id: mcpSessionId,
+    });
+    mcpReadyLogged = true;
+    announceMcpReady(mcpAgentIdentity.name, mcpSessionId);
+  };
   await server.connect(transport);
-  mcpAgentIdentity = resolveMcpAgentIdentity(process.env.TACK_AGENT_NAME, server.server.getClientVersion());
-  log({
-    event: "mcp:ready",
-    transport: "stdio",
-    agent: mcpAgentIdentity.name,
-    agent_type: mcpAgentIdentity.name,
-    session_id: mcpSessionId,
-  });
-  mcpReadyLogged = true;
   process.once("SIGINT", () => logMcpDisconnect());
   process.once("SIGTERM", () => logMcpDisconnect());
   process.once("beforeExit", () => logMcpDisconnect());
   process.stdin.once("end", () => logMcpDisconnect());
   process.stdin.once("close", () => logMcpDisconnect());
-  announceMcpReady(mcpAgentIdentity.name, mcpSessionId);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-floating-promises

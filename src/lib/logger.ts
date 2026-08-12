@@ -73,8 +73,10 @@ export function log(event: LogEventInput): void {
     ts: new Date().toISOString(),
     ...event,
   } as LogEvent;
-  const filepath = logsPath();
   try {
+    // logsPath() -> ensureTackDir() can itself throw WRITE BLOCKED (a symlinked .tack/),
+    // so it has to sit inside the same guard as the writes.
+    const filepath = logsPath();
     // Rotation rewrites the whole file, so it goes through the same guarded writer as
     // the append. Without this it was the one write path that bypassed the .tack/ boundary.
     rotateNdjsonFile(filepath, LOG_MAX_BYTES, LOG_KEEP_LINES, writeSafe);

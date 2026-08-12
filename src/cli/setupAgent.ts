@@ -36,6 +36,7 @@ type SetupAgentArgs = {
   mcp?: boolean;
   runner?: string;
   windows?: boolean;
+  platform?: string;
 };
 
 type SetupMcpArgs = {
@@ -45,6 +46,7 @@ type SetupMcpArgs = {
   list?: boolean;
   runner?: string;
   windows?: boolean;
+  platform?: string;
   "dry-run"?: boolean;
 };
 
@@ -63,7 +65,7 @@ function printSetupAgentUsage(): void {
       "  tack setup-agent --target generic",
       "  tack setup-agent --no-mcp",
       "  tack setup-agent --runner tack",
-      "  tack setup-agent --windows",
+      "  tack setup-agent --platform win32|posix (--windows is an alias for --platform win32)",
       "  tack setup-agent --list",
       "",
       "Default behavior:",
@@ -91,7 +93,7 @@ function printSetupMcpUsage(): void {
       "  tack setup-mcp --client cursor --client codex",
       "  tack setup-mcp --all",
       "  tack setup-mcp --runner tack",
-      "  tack setup-mcp --windows",
+      "  tack setup-mcp --platform win32|posix (--windows is an alias for --platform win32)",
       "  tack setup-mcp --dry-run",
       "  tack setup-mcp --list",
       "",
@@ -106,8 +108,8 @@ function printSetupMcpUsage(): void {
       "",
       "Platform:",
       "  entries are generated for the current platform; on Windows the command is wrapped",
-      "  in `cmd /c` so the npx/tack .cmd shims resolve. Pass --windows to generate the",
-      "  Windows form from macOS or Linux.",
+      "  in `cmd /c` so the npx/tack .cmd shims resolve. Pass --platform win32 or",
+      "  --platform posix to generate either form deterministically from any machine.",
       "",
       `Canonical clients: ${getAvailableMcpClients().join(", ")}`,
       `All client names: ${getAvailableMcpClientAliases().join(", ")}`,
@@ -262,7 +264,23 @@ function resolveRunner(value: unknown): McpServerRunner {
   throw new Error(`Unknown runner: "${String(value)}". Use --runner npx or --runner tack.`);
 }
 
-function resolvePlatformFlag(windows: boolean | undefined): NodeJS.Platform | undefined {
+/**
+ * `--platform win32|posix` generates either command form from any machine, so a mixed
+ * Windows/macOS/Linux team can settle on one form for the checked-in config instead of
+ * reruns ping-ponging it. `--windows` stays as an alias for `--platform win32`.
+ */
+function resolvePlatformFlag(windows: boolean | undefined, platform?: string): NodeJS.Platform | undefined {
+  if (typeof platform === "string" && platform.trim().length > 0) {
+    const normalized = platform.trim().toLowerCase();
+    if (normalized === "win32" || normalized === "windows") {
+      return "win32";
+    }
+    if (normalized === "posix" || normalized === "linux" || normalized === "darwin" || normalized === "macos") {
+      // Any non-win32 value yields the plain command form; "linux" is representative.
+      return "linux";
+    }
+    throw new Error(`Unknown platform: "${platform}". Use --platform win32 or --platform posix.`);
+  }
   return windows === true ? "win32" : undefined;
 }
 
@@ -359,7 +377,21 @@ function printMcpSummary(results: McpConfigResult[], options: McpConfigOptions):
 }
 
 function applyMcpClients(clients: McpClientKey[], repoRoot: string, options: McpConfigOptions): McpConfigResult[] {
-  return clients.map((client) => applyMcpConfig(client, repoRoot, options));
+  // Per-client isolation: applyMcpConfig downgrades expected failures itself, but even
+  // an unexpected throw for one client must not abort the rest of a --all batch (earlier
+  // clients may already be written to disk; the summary has to run and say so).
+  return clients.map((client) => {
+    try {
+      return applyMcpConfig(client, repoRoot, options);
+    } catch (error) {
+      return {
+        client,
+        configLabel: path.relative(repoRoot, getMcpConfigPath(client, repoRoot)) || client,
+        status: "manual" as const,
+        detail: `Could not update this config (${error instanceof Error ? error.message : String(error)}). Add the Tack server entry manually, then rerun.`,
+      };
+    }
+  });
 }
 
 export function runSetupAgent(args: SetupAgentArgs, version: string): number {
@@ -392,14 +424,23 @@ export function runSetupAgent(args: SetupAgentArgs, version: string): number {
     const results = targets.map((target) => applyInstructionsToTarget(target, repoRoot, block, args.force === true));
     printSetupSummary(results);
 
+    let mcpAllManual = false;
     if (args.mcp !== false) {
-      const options: McpConfigOptions = { runner, platform: resolvePlatformFlag(args.windows) };
+      const options: McpConfigOptions = { runner, platform: resolvePlatformFlag(args.windows, args.platform) };
       const clients = detectDefaultClients(repoRoot, targetArg, targets);
-      printMcpSummary(applyMcpClients(clients, repoRoot, options), options);
+      const mcpResults = applyMcpClients(clients, repoRoot, options);
+      printMcpSummary(mcpResults, options);
+      // Same contract as `tack setup-mcp`: a bootstrap script must be able to tell
+      // "configured" from "nothing written" by the exit code.
+      mcpAllManual = mcpResults.length > 0 && mcpResults.every((result) => result.status === "manual");
+      if (mcpAllManual) {
+        console.log("");
+        console.log("No MCP config was written. Paste the entry above, then rerun.");
+      }
     }
 
     printTrustLoopProof();
-    return 0;
+    return mcpAllManual ? 1 : 0;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     return 1;
@@ -422,7 +463,7 @@ export function runSetupMcp(args: SetupMcpArgs): number {
   try {
     const options: McpConfigOptions = {
       runner: resolveRunner(args.runner),
-      platform: resolvePlatformFlag(args.windows),
+      platform: resolvePlatformFlag(args.windows, args.platform),
       dryRun: args["dry-run"] === true,
     };
     const requested = resolveRequestedClients(parseClientArg(args.client));

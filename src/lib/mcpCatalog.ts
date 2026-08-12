@@ -67,11 +67,15 @@ export const TACK_MCP_RESOURCES: TackMcpResourceGuide[] = [
 ];
 
 /**
- * Every tool reads or writes only the local `.tack/` directory, so `openWorldHint` is
- * false everywhere. The read-only pair carries `readOnlyHint` so clients can relax
- * approval prompting on the session-start briefing path; the write-back tools append to
- * `.tack/` files and never delete or overwrite prior entries, so `destructiveHint` is
- * false even though `readOnlyHint` is not.
+ * Every tool's own domain is the local `.tack/` directory, so `openWorldHint` is false
+ * everywhere (each tool also records usage counters, and if the user has opted in to
+ * telemetry — off by default and additionally gated on TACK_TELEMETRY_ENDPOINT — a
+ * counters-only flush may POST to that endpoint; the tools never reach the open web
+ * beyond that). No tool carries `readOnlyHint: true`: even `get_briefing` and
+ * `check_rule` append to `.tack/_logs.ndjson` and update `.tack/_stats.json`, and that
+ * activity log feeds back into later briefing output, so clients must not be told they
+ * can skip approval on the assumption nothing changes. The write-back tools append and
+ * never delete or overwrite prior entries, so `destructiveHint` is false.
  */
 export const TACK_MCP_TOOLS: TackMcpToolGuide[] = [
   {
@@ -80,7 +84,6 @@ export const TACK_MCP_TOOLS: TackMcpToolGuide[] = [
     description:
       "Call this at session start before making changes. Returns a compact, low-token briefing with active rules, focus, recent decisions, unresolved drift, and brief write-back guidance.",
     annotations: {
-      readOnlyHint: true,
       openWorldHint: false,
     },
   },
@@ -90,7 +93,6 @@ export const TACK_MCP_TOOLS: TackMcpToolGuide[] = [
     description:
       "Brief mid-task guardrail check before structural changes such as a new dependency, storage choice, pattern, or boundary.",
     annotations: {
-      readOnlyHint: true,
       openWorldHint: false,
     },
   },

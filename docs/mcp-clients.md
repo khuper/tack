@@ -70,9 +70,12 @@ wrapper when it runs on `win32`:
 ```
 
 The same wrapping applies to `--runner tack` (`cmd /c tack mcp`), to the opencode `command`
-array, and to the Codex TOML block. The output depends on the machine that ran the command,
-so on a mixed-platform team either commit the form your teammates need or pass `--windows`
-from macOS/Linux to generate the Windows form deliberately.
+array, and to the Codex TOML block. By default the output depends on the machine that ran
+the command, so on a mixed-platform team pick one form for the checked-in config and
+generate it deterministically from any machine with `--platform win32` or
+`--platform posix` (`--windows` remains an alias for `--platform win32`). Most teams
+should commit the POSIX form and have Windows users rely on WSL, or commit the Windows
+form only when the whole team is on Windows.
 
 ### Working directory
 
@@ -246,7 +249,7 @@ Verify with `codex mcp get tack` or `codex mcp list`, and start Codex from the p
 
 opencode uses `mcp` (not `mcpServers`), a single `command` array instead of `command` plus `args`, `environment` instead of `env`, and needs `"type": "local"` plus `"enabled": true`.
 
-opencode also accepts `opencode.jsonc`. If that file exists, Tack treats it as your config: it will not rewrite it and it will not create a competing `opencode.json`. Paste the `tack` entry in manually.
+opencode also accepts `opencode.jsonc`. If `opencode.jsonc` is your only config file, Tack treats it as your config: it will not rewrite it (it may contain comments) and it will not create a competing `opencode.json` — paste the `tack` entry in manually. If both files exist, Tack writes `opencode.json` (the file opencode loads first) and leaves the `.jsonc` untouched.
 
 ## Other clients
 
@@ -308,7 +311,7 @@ If the same agent reconnects with a new MCP session, watch will say `reconnected
 - `tack://context/intent` - north star, focus, goals, questions, recent decisions
 - `tack://context/decisions_recent` - recent decisions only
 - `tack://context/machine_state` - raw `_audit.yaml` and `_drift.yaml`
-- `tack://handoff/latest` - latest handoff JSON
+- `tack://handoff/latest` - latest handoff (served inside the untrusted-context wrapper; read as text, not parseable JSON)
 
 ## Tools
 

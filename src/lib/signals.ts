@@ -64,7 +64,16 @@ export function createAudit(signals: Signal[]): Audit {
   };
 }
 
+/** The vocabulary a person can choose from when resolving a drift item. */
 export type DriftStatus = "unresolved" | "accepted" | "rejected";
+
+/**
+ * Everything a stored drift item can carry: the human statuses plus `disappeared`,
+ * which Tack writes itself when an item's underlying signal is no longer detected.
+ * Kept separate from `DriftStatus` so a machine observation can never be passed where
+ * a human verdict is required (see lib/validate.ts).
+ */
+export type DriftItemStatus = DriftStatus | "disappeared";
 
 export type DriftItem = {
   id: string;
@@ -74,7 +83,7 @@ export type DriftItem = {
   constraint?: string;
   signal: string;
   detected: string;
-  status: DriftStatus;
+  status: DriftItemStatus;
   note?: string;
 };
 

@@ -24,7 +24,10 @@ export function safeLoadYaml<T>(filepath: string, fallback: T): { data: T; error
       // reason, on one line, so the error stays readable wherever it is surfaced
       // (console warnings, the TUI, MCP responses).
       const message = (raw.split(/\n\s*\n/)[0] ?? raw).replace(/\s+/g, " ").trim().slice(0, MAX_ERROR_LENGTH);
-      const lineMatch = message.match(/line (\d+)/i);
+      // js-yaml 4 reports the position as a trailing "(line:column)"; older versions
+      // spelled out "line N". Support both so the surfaced error can name the line.
+      const positionMatch = message.match(/\((\d+):\d+\)\s*$/);
+      const lineMatch = positionMatch ?? message.match(/line (\d+)/i);
       const lineInfo = lineMatch ? ` (line ${lineMatch[1]})` : "";
       lastError = `Failed to parse ${basename(filepath)}${lineInfo}: ${message}`;
     }

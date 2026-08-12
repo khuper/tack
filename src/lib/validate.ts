@@ -22,19 +22,12 @@ const DRIFT_TYPES = new Set([
  */
 export const DRIFT_STATUS_DISAPPEARED = "disappeared";
 const DRIFT_STATUS = new Set(["unresolved", "accepted", "rejected", DRIFT_STATUS_DISAPPEARED] as const);
+const DRIFT_ITEM_KEYS = new Set(["id", "type", "system", "risk", "constraint", "signal", "detected", "status", "note"]);
 const KNOWN_CONSTRAINTS = new Set<string>(KNOWN_CONSTRAINT_KEYS);
 
 /** True when `item` was auto-dismissed by a sweep rather than resolved by a person. */
 export function isDisappearedDriftItem(item: DriftItem): boolean {
-  return String(item.status) === DRIFT_STATUS_DISAPPEARED;
-}
-
-/**
- * `DriftStatus` in lib/signals.ts is the vocabulary a person can choose from, so the
- * machine-only `disappeared` status needs a cast to be stored on a `DriftItem`.
- */
-export function asDriftItemStatus(status: string): DriftItem["status"] {
-  return status as DriftItem["status"];
+  return item.status === DRIFT_STATUS_DISAPPEARED;
 }
 
 type ValidationResult<T> = {
@@ -328,20 +321,49 @@ function validateDriftItem(raw: unknown, warnings: string[]): DriftItem | null {
   return item;
 }
 
-export function validateDriftState(raw: unknown): ValidationResult<DriftState> {
+/**
+ * `lossy` is true when the file held content this validator could not represent —
+ * unparseable items, an unknown item type (what a `_drift.yaml` written by a newer Tack
+ * looks like to an older one), or root keys beyond `items`. Persisting the validated
+ * state back on top of a lossy read would silently delete that content, so callers that
+ * write (`readDriftWithError` consumers) must treat `lossy` as a no-persist condition.
+ */
+export function validateDriftState(raw: unknown): ValidationResult<DriftState> & { lossy: boolean } {
   const warnings: string[] = [];
   if (!isRecord(raw)) {
-    if (raw !== null && raw !== undefined) warnings.push("_drift.yaml root must be an object");
-    return { data: { items: [] }, warnings };
+    if (raw === null || raw === undefined) {
+      return { data: { items: [] }, warnings, lossy: false };
+    }
+    warnings.push("_drift.yaml root must be an object");
+    return { data: { items: [] }, warnings, lossy: true };
   }
+
+  const unknownRootKeys = Object.keys(raw).filter((key) => key !== "items");
+
   if (!Array.isArray(raw.items)) {
     if (raw.items !== undefined) warnings.push("_drift.yaml items must be an array");
-    return { data: { items: [] }, warnings };
+    return { data: { items: [] }, warnings, lossy: raw.items !== undefined || unknownRootKeys.length > 0 };
   }
 
   const items = raw.items
     .map((item) => validateDriftItem(item, warnings))
     .filter((item): item is DriftItem => item !== null);
-  return { data: { items }, warnings };
+  const droppedItems = raw.items.length - items.length;
+  if (droppedItems > 0) {
+    warnings.push(`_drift.yaml: ${droppedItems} item(s) were not recognized by this version of Tack`);
+  }
+  // A status outside DRIFT_STATUS or a field this version doesn't know (both what a file
+  // written by a newer Tack looks like) would be coerced or silently shed on rewrite.
+  const hasUnrepresentableContent = raw.items.some(
+    (item) =>
+      isRecord(item) &&
+      (Object.keys(item).some((key) => !DRIFT_ITEM_KEYS.has(key)) ||
+        (typeof item.status === "string" && !DRIFT_STATUS.has(item.status as DriftItem["status"])))
+  );
+  return {
+    data: { items },
+    warnings,
+    lossy: droppedItems > 0 || hasUnrepresentableContent || unknownRootKeys.length > 0,
+  };
 }
 

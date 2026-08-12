@@ -1,5 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { writeFileAtomic } from "./files.js";
+
+const UTF8_BOM = "\ufeff";
 
 export type McpClientKey = "claude-code" | "cursor" | "vscode" | "gemini" | "codex" | "opencode";
 export type McpConfigFormat = "json" | "toml";
@@ -244,12 +247,21 @@ function detectJsonIndent(content: string): string | number {
   }
   // No indented line at all: a config minified on purpose stays minified instead of
   // being reflowed into a whole-file diff. An empty `{}` has no style to preserve.
+  // Known limitations, accepted as intentional: a single-line file with deliberate
+  // interior spacing is minified, and a zero-indent multi-line file is reflowed to
+  // two-space indent (JSON.stringify has no "newlines but no indent" mode).
   const trimmed = content.trim();
   return !trimmed.includes("\n") && trimmed.length > 2 ? 0 : 2;
 }
 
+/**
+ * Decided by majority rather than by presence: a file with one stray CRLF among many LF
+ * lines must not come back fully CRLF-converted (a whole-file diff for a one-line change).
+ */
 function usesCrlf(content: string): boolean {
-  return content.includes("\r\n");
+  const crlfCount = content.match(/\r\n/g)?.length ?? 0;
+  const lfOnlyCount = (content.match(/\n/g)?.length ?? 0) - crlfCount;
+  return crlfCount > lfOnlyCount;
 }
 
 function applyLineEndings(content: string, crlf: boolean): string {
@@ -311,7 +323,41 @@ export function mergeJsonMcpConfig(
   const trailingNewline = existingContent.endsWith("\n") ? "\n" : "";
   const serialized = `${JSON.stringify(next, null, detectJsonIndent(existingContent))}${trailingNewline}`;
 
+  // The parse/stringify round trip can silently rewrite values outside the container
+  // (Infinity -> null, -0 -> 0). Never hand back a document whose untouched keys differ
+  // from what was parsed; duplicate keys and float-precision loss are invisible to a
+  // post-parse comparison and remain accepted limitations of the JSON path.
+  let reparsed: unknown;
+  try {
+    reparsed = JSON.parse(serialized) as unknown;
+  } catch {
+    reparsed = undefined;
+  }
+  if (!isPlainObject(reparsed) || !jsonValuesIdentical(omitKey(parsed, containerKey), omitKey(reparsed, containerKey))) {
+    throw new McpManualMergeError(
+      `Could not rewrite ${configLabel} without altering unrelated values. Add the Tack server entry manually, then rerun.`
+    );
+  }
+
   return { content: applyLineEndings(serialized, usesCrlf(existingContent)), changed: true };
+}
+
+function omitKey(value: JsonObject, key: string): JsonObject {
+  const { [key]: _omitted, ...rest } = value;
+  return rest;
+}
+
+/** Deep equality with `Object.is` on leaves, so `-0` vs `0` and `NaN` drift is caught. */
+function jsonValuesIdentical(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((item, index) => jsonValuesIdentical(item, b[index]));
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    return aKeys.length === bKeys.length && aKeys.every((key) => jsonValuesIdentical(a[key], b[key]));
+  }
+  return Object.is(a, b);
 }
 
 function escapeTomlString(value: string): string {
@@ -746,6 +792,32 @@ export function mergeTomlMcpConfig(
   const crlf = usesCrlf(existingContent);
   const normalized = existingContent.replace(/\r\n/g, "\n");
 
+  // Normalized offset of each removed `\r` so scan positions can be mapped back to the
+  // original text. The splice happens on the ORIGINAL document: re-applying line endings
+  // to the whole normalized text would rewrite every line the merge never touched, and
+  // would even change bytes inside multi-line literal strings, which TOML preserves
+  // verbatim. Only the inserted block gets the file's dominant line ending.
+  const crlfNormalizedPositions: number[] = [];
+  {
+    let searchFrom = 0;
+    let removed = 0;
+    let found = existingContent.indexOf("\r\n", searchFrom);
+    while (found !== -1) {
+      crlfNormalizedPositions.push(found - removed);
+      removed += 1;
+      searchFrom = found + 2;
+      found = existingContent.indexOf("\r\n", searchFrom);
+    }
+  }
+  const toOriginalOffset = (normalizedOffset: number): number => {
+    let shift = 0;
+    for (const position of crlfNormalizedPositions) {
+      if (position >= normalizedOffset) break;
+      shift += 1;
+    }
+    return normalizedOffset + shift;
+  };
+
   let nodes: TomlNode[];
   try {
     nodes = scanTomlDocument(normalized);
@@ -797,18 +869,27 @@ export function mergeTomlMcpConfig(
     );
   }
 
+  const blockWithEndings = applyLineEndings(block, crlf);
+
   let merged: string;
   if (regionStart === null) {
-    const trimmed = normalized.replace(/\n+$/, "");
-    merged = trimmed.length > 0 ? `${trimmed}\n\n${block}\n` : `${block}\n`;
+    const trimmed = existingContent.replace(/(?:\r?\n)+$/, "");
+    const separator = applyLineEndings("\n\n", crlf);
+    const terminator = applyLineEndings("\n", crlf);
+    merged =
+      trimmed.length > 0
+        ? `${trimmed}${separator}${blockWithEndings}${terminator}`
+        : `${blockWithEndings}${terminator}`;
   } else {
-    merged = `${normalized.slice(0, regionStart)}${block}${normalized.slice(regionEnd!)}`;
+    merged = `${existingContent.slice(0, toOriginalOffset(regionStart))}${blockWithEndings}${existingContent.slice(
+      toOriginalOffset(regionEnd!)
+    )}`;
   }
 
   // Never hand back TOML we cannot read back.
   let mergedNodes: TomlNode[];
   try {
-    mergedNodes = scanTomlDocument(merged);
+    mergedNodes = scanTomlDocument(merged.replace(/\r\n/g, "\n"));
   } catch {
     throw new McpManualMergeError(
       `Could not rewrite ${configLabel} safely. Add the Tack server entry manually, then rerun.`
@@ -822,8 +903,7 @@ export function mergeTomlMcpConfig(
     );
   }
 
-  const content = applyLineEndings(merged, crlf);
-  return { content, changed: content !== existingContent };
+  return { content: merged, changed: merged !== existingContent };
 }
 
 /**
@@ -865,7 +945,26 @@ export function applyMcpConfig(
     };
   }
 
-  const existingContent = exists ? fs.readFileSync(configPath, "utf-8") : null;
+  // Filesystem failures (EISDIR, EACCES, EROFS, ...) downgrade to `manual` exactly like
+  // parse failures: the caller still prints the pasteable snippet for this client, and
+  // one broken path never aborts the remaining clients in a `--all` run.
+  let rawContent: string | null;
+  try {
+    rawContent = exists ? fs.readFileSync(configPath, "utf-8") : null;
+  } catch (error) {
+    return {
+      client,
+      configLabel,
+      status: "manual",
+      detail: `Could not read ${configLabel} (${describeFsError(error)}). Add the Tack server entry manually, then rerun.`,
+    };
+  }
+
+  // A leading UTF-8 BOM (routine on Windows: PowerShell redirection, some editors) is
+  // stripped before parsing and restored on write, so BOM-prefixed configs stay writable
+  // instead of being misreported as unparseable.
+  const hadBom = rawContent !== null && rawContent.startsWith(UTF8_BOM);
+  const existingContent = hadBom ? rawContent!.slice(1) : rawContent;
 
   let merged: McpMergeResult;
   try {
@@ -893,8 +992,24 @@ export function applyMcpConfig(
     return { client, configLabel, status: exists ? "updated" : "installed", detail: "dry run" };
   }
 
-  fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, merged.content, "utf-8");
+  try {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    // Atomic so an interrupted write can never leave a pre-existing user config truncated.
+    writeFileAtomic(configPath, `${hadBom ? UTF8_BOM : ""}${merged.content}`);
+  } catch (error) {
+    return {
+      client,
+      configLabel,
+      status: "manual",
+      detail: `Could not write ${configLabel} (${describeFsError(error)}). Add the Tack server entry manually, then rerun.`,
+    };
+  }
 
   return { client, configLabel, status: exists ? "updated" : "installed" };
+}
+
+function describeFsError(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code) return code;
+  return error instanceof Error ? error.message : String(error);
 }

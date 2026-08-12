@@ -244,7 +244,7 @@ export function Watch() {
     writeAudit(audit);
 
     const diff = compareSpec(signals, spec);
-    const { newItems, state } = computeDrift(diff);
+    const { newItems, state, readOnly } = computeDrift(diff);
     const unresolvedCount = state.items.filter((item) => item.status === "unresolved").length;
 
     setSystemCount(diff.aligned.filter((signal) => signal.category === "system").length);
@@ -269,13 +269,18 @@ export function Watch() {
       duration_ms: Date.now() - startedAt,
     });
 
-    const alertable = newItems.filter(
-      (item) =>
-        item.type === "forbidden_system_detected" ||
-        item.type === "constraint_mismatch" ||
-        item.type === "risk" ||
-        item.type === "undeclared_system"
-    );
+    // When _drift.yaml failed to load, nothing was persisted, so every scan would report
+    // the same violations as "new" again: alerting would loop OS notifications forever,
+    // and DriftAlert resolutions could not be saved anyway. Surface state counts only.
+    const alertable = readOnly
+      ? []
+      : newItems.filter(
+          (item) =>
+            item.type === "forbidden_system_detected" ||
+            item.type === "constraint_mismatch" ||
+            item.type === "risk" ||
+            item.type === "undeclared_system"
+        );
 
     if (alertable.length > 0) {
       for (const item of alertable) {

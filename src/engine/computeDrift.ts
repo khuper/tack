@@ -1,33 +1,54 @@
 import type { SpecDiff, DriftState, DriftItem } from "../lib/signals.js";
 import { createDriftId } from "../lib/signals.js";
 import { quarantineCorruptDrift, readDriftWithError, writeDrift } from "../lib/files.js";
-import { DRIFT_STATUS_DISAPPEARED, asDriftItemStatus, isDisappearedDriftItem } from "../lib/validate.js";
+import { DRIFT_STATUS_DISAPPEARED, isDisappearedDriftItem } from "../lib/validate.js";
 import { log } from "../lib/logger.js";
+
+let warnedDriftReadOnly = false;
 
 export function computeDrift(diff: SpecDiff): {
   newItems: DriftItem[];
   state: DriftState;
+  /** True when `_drift.yaml` failed to load and this sweep neither persisted nor should re-alert. */
+  readOnly: boolean;
 } {
   const { state: existing, error: readError } = readDriftWithError();
 
   // A torn `_drift.yaml` (merge-conflict markers are enough: the file is committed to git)
   // reads as an empty state. Persisting on top of that would erase every accepted and
   // rejected resolution, so copy the file aside and run this sweep read-only instead.
-  if (readError) {
+  // The watch loop calls this on every scan, so warn once per process, not per scan.
+  if (readError && !warnedDriftReadOnly) {
+    warnedDriftReadOnly = true;
     const backup = quarantineCorruptDrift();
     // eslint-disable-next-line no-console
     console.warn(
-      `[tack] _drift.yaml could not be read, so drift state was NOT updated: ${readError}. ` +
-        (backup ? `A copy of the unreadable file is at ${backup}. ` : "") +
+      `[tack] _drift.yaml could not be used, so drift state was NOT updated: ${readError}. ` +
+        (backup ? `A copy of the original file is at ${backup}. ` : "") +
         "Fix or delete .tack/_drift.yaml and re-run; until then accepted/rejected resolutions are not visible."
     );
+  }
+
+  // One-time migration: versions before the `disappeared` status auto-dismissed items as
+  // `rejected` with no note, which the code below would treat as a permanent human
+  // verdict. Human rejections always carry a note ("Rejected via tack watch"), so
+  // note-less rejections are machine-written with certainty and become `disappeared`,
+  // eligible to reopen if their violation comes back.
+  for (const item of existing.items) {
+    if (item.status === "rejected" && !item.note) {
+      item.status = DRIFT_STATUS_DISAPPEARED;
+    }
   }
 
   const appendedItems: DriftItem[] = [];
   const reopenedItems: DriftItem[] = [];
 
-  // Build the set of drift fingerprints that are still present in the latest spec diff.
+  // Build the set of drift fingerprints that are still present in the latest spec diff,
+  // remembering the current signal text so a reopened item can be re-anchored to where
+  // the violation lives now (the fingerprint ignores the source file, so a violation
+  // reintroduced elsewhere must not keep pointing at its original location).
   const currentFingerprints = new Set<string>();
+  const currentSignals = new Map<string, string>();
 
   for (const violation of diff.violations) {
     const type =
@@ -40,7 +61,9 @@ export function computeDrift(diff: SpecDiff): {
       detected: "",
       status: "unresolved",
     };
-    currentFingerprints.add(fingerprint(fpItem));
+    const fp = fingerprint(fpItem);
+    currentFingerprints.add(fp);
+    currentSignals.set(fp, `${violation.signal.detail ?? violation.signal.id}: ${violation.signal.source}`);
   }
 
   for (const risk of diff.risks) {
@@ -52,7 +75,9 @@ export function computeDrift(diff: SpecDiff): {
       detected: "",
       status: "unresolved",
     };
-    currentFingerprints.add(fingerprint(fpItem));
+    const fp = fingerprint(fpItem);
+    currentFingerprints.add(fp);
+    currentSignals.set(fp, `${risk.detail ?? risk.id}: ${risk.source}`);
   }
 
   for (const sig of diff.undeclared) {
@@ -64,16 +89,20 @@ export function computeDrift(diff: SpecDiff): {
       detected: "",
       status: "unresolved",
     };
-    currentFingerprints.add(fingerprint(fpItem));
+    const fp = fingerprint(fpItem);
+    currentFingerprints.add(fp);
+    currentSignals.set(fp, `${sig.detail ?? sig.id}: ${sig.source}`);
   }
 
   // Reopen items that Tack auto-dismissed earlier and that have now come back. A
   // violation removed in one commit and reintroduced in the next has to surface again.
   for (const item of existing.items) {
     if (!isDisappearedDriftItem(item)) continue;
-    if (!currentFingerprints.has(fingerprint(item))) continue;
+    const fp = fingerprint(item);
+    if (!currentFingerprints.has(fp)) continue;
     item.status = "unresolved";
     item.detected = new Date().toISOString();
+    item.signal = currentSignals.get(fp) ?? item.signal;
     reopenedItems.push(item);
   }
 
@@ -84,13 +113,17 @@ export function computeDrift(diff: SpecDiff): {
   for (const item of existing.items) {
     const fp = fingerprint(item);
     if (item.status === "unresolved" && !currentFingerprints.has(fp)) {
-      item.status = asDriftItemStatus(DRIFT_STATUS_DISAPPEARED);
-      log({
-        event: "drift:resolved",
-        system: item.system ?? item.risk ?? item.type,
-        message: item.signal,
-        source: ".tack/_drift.yaml",
-      });
+      item.status = DRIFT_STATUS_DISAPPEARED;
+      // Read-only sweeps skip the log: the dismissal is not persisted, so the next scan
+      // would re-dismiss and re-log the same items indefinitely.
+      if (!readError) {
+        log({
+          event: "drift:resolved",
+          system: item.system ?? item.risk ?? item.type,
+          message: item.signal,
+          source: ".tack/_drift.yaml",
+        });
+      }
     }
   }
 
@@ -156,16 +189,20 @@ export function computeDrift(diff: SpecDiff): {
   // Reopened items are new to the operator even though they already have an id.
   const newItems = [...reopenedItems, ...appendedItems];
 
-  for (const item of newItems) {
-    log({
-      event: "drift:detected",
-      system: item.system ?? item.risk ?? item.type,
-      message: item.signal,
-      source: ".tack/_drift.yaml",
-    });
+  // Same read-only rule as above: unpersisted items would be re-detected and re-logged
+  // on every scan.
+  if (!readError) {
+    for (const item of newItems) {
+      log({
+        event: "drift:detected",
+        system: item.system ?? item.risk ?? item.type,
+        message: item.signal,
+        source: ".tack/_drift.yaml",
+      });
+    }
   }
 
-  return { newItems, state };
+  return { newItems, state, readOnly: readError !== null };
 }
 
 export function resolveDriftItem(

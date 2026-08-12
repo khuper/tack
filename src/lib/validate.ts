@@ -332,6 +332,24 @@ function validateDriftItem(raw: unknown, warnings: string[]): DriftItem | null {
  * state back on top of a lossy read would silently delete that content, so callers that
  * write (`readDriftWithError` consumers) must treat `lossy` as a no-persist condition.
  */
+/**
+ * A short, always-safe description of an arbitrary parsed YAML value for diagnostics.
+ * Scalars print their value; anything structured prints only its shape, so cyclic or
+ * enormous graphs can never throw or flood a warning.
+ */
+function describeYamlValue(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `array of ${value.length}`;
+  if (value instanceof Date) return `date ${value.toISOString()}`;
+  const kind = typeof value;
+  if (kind === "object") return "object";
+  if (kind === "string") {
+    const text = value as string;
+    return `string "${text.length > 40 ? `${text.slice(0, 40)}...` : text}"`;
+  }
+  return `${kind} ${String(value)}`;
+}
+
 export function validateDriftState(raw: unknown): ValidationResult<DriftState> & { lossy: boolean } {
   const warnings: string[] = [];
   if (!isRecord(raw)) {
@@ -360,8 +378,12 @@ export function validateDriftState(raw: unknown): ValidationResult<DriftState> &
       schemaVersion = raw.schema_version;
     } else {
       versionUnusable = true;
+      // Never serialize the raw value: YAML aliases can make it cyclic
+      // (`schema_version: &v {self: *v}`), and JSON.stringify would throw out of
+      // validate -> readDriftWithError, aborting the scan instead of treating the
+      // file as lossy, read-only state.
       warnings.push(
-        `_drift.yaml schema_version ${JSON.stringify(raw.schema_version)} is not supported by this version of Tack`
+        `_drift.yaml schema_version (${describeYamlValue(raw.schema_version)}) is not supported by this version of Tack`
       );
     }
   }

@@ -249,79 +249,90 @@ export function resolveDriftItemWithSpec(
   item: DriftItem,
   action: "accepted" | "rejected"
 ): DriftResolutionOutcome {
-  let specUpdated = false;
-
-  // The caller may hold a stale copy: a queued alert survives later scans, so the
-  // item can have disappeared or been resolved elsewhere in the meantime. Verify it
-  // is still open in the CURRENT drift state before changing spec.yaml for it. This
-  // also moves the drift-unreadable failure ahead of the spec write, so the partial
-  // state below can only occur if the file breaks between this check and the write.
-  {
-    const { state: current, error: readError } = readDriftWithError();
-    if (readError) {
-      return { persisted: false, specUpdated: false, error: "drift_unreadable" };
-    }
-    const stored = current.items.find((candidate) => candidate.id === item.id);
-    if (!stored || stored.status !== "unresolved") {
-      return { persisted: false, specUpdated: false, error: "item_stale" };
-    }
-  }
-
-  if (item.system) {
-    const spec = readSpec();
-    if (!spec) {
-      return { persisted: false, specUpdated: false, error: "spec_unreadable" };
-    }
-    if (action === "accepted") {
-      if (!spec.allowed_systems.includes(item.system)) {
-        spec.allowed_systems.push(item.system);
-        specUpdated = true;
-      }
-      const forbiddenBefore = spec.forbidden_systems.length;
-      spec.forbidden_systems = spec.forbidden_systems.filter((s) => s !== item.system);
-      specUpdated = specUpdated || spec.forbidden_systems.length !== forbiddenBefore;
-    } else {
-      if (!spec.forbidden_systems.includes(item.system)) {
-        spec.forbidden_systems.push(item.system);
-        specUpdated = true;
-      }
-      const allowedBefore = spec.allowed_systems.length;
-      spec.allowed_systems = spec.allowed_systems.filter((s) => s !== item.system);
-      specUpdated = specUpdated || spec.allowed_systems.length !== allowedBefore;
-    }
-    try {
-      writeSpec(spec);
-    } catch {
-      return { persisted: false, specUpdated: false, error: "spec_write_failed" };
-    }
-    if (specUpdated) {
-      log({
-        event: "spec:updated",
-        field: action === "accepted" ? "allowed_systems" : "forbidden_systems",
-        diff: `added ${item.system}`,
-      });
-    }
-  }
-
-  const result = resolveDriftItem(
+  // Order: claim the verdict FIRST, then update the spec. Claiming is the only step
+  // with a conflict check (compare-and-set on `unresolved`), so doing it first means a
+  // racing process cannot write the opposite architecture rule after we have committed
+  // ours. If the spec step then fails, the claim is rolled back to `unresolved` so the
+  // item stays actionable and the two files never contradict each other.
+  const claim = resolveDriftItem(
     item.id,
     action,
     action === "accepted" ? "Accepted via tack watch" : "Rejected via tack watch"
   );
-  if (!result.persisted) {
+  if (!claim.persisted) {
     return {
       persisted: false,
-      specUpdated,
-      // A conflict means someone else resolved it first: from the caller's point of
-      // view the item is no longer theirs to resolve, which is exactly item_stale.
+      specUpdated: false,
       error:
-        result.failedStage === "write"
+        claim.failedStage === "write"
           ? "drift_write_failed"
-          : result.failedStage === "conflict"
+          : claim.failedStage === "conflict"
             ? "item_stale"
             : "drift_unreadable",
     };
   }
+
+  if (!item.system) {
+    return { persisted: true, specUpdated: false, error: null };
+  }
+
+  const rollback = (): void => {
+    // Best-effort: restore the item so the alert can be retried after the operator
+    // fixes spec.yaml. A failure here leaves the verdict recorded without the rule,
+    // which the caller still reports as a spec failure.
+    const current = readDriftWithError();
+    if (current.error) return;
+    const stored = current.state.items.find((candidate) => candidate.id === item.id);
+    if (!stored) return;
+    stored.status = "unresolved";
+    delete stored.note;
+    try {
+      writeDrift(current.state);
+    } catch {
+      // Nothing further to do; the outcome already reports the spec failure.
+    }
+  };
+
+  const spec = readSpec();
+  if (!spec) {
+    rollback();
+    return { persisted: false, specUpdated: false, error: "spec_unreadable" };
+  }
+
+  let specUpdated = false;
+  if (action === "accepted") {
+    if (!spec.allowed_systems.includes(item.system)) {
+      spec.allowed_systems.push(item.system);
+      specUpdated = true;
+    }
+    const forbiddenBefore = spec.forbidden_systems.length;
+    spec.forbidden_systems = spec.forbidden_systems.filter((s) => s !== item.system);
+    specUpdated = specUpdated || spec.forbidden_systems.length !== forbiddenBefore;
+  } else {
+    if (!spec.forbidden_systems.includes(item.system)) {
+      spec.forbidden_systems.push(item.system);
+      specUpdated = true;
+    }
+    const allowedBefore = spec.allowed_systems.length;
+    spec.allowed_systems = spec.allowed_systems.filter((s) => s !== item.system);
+    specUpdated = specUpdated || spec.allowed_systems.length !== allowedBefore;
+  }
+
+  try {
+    writeSpec(spec);
+  } catch {
+    rollback();
+    return { persisted: false, specUpdated: false, error: "spec_write_failed" };
+  }
+
+  if (specUpdated) {
+    log({
+      event: "spec:updated",
+      field: action === "accepted" ? "allowed_systems" : "forbidden_systems",
+      diff: `added ${item.system}`,
+    });
+  }
+
   return { persisted: true, specUpdated, error: null };
 }
 

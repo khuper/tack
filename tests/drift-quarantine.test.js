@@ -320,13 +320,17 @@ test("an unreadable spec aborts the transaction before anything is written", () 
   withTempProject((tmpDir) => {
     fs.writeFileSync(path.join(tmpDir, ".tack", "spec.yaml"), "<<<<<<< broken:\n  - {", "utf-8");
     seedHealthyDrift(tmpDir);
-    const driftBefore = fs.readFileSync(path.join(tmpDir, ".tack", "_drift.yaml"), "utf-8");
 
     const outcome = resolveDriftItemWithSpec(ITEM, "accepted");
 
     assert.strictEqual(outcome.persisted, false);
     assert.strictEqual(outcome.error, "spec_unreadable");
-    assert.strictEqual(fs.readFileSync(path.join(tmpDir, ".tack", "_drift.yaml"), "utf-8"), driftBefore);
+    // The verdict is claimed first (so a racing process cannot write the opposite
+    // rule), then rolled back when the spec step fails: the item must be actionable
+    // again, and no verdict may survive.
+    const after = fs.readFileSync(path.join(tmpDir, ".tack", "_drift.yaml"), "utf-8");
+    assert.match(after, /status: unresolved/);
+    assert.doesNotMatch(after, /status: accepted/);
   });
 });
 
@@ -438,7 +442,7 @@ test("a drift write failure surfaces as an unpersisted outcome, not an exception
 
       assert.strictEqual(outcome.persisted, false);
       assert.strictEqual(outcome.error, "drift_write_failed");
-      assert.strictEqual(outcome.specUpdated, true, "spec step succeeded before the drift write failed");
+      assert.strictEqual(outcome.specUpdated, false, "the claim fails before the spec is touched");
       assert.match(fs.readFileSync(outside, "utf-8"), /status: unresolved/, "the link target must be untouched");
     } finally {
       fs.rmSync(outside, { force: true });
@@ -586,5 +590,42 @@ test("a verdict recorded between the pre-check and the write loses the race, not
     assert.strictEqual(result.persisted, false);
     assert.strictEqual(result.failedStage, "conflict");
     assert.match(fs.readFileSync(driftFile, "utf-8"), /status: rejected/, "the first verdict stands");
+  });
+});
+
+test("a cyclic schema_version is reported safely instead of crashing the scan", () => {
+  withTempProject((tmpDir) => {
+    const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+    const original = ["schema_version: &v {self: *v}", "items: []", ""].join("\n");
+    fs.writeFileSync(driftFile, original, "utf-8");
+
+    const { readOnly } = computeDrift(EMPTY_DIFF);
+
+    assert.strictEqual(readOnly, true, "an unusable version must force a read-only sweep");
+    assert.strictEqual(fs.readFileSync(driftFile, "utf-8"), original, "the file must not be rewritten");
+  });
+});
+
+test("the claim is rolled back when the spec write fails, leaving the item actionable", () => {
+  withTempProject((tmpDir) => {
+    seedHealthyDrift(tmpDir);
+    // A spec.yaml symlinked outside the project reads fine but the write boundary
+    // refuses to write through it.
+    const outside = path.join(os.tmpdir(), `spec-target-${path.basename(tmpDir)}.yaml`);
+    fs.writeFileSync(outside, "project: t\nallowed_systems: []\nforbidden_systems: []\nconstraints: {}\n", "utf-8");
+    try {
+      fs.symlinkSync(outside, path.join(tmpDir, ".tack", "spec.yaml"));
+
+      const outcome = resolveDriftItemWithSpec(ITEM, "accepted");
+
+      assert.strictEqual(outcome.persisted, false);
+      assert.strictEqual(outcome.error, "spec_write_failed");
+      const drift = fs.readFileSync(path.join(tmpDir, ".tack", "_drift.yaml"), "utf-8");
+      assert.match(drift, /status: unresolved/, "the claim must be rolled back");
+      assert.doesNotMatch(drift, /status: accepted/);
+      assert.doesNotMatch(fs.readFileSync(outside, "utf-8"), /redis/, "no rule may reach the link target");
+    } finally {
+      fs.rmSync(outside, { force: true });
+    }
   });
 });

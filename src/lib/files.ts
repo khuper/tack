@@ -837,9 +837,26 @@ export function quarantineCorruptDrift(): string | null {
     // copy: rescanning the same corruption is idempotent (same hash, same file), while
     // a corrupt -> repaired -> corrupt-again sequence gets a NEW backup instead of the
     // warning pointing at a stale copy that lacks post-repair resolutions.
-    const digest = crypto.createHash("sha256").update(fs.readFileSync(source)).digest("hex").slice(0, 8);
-    const backup = `${source}.${digest}.corrupt`;
-    if (fs.existsSync(backup)) return backup;
+    const content = fs.readFileSync(source);
+    const digest = crypto.createHash("sha256").update(content).digest("hex").slice(0, 8);
+    // An existing file at the computed path is only trusted after verifying its BYTES
+    // match the source — a checked-in impostor (unrelated, truncated, or symlinked)
+    // must not be reported as "your backup", or following the warning's advice to
+    // delete _drift.yaml would lose the only real copy. On mismatch, allocate the
+    // next free suffixed destination instead.
+    let backup = `${source}.${digest}.corrupt`;
+    for (let attempt = 1; fs.existsSync(backup); attempt += 1) {
+      try {
+        assertNotSymlinkStrict(backup);
+        if (fs.readFileSync(backup).equals(content)) {
+          return backup;
+        }
+      } catch {
+        // Symlinked or unreadable candidate: never reuse it.
+      }
+      if (attempt > 8) return null;
+      backup = `${source}.${digest}-${attempt}.corrupt`;
+    }
     assertInsideTackDir(backup);
     fs.copyFileSync(source, backup);
     return backup;

@@ -55,18 +55,23 @@ test("quarantine refuses to copy through a symlinked _drift.yaml", () => {
   });
 });
 
-test("quarantine never rewrites an existing backup for the same content", () => {
+test("quarantine reuses a verified backup but never trusts an impostor by filename", () => {
   withTempProject((tmpDir) => {
     const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
     fs.writeFileSync(driftFile, "same corruption\n", "utf-8");
 
     const backup = quarantineCorruptDrift();
     assert.ok(backup, "a backup must be created");
-    // Simulate an existing backup by planting sentinel content at the same path.
-    fs.writeFileSync(backup, "sentinel\n", "utf-8");
-
+    // Untouched rescan: byte-verified reuse of the same backup.
     assert.strictEqual(quarantineCorruptDrift(), backup);
-    assert.strictEqual(fs.readFileSync(backup, "utf-8"), "sentinel\n", "the existing backup must not be re-copied");
+
+    // Plant an impostor at the computed path: the next call must allocate a NEW
+    // destination holding the real content instead of reporting the impostor.
+    fs.writeFileSync(backup, "impostor\n", "utf-8");
+    const reallocated = quarantineCorruptDrift();
+    assert.ok(reallocated && reallocated !== backup, "an impostor must not be reused");
+    assert.strictEqual(fs.readFileSync(reallocated, "utf-8"), "same corruption\n");
+    assert.strictEqual(fs.readFileSync(backup, "utf-8"), "impostor\n", "the impostor is left alone");
   });
 });
 

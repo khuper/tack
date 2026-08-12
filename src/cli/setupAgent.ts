@@ -301,16 +301,22 @@ function resolvePlatformFlag(windows: boolean | undefined, platform?: unknown): 
   return windows === true ? "win32" : undefined;
 }
 
-function parseClientArg(value: string | string[] | undefined): string[] {
+function parseClientArg(value: string | string[] | boolean | undefined): string[] {
   if (value === undefined) {
     return [];
   }
 
   const raw = Array.isArray(value) ? value : [value];
-  return raw
+  const entries = raw
     .flatMap((entry) => String(entry).split(","))
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+  // `--client=` or a comma-only value must be invalid usage, not a silent fall
+  // back to auto-detection that writes configs the user never asked for.
+  if (entries.length === 0) {
+    throw new Error("Missing value for --client. Use --client <name> (see tack setup-mcp --list).");
+  }
+  return entries;
 }
 
 function resolveRequestedClients(requested: string[]): McpClientKey[] {

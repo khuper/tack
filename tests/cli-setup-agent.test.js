@@ -427,3 +427,16 @@ test("a bare or empty --platform is a usage error, not a silent host fallback", 
     }
   });
 });
+
+test("an empty --client value is a usage error, not silent auto-detection", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+
+    for (const client of ["", ","]) {
+      const result = captureOutput(() => runSetupMcp({ _: ["setup-mcp"], client }));
+      assert.strictEqual(result.code, 1);
+      assert.match(result.stderr, /Missing value for --client/);
+      assert.ok(!fs.existsSync(path.join(tmpDir, ".mcp.json")), "no config may be written on invalid usage");
+    }
+  });
+});

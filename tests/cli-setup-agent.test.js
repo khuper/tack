@@ -412,3 +412,18 @@ test("setup-agent does not fall back to .mcp.json for targets without a managed 
     assert.match(result.stdout, /npx -y tack-cli mcp/);
   });
 });
+
+test("a bare or empty --platform is a usage error, not a silent host fallback", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+
+    for (const platform of [true, ""]) {
+      const result = captureOutput(() =>
+        runSetupAgent({ _: ["setup-agent"], target: "claude", platform }, pkg.version)
+      );
+      assert.strictEqual(result.code, 1);
+      assert.match(result.stderr, /Missing value for --platform/);
+      assert.ok(!fs.existsSync(path.join(tmpDir, "CLAUDE.md")), "nothing may be written on invalid usage");
+    }
+  });
+});

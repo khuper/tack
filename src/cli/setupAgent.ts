@@ -281,8 +281,13 @@ function resolveRunner(value: unknown): McpServerRunner {
  * Windows/macOS/Linux team can settle on one form for the checked-in config instead of
  * reruns ping-ponging it. `--windows` stays as an alias for `--platform win32`.
  */
-function resolvePlatformFlag(windows: boolean | undefined, platform?: string): NodeJS.Platform | undefined {
-  if (typeof platform === "string" && platform.trim().length > 0) {
+function resolvePlatformFlag(windows: boolean | undefined, platform?: unknown): NodeJS.Platform | undefined {
+  // minimist hands a bare `--platform` through as boolean true and `--platform=""`
+  // as an empty string; both are usage errors, not a silent host-platform fallback.
+  if (platform !== undefined) {
+    if (typeof platform !== "string" || platform.trim().length === 0) {
+      throw new Error("Missing value for --platform. Use --platform win32 or --platform posix.");
+    }
     const normalized = platform.trim().toLowerCase();
     if (normalized === "win32" || normalized === "windows") {
       return "win32";

@@ -440,3 +440,17 @@ test("an empty --client value is a usage error, not silent auto-detection", () =
     }
   });
 });
+
+test("a bare or empty --target is a usage error, not silent default targets", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+
+    for (const target of [true, ""]) {
+      const result = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target }, pkg.version));
+      assert.strictEqual(result.code, 1);
+      assert.match(result.stderr, /Missing value for --target/);
+      assert.ok(!fs.existsSync(path.join(tmpDir, "AGENTS.md")), "no instruction files on invalid usage");
+      assert.ok(!fs.existsSync(path.join(tmpDir, ".mcp.json")), "no MCP config on invalid usage");
+    }
+  });
+});

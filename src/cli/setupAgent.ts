@@ -30,7 +30,7 @@ import type { McpClientKey, McpConfigOptions, McpConfigResult, McpServerRunner }
 
 type SetupAgentArgs = {
   _: string[];
-  target?: string;
+  target?: string | boolean;
   force?: boolean;
   list?: boolean;
   mcp?: boolean;
@@ -428,6 +428,13 @@ export function runSetupAgent(args: SetupAgentArgs, version: string): number {
 
   if (!tackDirExists()) {
     console.error("No .tack/ directory found. Run tack init first.");
+    return 1;
+  }
+
+  // minimist hands a bare `--target` through as boolean true and `--target=` as an
+  // empty string; both are usage errors, not a silent fall back to default targets.
+  if (args.target !== undefined && (typeof args.target !== "string" || args.target.trim().length === 0)) {
+    console.error("Missing value for --target. Use --target <name> (see tack setup-agent --list).");
     return 1;
   }
 

@@ -675,3 +675,12 @@ test("TOML comments reject control characters; multiline strings cannot be keys"
   }
   assert.strictEqual(mergeToml('"quoted key" = "x"\n').changed, true);
 });
+
+test("TOML rejects child tables beneath scalar-valued keys", () => {
+  for (const doc of ["a = 1\n[a.b]\nx = 2\n", "a = 1\n[[a.b]]\nx = 2\n"]) {
+    const error = captureManualError(() => mergeToml(doc));
+    assert.ok(isMcpParseError(error), `table beneath a scalar must be refused: ${JSON.stringify(doc)}`);
+  }
+  // Normal supertable/subtable layouts stay legal.
+  assert.strictEqual(mergeToml("[a]\nx = 1\n[a.b]\ny = 2\n").changed, true);
+});

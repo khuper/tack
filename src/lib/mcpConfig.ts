@@ -927,6 +927,15 @@ function assertNoDuplicateTomlDefinitions(nodes: TomlNode[]): void {
     const joined = node.path.join(".");
 
     if (node.kind === "table") {
+      // No table (of either kind) may live beneath a key that already holds a
+      // scalar value: `a = 1` followed by [a.b] or [[a.b]] is invalid TOML.
+      const failIfAncestorHoldsValue = (prefix: string): void => {
+        for (let depth = 1; depth < node.path.length; depth += 1) {
+          const ancestorJoined = node.path.slice(0, depth).join(".");
+          if (values.has(`${prefix}${ancestorJoined}`)) fail(ancestorJoined);
+        }
+      };
+
       if (node.arrayOfTables === true) {
         // An array-of-tables path may not already exist as a plain table, a valued
         // key, or a dotted-key parent — checked within the enclosing array-element
@@ -937,6 +946,7 @@ function assertNoDuplicateTomlDefinitions(nodes: TomlNode[]): void {
         if (headers.has(scopedArray) || values.has(scopedArray) || dottedParents.has(scopedArray)) {
           fail(joined);
         }
+        failIfAncestorHoldsValue(enclosing);
         arrayInstances.set(scopedArray, (arrayInstances.get(scopedArray) ?? 0) + 1);
         scopePrefix = `${scopedArray}#${arrayInstances.get(scopedArray)}::`;
         continue;
@@ -955,6 +965,7 @@ function assertNoDuplicateTomlDefinitions(nodes: TomlNode[]): void {
       ) {
         fail(joined);
       }
+      failIfAncestorHoldsValue(scopePrefix);
       headers.add(scoped);
       continue;
     }

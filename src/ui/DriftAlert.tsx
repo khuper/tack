@@ -20,9 +20,13 @@ function failureMessageFor(outcome: DriftResolutionOutcome): string {
       (outcome.error === "spec_unreadable" ? "read" : "written") +
       "; nothing was changed. Fix spec.yaml, then retry.";
   }
+  const driftProblem =
+    outcome.error === "drift_write_failed"
+      ? ".tack/_drift.yaml could not be written (disk, permissions, or a rejected symlink)"
+      : ".tack/_drift.yaml is unreadable";
   return outcome.specUpdated
-    ? "Spec updated, but the verdict was NOT saved — .tack/_drift.yaml is unreadable. Fix or delete it, then retry (retrying is safe)."
-    : "NOT saved — .tack/_drift.yaml is unreadable. Fix or delete it, then retry; nothing was changed.";
+    ? `Spec updated, but the verdict was NOT saved — ${driftProblem}. Fix it, then retry (retrying is safe).`
+    : `NOT saved — ${driftProblem}. Fix it, then retry; nothing was changed.`;
 }
 
 export function DriftAlert({ item, onResolved }: Props) {

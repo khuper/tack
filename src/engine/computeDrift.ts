@@ -225,7 +225,7 @@ export type DriftResolutionOutcome = {
   /** True when spec.yaml was modified (accept/deny of a system item). */
   specUpdated: boolean;
   /** Names the failing stage so the UI can say exactly what did and didn't happen. */
-  error: "spec_unreadable" | "spec_write_failed" | "drift_unreadable" | "item_stale" | null;
+  error: "spec_unreadable" | "spec_write_failed" | "drift_unreadable" | "drift_write_failed" | "item_stale" | null;
 };
 
 /**
@@ -300,7 +300,11 @@ export function resolveDriftItemWithSpec(
     action === "accepted" ? "Accepted via tack watch" : "Rejected via tack watch"
   );
   if (!result.persisted) {
-    return { persisted: false, specUpdated, error: "drift_unreadable" };
+    return {
+      persisted: false,
+      specUpdated,
+      error: result.failedStage === "write" ? "drift_write_failed" : "drift_unreadable",
+    };
   }
   return { persisted: true, specUpdated, error: null };
 }
@@ -309,7 +313,7 @@ export function resolveDriftItem(
   id: string,
   action: "accepted" | "rejected" | "skipped",
   note?: string
-): { state: DriftState; persisted: boolean; error: string | null } {
+): { state: DriftState; persisted: boolean; error: string | null; failedStage?: "read" | "write" } {
   const { state, error: readError } = readDriftWithError();
 
   // Same rule as computeDrift: never persist on top of a state that failed to load.
@@ -317,7 +321,7 @@ export function resolveDriftItem(
   // must be able to tell the user their resolution was NOT recorded, instead of
   // showing success while the file stays unreadable.
   if (readError) {
-    return { state, persisted: false, error: readError };
+    return { state, persisted: false, error: readError, failedStage: "read" };
   }
 
   const item = state.items.find((i) => i.id === id);
@@ -332,7 +336,19 @@ export function resolveDriftItem(
     }
     if (note) item.note = note;
   }
-  writeDrift(state);
+  // A readable file can still be unwritable (disk full, directory permissions, a
+  // symlink the write boundary rejects). That must surface as an unpersisted
+  // outcome, not an exception that unwinds through the UI mid-transaction.
+  try {
+    writeDrift(state);
+  } catch (err) {
+    return {
+      state,
+      persisted: false,
+      error: err instanceof Error ? err.message : String(err),
+      failedStage: "write",
+    };
+  }
   if (item && previousStatus === "unresolved" && item.status !== "unresolved") {
     log({
       event: "drift:resolved",

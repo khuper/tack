@@ -399,3 +399,43 @@ test("skip never reverts a verdict a concurrent process recorded", () => {
     assert.match(fs.readFileSync(driftFile, "utf-8"), /status: accepted/);
   });
 });
+
+test("a drift write failure surfaces as an unpersisted outcome, not an exception", () => {
+  withTempProject((tmpDir) => {
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "spec.yaml"),
+      "project: t\nallowed_systems: []\nforbidden_systems: []\nconstraints: {}\n",
+      "utf-8"
+    );
+    // Readable but unwritable: a symlink to an out-of-project file reads fine, but
+    // the write boundary rejects writing through it.
+    const outside = path.join(os.tmpdir(), `drift-target-${path.basename(tmpDir)}.yaml`);
+    fs.writeFileSync(
+      outside,
+      [
+        "schema_version: 2",
+        "items:",
+        "  - id: item-spec",
+        "    type: undeclared_system",
+        "    system: redis",
+        "    signal: 'redis: src/cache.ts'",
+        "    detected: 2026-01-01T00:00:00Z",
+        "    status: unresolved",
+        "",
+      ].join("\n"),
+      "utf-8"
+    );
+    try {
+      fs.symlinkSync(outside, path.join(tmpDir, ".tack", "_drift.yaml"));
+
+      const outcome = resolveDriftItemWithSpec(ITEM, "accepted");
+
+      assert.strictEqual(outcome.persisted, false);
+      assert.strictEqual(outcome.error, "drift_write_failed");
+      assert.strictEqual(outcome.specUpdated, true, "spec step succeeded before the drift write failed");
+      assert.match(fs.readFileSync(outside, "utf-8"), /status: unresolved/, "the link target must be untouched");
+    } finally {
+      fs.rmSync(outside, { force: true });
+    }
+  });
+});

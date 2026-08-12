@@ -530,3 +530,37 @@ test("applyMcpConfig refuses a config behind a symlinked parent directory", () =
     }
   });
 });
+
+test("TOML scanner rejects duplicate definitions instead of blessing broken configs", () => {
+  const invalid = [
+    'model = "a"\nmodel = "b"\n',
+    "[a]\nx = 1\n[a]\ny = 2\n",
+    "a = 1\na.b = 2\n",
+    "a.b = 2\na = 1\n",
+    'server.x = 1\n[server]\ny = 2\n',
+    'x = 1\n[x]\ny = 2\n',
+  ];
+  for (const doc of invalid) {
+    const error = captureManualError(() => mergeToml(doc));
+    assert.ok(isMcpParseError(error), `duplicate definitions must be refused: ${JSON.stringify(doc)}`);
+  }
+
+  // Legal repetition stays legal: array-of-tables elements share key names,
+  // and per-element subtables repeat once per element.
+  const arrayDoc = [
+    "[[profiles]]",
+    'name = "a"',
+    "[profiles.limits]",
+    "cpu = 1",
+    "[[profiles]]",
+    'name = "b"',
+    "[profiles.limits]",
+    "cpu = 2",
+    "",
+  ].join("\n");
+  assert.strictEqual(mergeToml(arrayDoc).changed, true);
+
+  // Dotted keys under distinct tables never collide.
+  const distinctTables = '[a]\nx.y = 1\n[b]\nx.y = 2\n';
+  assert.strictEqual(mergeToml(distinctTables).changed, true);
+});

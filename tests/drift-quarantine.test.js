@@ -133,3 +133,30 @@ test("note-less rejections in a version-2 file are preserved as human verdicts",
     assert.strictEqual(state.items.find((i) => i.id === "api-rejection").status, "rejected");
   });
 });
+
+test("unsupported schema_version values make the read lossy instead of re-enabling migration", () => {
+  const cases = ['schema_version: "2"', "schema_version: 3", "schema_version: 1.5"];
+  for (const versionLine of cases) {
+    withTempProject((tmpDir) => {
+      const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+      const original = [
+        versionLine,
+        "items:",
+        "  - id: hand-edited",
+        "    type: risk",
+        "    risk: eval-usage",
+        "    signal: 'eval usage: src/a.ts'",
+        "    detected: 2026-01-01T00:00:00Z",
+        "    status: rejected",
+        "",
+      ].join("\n");
+      fs.writeFileSync(driftFile, original, "utf-8");
+
+      const { state, readOnly } = computeDrift(EMPTY_DIFF);
+
+      assert.strictEqual(readOnly, true, `${versionLine} must force a read-only sweep`);
+      assert.strictEqual(state.items.find((i) => i.id === "hand-edited").status, "rejected");
+      assert.strictEqual(fs.readFileSync(driftFile, "utf-8"), original, "the file must not be rewritten");
+    });
+  }
+});

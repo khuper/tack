@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import type { Audit, DriftItem, DriftState, Signal, Spec, SpecDomain } from "./signals.js";
-import { KNOWN_CONSTRAINT_KEYS } from "./signals.js";
+import { DRIFT_SCHEMA_VERSION, KNOWN_CONSTRAINT_KEYS } from "./signals.js";
 
 const MAX_FIELD_LENGTH = 200;
 const MAX_SOURCE_LENGTH = 500;
@@ -339,17 +339,35 @@ export function validateDriftState(raw: unknown): ValidationResult<DriftState> &
   }
 
   const unknownRootKeys = Object.keys(raw).filter((key) => key !== "items" && key !== "schema_version");
-  const schemaVersion =
-    typeof raw.schema_version === "number" && Number.isFinite(raw.schema_version)
-      ? raw.schema_version
-      : undefined;
+
+  // The version gates a one-time migration, so a value this version cannot vouch for
+  // must make the read lossy (read-only), never silently collapse to "unversioned":
+  // a hand-edited `schema_version: "2"` would otherwise re-enable the legacy
+  // migration, and a future version would be overwritten (downgraded) on rewrite.
+  let schemaVersion: number | undefined;
+  let versionUnusable = false;
+  if (raw.schema_version !== undefined) {
+    if (
+      typeof raw.schema_version === "number" &&
+      Number.isInteger(raw.schema_version) &&
+      raw.schema_version >= 1 &&
+      raw.schema_version <= DRIFT_SCHEMA_VERSION
+    ) {
+      schemaVersion = raw.schema_version;
+    } else {
+      versionUnusable = true;
+      warnings.push(
+        `_drift.yaml schema_version ${JSON.stringify(raw.schema_version)} is not supported by this version of Tack`
+      );
+    }
+  }
 
   if (!Array.isArray(raw.items)) {
     if (raw.items !== undefined) warnings.push("_drift.yaml items must be an array");
     return {
       data: { ...(schemaVersion !== undefined ? { schema_version: schemaVersion } : {}), items: [] },
       warnings,
-      lossy: raw.items !== undefined || unknownRootKeys.length > 0,
+      lossy: raw.items !== undefined || unknownRootKeys.length > 0 || versionUnusable,
     };
   }
 
@@ -371,7 +389,7 @@ export function validateDriftState(raw: unknown): ValidationResult<DriftState> &
   return {
     data: { ...(schemaVersion !== undefined ? { schema_version: schemaVersion } : {}), items },
     warnings,
-    lossy: droppedItems > 0 || hasUnrepresentableContent || unknownRootKeys.length > 0,
+    lossy: droppedItems > 0 || hasUnrepresentableContent || unknownRootKeys.length > 0 || versionUnusable,
   };
 }
 

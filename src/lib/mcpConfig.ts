@@ -429,6 +429,8 @@ type TomlNode = {
   path: string[];
   /** Table the node was declared in. Empty for root-level keys. */
   table: string[];
+  /** True for `[[x]]` array-of-tables headers, which may legitimately repeat. */
+  arrayOfTables?: boolean;
 };
 
 class TomlScanError extends Error {}
@@ -761,7 +763,7 @@ function scanTomlDocument(text: string): TomlNode[] {
       }
       finishLine();
       currentTable = tablePath;
-      nodes.push({ kind: "table", start, end: pos, path: tablePath, table: tablePath });
+      nodes.push({ kind: "table", start, end: pos, path: tablePath, table: tablePath, arrayOfTables });
       continue;
     }
 
@@ -774,7 +776,79 @@ function scanTomlDocument(text: string): TomlNode[] {
     nodes.push({ kind: "keyval", start, end: pos, path: [...currentTable, ...keyPath], table: currentTable });
   }
 
+  assertNoDuplicateTomlDefinitions(nodes);
   return nodes;
+}
+
+/**
+ * Rejects documents that define the same key or table twice — invalid TOML the
+ * line-level scanner otherwise accepts, because each assignment lands as an
+ * independent node. Without this, `mergeTomlMcpConfig` would append the Tack table
+ * to an already-broken config (`model = 1` twice) and report success while Codex
+ * still cannot parse the file. Array-of-tables headers legitimately repeat, and
+ * keys inside successive `[[x]]` elements share a path, so keyvals are deduplicated
+ * per array-table *instance*. Deliberately stricter than the TOML spec in rare
+ * corners (e.g. defining `[a]` after `[a.b]`): over-strictness downgrades to the
+ * `manual` snippet, which is the safe failure mode for a recognizer.
+ */
+function assertNoDuplicateTomlDefinitions(nodes: TomlNode[]): void {
+  /** Highest instance number seen per array-of-tables path. */
+  const arrayInstances = new Map<string, number>();
+  /** Non-array table headers, scoped by their nearest array-element instance. */
+  const headers = new Set<string>();
+  /** Key paths assigned a value, scoped the same way. */
+  const values = new Set<string>();
+  /** Intermediate segments of dotted keys (`a` in `a.b = 1`), scoped the same way. */
+  const dottedParents = new Set<string>();
+  let scopePrefix = "";
+
+  const fail = (label: string): never => {
+    throw new TomlScanError(`duplicate definition of "${label}"`);
+  };
+
+  // Nearest enclosing [[array]] element for a header path, so tables repeated once
+  // per array element ([fruit.physical] under each [[fruit]]) stay legal.
+  const arrayScopeFor = (joined: string): string => {
+    let best: string | null = null;
+    for (const arrayPath of arrayInstances.keys()) {
+      if (joined.length > arrayPath.length && joined.startsWith(`${arrayPath}.`)) {
+        if (best === null || arrayPath.length > best.length) best = arrayPath;
+      }
+    }
+    return best === null ? "" : `${best}#${arrayInstances.get(best)}::`;
+  };
+
+  for (const node of nodes) {
+    if (node.kind === "comment") continue;
+    const joined = node.path.join(".");
+
+    if (node.kind === "table") {
+      if (node.arrayOfTables === true) {
+        arrayInstances.set(joined, (arrayInstances.get(joined) ?? 0) + 1);
+        scopePrefix = `${joined}#${arrayInstances.get(joined)}::`;
+        continue;
+      }
+      scopePrefix = arrayScopeFor(joined);
+      const scoped = `${scopePrefix}${joined}`;
+      // A header may not repeat, re-open a key that already holds a value, or
+      // re-open a table a dotted key already created (`server.x = 1` then [server]).
+      if (headers.has(scoped) || values.has(scoped) || dottedParents.has(scoped)) fail(joined);
+      headers.add(scoped);
+      continue;
+    }
+
+    const scoped = `${scopePrefix}${joined}`;
+    if (values.has(scoped) || headers.has(scoped)) fail(joined);
+    // Dotted-key conflicts in both directions: `a = 1` then `a.b = 2`, and the reverse.
+    for (let depth = node.table.length + 1; depth < node.path.length; depth += 1) {
+      const prefixJoined = node.path.slice(0, depth).join(".");
+      const prefixScoped = `${scopePrefix}${prefixJoined}`;
+      if (values.has(prefixScoped)) fail(prefixJoined);
+      dottedParents.add(prefixScoped);
+    }
+    if (dottedParents.has(scoped)) fail(joined);
+    values.add(scoped);
+  }
 }
 
 function pathStartsWith(candidate: string[], prefix: string[]): boolean {

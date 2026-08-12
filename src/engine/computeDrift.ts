@@ -37,7 +37,9 @@ export function computeDrift(diff: SpecDiff): {
   // `disappeared`, eligible to reopen if its violation comes back. Files written by
   // this version (schema_version >= 2) are never migrated: a note-less `rejected`
   // there is a deliberate verdict (hand-edited or via the API) and is preserved.
-  if ((existing.schema_version ?? 1) < DRIFT_SCHEMA_VERSION) {
+  // Never on a read-only sweep: an unusable schema_version reads as "unversioned",
+  // and migrating in memory would misreport statuses the file still holds.
+  if (readError === null && (existing.schema_version ?? 1) < DRIFT_SCHEMA_VERSION) {
     for (const item of existing.items) {
       if (item.status === "rejected" && !item.note) {
         item.status = DRIFT_STATUS_DISAPPEARED;

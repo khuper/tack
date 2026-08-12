@@ -31,8 +31,11 @@ export function computeDrift(diff: SpecDiff): {
     // eslint-disable-next-line no-console
     console.warn(
       `[tack] _drift.yaml could not be used, so drift state was NOT updated: ${readError}. ` +
-        (backup ? `A copy of the original file is at ${backup}. ` : "") +
-        "Fix or delete .tack/_drift.yaml and re-run; until then accepted/rejected resolutions are not visible."
+        (backup
+          ? `A copy of the original file is at ${backup}. Fix or delete .tack/_drift.yaml and re-run; ` +
+            "until then accepted/rejected resolutions are not visible."
+          : "No backup could be created — do NOT delete .tack/_drift.yaml; copy it somewhere safe " +
+            "manually, then repair it. Until then accepted/rejected resolutions are not visible.")
     );
   }
 

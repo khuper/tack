@@ -489,3 +489,22 @@ test("each corruption episode gets its own content-addressed backup", () => {
     assert.match(fs.readFileSync(first, "utf-8"), /first corruption/);
   });
 });
+
+test("impostors at every predictable path cannot starve the backup", () => {
+  withTempProject((tmpDir) => {
+    const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+    fs.writeFileSync(driftFile, "<<<<<<< starved\nitems: []\n", "utf-8");
+
+    // Pre-seed impostors at the digest path and all sequential suffixes.
+    const first = quarantineCorruptDrift();
+    const digestBase = first.replace(/\.corrupt$/, "");
+    fs.writeFileSync(first, "impostor\n", "utf-8");
+    for (let i = 1; i <= 8; i += 1) {
+      fs.writeFileSync(`${digestBase}-${i}.corrupt`, "impostor\n", "utf-8");
+    }
+
+    const backup = quarantineCorruptDrift();
+    assert.ok(backup, "a random-suffix destination must still be found");
+    assert.match(fs.readFileSync(backup, "utf-8"), /starved/);
+  });
+});

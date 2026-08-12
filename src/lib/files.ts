@@ -854,8 +854,14 @@ export function quarantineCorruptDrift(): string | null {
       } catch {
         // Symlinked or unreadable candidate: never reuse it.
       }
-      if (attempt > 8) return null;
-      backup = `${source}.${digest}-${attempt}.corrupt`;
+      // Sequential suffixes first (predictable names for humans), then random ones so
+      // a checkout pre-seeded with impostors at every predictable path still cannot
+      // starve the backup; the final bound only guards against a broken filesystem.
+      backup =
+        attempt <= 8
+          ? `${source}.${digest}-${attempt}.corrupt`
+          : `${source}.${digest}-${crypto.randomBytes(6).toString("hex")}.corrupt`;
+      if (attempt > 32) return null;
     }
     assertInsideTackDir(backup);
     fs.copyFileSync(source, backup);

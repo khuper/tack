@@ -1,6 +1,13 @@
 import type { SpecDiff, DriftState, DriftItem } from "../lib/signals.js";
 import { createDriftId, DRIFT_SCHEMA_VERSION } from "../lib/signals.js";
-import { quarantineCorruptDrift, readDriftWithError, readSpec, writeDrift, writeSpec } from "../lib/files.js";
+import {
+  quarantineCorruptDrift,
+  readDriftWithError,
+  readSpec,
+  withDriftLock,
+  writeDrift,
+  writeSpec,
+} from "../lib/files.js";
 import { DRIFT_STATUS_DISAPPEARED, isDisappearedDriftItem } from "../lib/validate.js";
 import { log } from "../lib/logger.js";
 
@@ -264,7 +271,7 @@ export function resolveDriftItemWithSpec(
       persisted: false,
       specUpdated: false,
       error:
-        claim.failedStage === "write"
+        claim.failedStage === "write" || claim.failedStage === "lock"
           ? "drift_write_failed"
           : claim.failedStage === "conflict"
             ? "item_stale"
@@ -344,7 +351,38 @@ export function resolveDriftItem(
   state: DriftState;
   persisted: boolean;
   error: string | null;
-  failedStage?: "read" | "write" | "conflict";
+  failedStage?: "read" | "write" | "conflict" | "lock";
+} {
+  try {
+    return withDriftLock(() => applyDriftResolution(id, action, note));
+  } catch (err) {
+    // Failing to take the lock (another Tack process is mid-transaction, or the lock
+    // file itself is unwritable) must surface as an unpersisted outcome like every
+    // other failure here — never as an exception unwinding through the Ink UI.
+    const { state } = readDriftWithError();
+    return {
+      state,
+      persisted: false,
+      error: err instanceof Error ? err.message : String(err),
+      failedStage: "lock",
+    };
+  }
+}
+
+/**
+ * The locked read-modify-write. Every step — the read, the conflict check and the
+ * write — happens while this process holds the drift lock, so a concurrent watch
+ * process cannot interleave between the check and the write.
+ */
+function applyDriftResolution(
+  id: string,
+  action: "accepted" | "rejected" | "skipped",
+  note?: string
+): {
+  state: DriftState;
+  persisted: boolean;
+  error: string | null;
+  failedStage?: "read" | "write" | "conflict" | "lock";
 } {
   const { state, error: readError } = readDriftWithError();
 
@@ -357,30 +395,35 @@ export function resolveDriftItem(
   }
 
   const item = state.items.find((i) => i.id === id);
-  let previousStatus: DriftItem["status"] | null = null;
-  if (item) {
-    previousStatus = item.status;
-    // Last-moment conflict check: callers verified the item was unresolved before
-    // doing their own work (e.g. writing spec.yaml), but another watch process can
-    // record a verdict in the window between that check and this write. Overwriting
-    // it would leave the drift state contradicting the spec, so the loser of the
-    // race reports a conflict instead.
-    if (action !== "skipped" && item.status !== "unresolved") {
-      return {
-        state,
-        persisted: false,
-        error: `drift item ${id} was already resolved as "${item.status}" by another process`,
-        failedStage: "conflict",
-      };
-    }
-    // Skip means "leave the item as it is" — it must never overwrite a status a
-    // concurrent process set in the meantime (reverting an accepted/rejected/
-    // disappeared item to unresolved would undo a verdict without any notice).
-    if (action !== "skipped") {
-      item.status = action;
-    }
-    if (note) item.note = note;
+  // The alert's item is gone entirely (the operator repaired or replaced the file):
+  // there is nothing to resolve, and callers must not act on a stale alert.
+  if (!item) {
+    return {
+      state,
+      persisted: false,
+      error: `drift item ${id} is no longer present in _drift.yaml`,
+      failedStage: "conflict",
+    };
   }
+  const previousStatus: DriftItem["status"] = item.status;
+  // Conflict check inside the lock: another process may have recorded a verdict
+  // between the caller queuing this alert and now. Overwriting it would leave the
+  // drift state contradicting spec.yaml, so the loser reports a conflict instead.
+  if (action !== "skipped" && item.status !== "unresolved") {
+    return {
+      state,
+      persisted: false,
+      error: `drift item ${id} was already resolved as "${item.status}" by another process`,
+      failedStage: "conflict",
+    };
+  }
+  // Skip means "leave the item as it is" — it must never overwrite a status a
+  // concurrent process set in the meantime (reverting an accepted/rejected/
+  // disappeared item to unresolved would undo a verdict without any notice).
+  if (action !== "skipped") {
+    item.status = action;
+  }
+  if (note) item.note = note;
   // A readable file can still be unwritable (disk full, directory permissions, a
   // symlink the write boundary rejects). That must surface as an unpersisted
   // outcome, not an exception that unwinds through the UI mid-transaction.
@@ -394,7 +437,7 @@ export function resolveDriftItem(
       failedStage: "write",
     };
   }
-  if (item && previousStatus === "unresolved" && item.status !== "unresolved") {
+  if (previousStatus === "unresolved" && item.status !== "unresolved") {
     log({
       event: "drift:resolved",
       system: item.system ?? item.risk ?? item.type,

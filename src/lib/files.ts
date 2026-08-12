@@ -871,6 +871,75 @@ export function quarantineCorruptDrift(): string | null {
   }
 }
 
+/**
+ * Cross-process mutex around `_drift.yaml`, used to make a read-modify-write of the
+ * drift state atomic between concurrent `tack watch` processes.
+ *
+ * `open(2)` with O_CREAT|O_EXCL is atomic on POSIX and Windows alike, so creating the
+ * lock file IS the compare-and-set. A lock whose mtime is older than
+ * `DRIFT_LOCK_STALE_MS` is assumed to belong to a process that died mid-transaction
+ * and is broken deliberately — an abandoned lock must never wedge the tool forever.
+ * The wait is bounded: callers get their turn or the transaction reports a failure
+ * rather than blocking a TUI indefinitely.
+ */
+const DRIFT_LOCK_STALE_MS = 30_000;
+const DRIFT_LOCK_WAIT_MS = 5_000;
+const DRIFT_LOCK_POLL_MS = 25;
+
+function sleepSyncMs(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Runs `fn` while holding the drift lock. Throws if the lock cannot be acquired. */
+export function withDriftLock<T>(fn: () => T): T {
+  const lockPath = `${driftPath()}.lock`;
+  assertInsideTackDir(lockPath);
+  const deadline = Date.now() + DRIFT_LOCK_WAIT_MS;
+  let fd: number | null = null;
+
+  for (;;) {
+    try {
+      fd = fs.openSync(lockPath, "wx");
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") throw err;
+      // Break a stale lock left by a process that died mid-transaction.
+      try {
+        const age = Date.now() - fs.statSync(lockPath).mtimeMs;
+        if (age > DRIFT_LOCK_STALE_MS) {
+          fs.rmSync(lockPath, { force: true });
+          continue;
+        }
+      } catch {
+        // The holder released it between our open and stat: just retry.
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Timed out waiting for ${lockPath}. Another Tack process is resolving drift; ` +
+            "retry, or delete the lock file if no other Tack process is running."
+        );
+      }
+      sleepSyncMs(DRIFT_LOCK_POLL_MS);
+    }
+  }
+
+  try {
+    fs.writeSync(fd, `${process.pid}\n`);
+    return fn();
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      // Ignore close failures; the unlink below is what matters.
+    }
+    try {
+      fs.rmSync(lockPath, { force: true });
+    } catch {
+      // A stale lock left behind is recovered by the staleness check above.
+    }
+  }
+}
+
 export function writeDrift(state: DriftState): void {
   // Every write stamps the current schema version, so one-time migrations (see
   // engine/computeDrift.ts) can tell "written by an old Tack" from "written by this one".

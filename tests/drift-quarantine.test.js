@@ -629,3 +629,49 @@ test("the claim is rolled back when the spec write fails, leaving the item actio
     }
   });
 });
+
+test("a claim for an item missing from the file is a stale conflict", () => {
+  withTempProject((tmpDir) => {
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "spec.yaml"),
+      "project: t\nallowed_systems: []\nforbidden_systems: []\nconstraints: {}\n",
+      "utf-8"
+    );
+    // The operator repaired the file; the queued alert's item no longer exists.
+    fs.writeFileSync(path.join(tmpDir, ".tack", "_drift.yaml"), "schema_version: 2\nitems: []\n", "utf-8");
+
+    const outcome = resolveDriftItemWithSpec(ITEM, "accepted");
+
+    assert.deepStrictEqual(outcome, { persisted: false, specUpdated: false, error: "item_stale" });
+    const spec = fs.readFileSync(path.join(tmpDir, ".tack", "spec.yaml"), "utf-8");
+    assert.doesNotMatch(spec, /redis/, "a stale alert must never reach spec.yaml");
+  });
+});
+
+test("the drift lock serializes resolution and is released after each transaction", () => {
+  withTempProject((tmpDir) => {
+    const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+    const lockPath = `${driftFile}.lock`;
+    seedHealthyDrift(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "spec.yaml"),
+      "project: t\nallowed_systems: []\nforbidden_systems: []\nconstraints: {}\n",
+      "utf-8"
+    );
+
+    const ok = resolveDriftItemWithSpec(ITEM, "accepted");
+    assert.strictEqual(ok.persisted, true);
+    assert.ok(!fs.existsSync(lockPath), "the lock must be released when the transaction ends");
+
+    // A live lock held by another process makes the next attempt wait, then fail
+    // cleanly rather than corrupting state. (Stale locks are broken automatically.)
+    fs.writeFileSync(lockPath, "999999\n", "utf-8");
+    try {
+      const blocked = resolveDriftItem("item-spec", "skipped");
+      assert.strictEqual(blocked.persisted, false, "a held lock must not be bypassed");
+      assert.match(blocked.error ?? "", /Timed out waiting/);
+    } finally {
+      fs.rmSync(lockPath, { force: true });
+    }
+  });
+});

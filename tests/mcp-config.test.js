@@ -663,3 +663,15 @@ test("TOML unicode escapes require Unicode scalar values", () => {
   }
   assert.strictEqual(mergeToml('ok = "\\u0041\\U0001F600"\n').changed, true);
 });
+
+test("TOML comments reject control characters; multiline strings cannot be keys", () => {
+  const commentError = captureManualError(() => mergeToml("# bad\u0000comment\nmodel = \"x\"\n"));
+  assert.ok(isMcpParseError(commentError), "NUL in a comment is invalid TOML");
+  assert.strictEqual(mergeToml("# tab\tis fine\nmodel = \"x\"\n").changed, true);
+
+  for (const doc of ['"""model""" = "x"', "'''model''' = 'x'"]) {
+    const keyError = captureManualError(() => mergeToml(`${doc}\n`));
+    assert.ok(isMcpParseError(keyError), `multiline key must be refused: ${doc}`);
+  }
+  assert.strictEqual(mergeToml('"quoted key" = "x"\n').changed, true);
+});

@@ -324,7 +324,12 @@ export function resolveDriftItem(
   let previousStatus: DriftItem["status"] | null = null;
   if (item) {
     previousStatus = item.status;
-    item.status = action === "skipped" ? "unresolved" : action;
+    // Skip means "leave the item as it is" — it must never overwrite a status a
+    // concurrent process set in the meantime (reverting an accepted/rejected/
+    // disappeared item to unresolved would undo a verdict without any notice).
+    if (action !== "skipped") {
+      item.status = action;
+    }
     if (note) item.note = note;
   }
   writeDrift(state);

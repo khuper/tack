@@ -516,6 +516,10 @@ function scanTomlDocument(text: string): TomlNode[] {
 
   const skipCommentBody = (): void => {
     while (pos < length && text[pos] !== "\n") {
+      // TOML forbids control characters (other than tab) in comments too.
+      if (isForbiddenStringChar(text[pos]!, false)) {
+        fail("control character in comment");
+      }
       pos += 1;
     }
   };
@@ -714,8 +718,15 @@ function scanTomlDocument(text: string): TomlNode[] {
       skipSpace();
       const char = text[pos];
       if (char === '"') {
+        // Quoted keys may only be single-line strings; """multi""" is not a key.
+        if (text.startsWith('"""', pos)) {
+          fail("multi-line strings cannot be keys");
+        }
         parts.push(readBasicString());
       } else if (char === "'") {
+        if (text.startsWith("'''", pos)) {
+          fail("multi-line strings cannot be keys");
+        }
         parts.push(readLiteralString());
       } else {
         const start = pos;

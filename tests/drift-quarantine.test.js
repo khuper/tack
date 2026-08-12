@@ -372,3 +372,30 @@ test("a stale alert (item disappeared in a later scan) never touches the spec", 
     assert.strictEqual(fs.readFileSync(path.join(tmpDir, ".tack", "spec.yaml"), "utf-8"), specContent);
   });
 });
+
+test("skip never reverts a verdict a concurrent process recorded", () => {
+  withTempProject((tmpDir) => {
+    const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+    fs.writeFileSync(
+      driftFile,
+      [
+        "schema_version: 2",
+        "items:",
+        "  - id: raced",
+        "    type: risk",
+        "    risk: eval-usage",
+        "    signal: 'eval usage: src/a.ts'",
+        "    detected: 2026-01-01T00:00:00Z",
+        "    status: accepted",
+        "    note: Accepted elsewhere",
+        "",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const result = resolveDriftItem("raced", "skipped");
+
+    assert.strictEqual(result.persisted, true);
+    assert.match(fs.readFileSync(driftFile, "utf-8"), /status: accepted/);
+  });
+});

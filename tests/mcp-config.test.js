@@ -655,3 +655,11 @@ test("TOML scanner scopes nested array-table collisions to the active element", 
     '[[fruit]]\nname = "apple"\n[[fruit.variety]]\nkind = "gala"\n[[fruit]]\nname = "pear"\n[[fruit.variety]]\nkind = "bosc"\n';
   assert.strictEqual(mergeToml(valid).changed, true);
 });
+
+test("TOML unicode escapes require Unicode scalar values", () => {
+  for (const doc of ['v = "\\uD800"', 'w = "\\UFFFFFFFF"', 'x = """\\uDFFF"""']) {
+    const error = captureManualError(() => mergeToml(`${doc}\n`));
+    assert.ok(isMcpParseError(error), `surrogate/out-of-range escape must be refused: ${doc}`);
+  }
+  assert.strictEqual(mergeToml('ok = "\\u0041\\U0001F600"\n').changed, true);
+});

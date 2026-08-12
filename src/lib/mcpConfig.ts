@@ -643,8 +643,14 @@ function scanTomlDocument(text: string): TomlNode[] {
         if (!new RegExp(`^[0-9A-Fa-f]{${width}}$`).test(hex)) {
           fail("invalid unicode escape");
         }
+        const code = Number.parseInt(hex, 16);
+        // TOML requires Unicode scalar values: surrogates (U+D800-U+DFFF) and
+        // anything past U+10FFFF are invalid even when the hex digits parse.
+        if ((code >= 0xd800 && code <= 0xdfff) || code > 0x10ffff) {
+          fail("invalid unicode escape");
+        }
         pos += 2 + width;
-        return String.fromCodePoint(Number.parseInt(hex, 16));
+        return String.fromCodePoint(code);
       }
       default:
         return fail("invalid string escape");

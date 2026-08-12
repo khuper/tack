@@ -8,6 +8,7 @@ import {
   getAvailableTargets,
   getDestinationPath,
   replaceBlock,
+  resolveAgentTarget,
 } from "../dist/lib/agentTemplates.js";
 
 test("buildBlock creates a versioned instruction block", () => {
@@ -50,8 +51,17 @@ test("findExistingBlock rejects malformed markers", () => {
 test("target helpers expose supported paths", () => {
   const repoRoot = path.join("repo", "root");
 
-  assert.deepStrictEqual(getAvailableTargets(), ["claude", "codex", "generic"]);
+  assert.deepStrictEqual(getAvailableTargets(), ["claude", "codex", "gemini", "generic"]);
   assert.strictEqual(getDestinationPath("claude", repoRoot), path.join(repoRoot, "CLAUDE.md"));
   assert.strictEqual(getDestinationPath("codex", repoRoot), path.join(repoRoot, "AGENTS.md"));
+  assert.strictEqual(getDestinationPath("gemini", repoRoot), path.join(repoRoot, "GEMINI.md"));
   assert.strictEqual(getDestinationPath("generic", repoRoot), path.join(repoRoot, ".tack", "AGENT.md"));
+});
+
+test("target aliases resolve to their canonical target", () => {
+  assert.strictEqual(resolveAgentTarget("gemini-cli"), "gemini");
+  assert.strictEqual(resolveAgentTarget("Gemini"), "gemini");
+  assert.strictEqual(resolveAgentTarget("claude-code"), "claude");
+  assert.strictEqual(resolveAgentTarget("cursor"), "codex");
+  assert.strictEqual(resolveAgentTarget("nope"), null);
 });

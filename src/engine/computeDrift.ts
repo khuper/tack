@@ -1,16 +1,30 @@
 import type { SpecDiff, DriftState, DriftItem } from "../lib/signals.js";
 import { createDriftId } from "../lib/signals.js";
-import { readDrift, writeDrift } from "../lib/files.js";
+import { quarantineCorruptDrift, readDriftWithError, writeDrift } from "../lib/files.js";
+import { DRIFT_STATUS_DISAPPEARED, asDriftItemStatus, isDisappearedDriftItem } from "../lib/validate.js";
 import { log } from "../lib/logger.js";
 
 export function computeDrift(diff: SpecDiff): {
   newItems: DriftItem[];
   state: DriftState;
 } {
-  const existing = readDrift();
-  const newItems: DriftItem[] = [];
+  const { state: existing, error: readError } = readDriftWithError();
 
-  const existingFingerprints = new Set(existing.items.map((item) => fingerprint(item)));
+  // A torn `_drift.yaml` (merge-conflict markers are enough: the file is committed to git)
+  // reads as an empty state. Persisting on top of that would erase every accepted and
+  // rejected resolution, so copy the file aside and run this sweep read-only instead.
+  if (readError) {
+    const backup = quarantineCorruptDrift();
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[tack] _drift.yaml could not be read, so drift state was NOT updated: ${readError}. ` +
+        (backup ? `A copy of the unreadable file is at ${backup}. ` : "") +
+        "Fix or delete .tack/_drift.yaml and re-run; until then accepted/rejected resolutions are not visible."
+    );
+  }
+
+  const appendedItems: DriftItem[] = [];
+  const reopenedItems: DriftItem[] = [];
 
   // Build the set of drift fingerprints that are still present in the latest spec diff.
   const currentFingerprints = new Set<string>();
@@ -53,11 +67,24 @@ export function computeDrift(diff: SpecDiff): {
     currentFingerprints.add(fingerprint(fpItem));
   }
 
-  // Automatically resolve drift items whose underlying fingerprint is no longer present.
+  // Reopen items that Tack auto-dismissed earlier and that have now come back. A
+  // violation removed in one commit and reintroduced in the next has to surface again.
+  for (const item of existing.items) {
+    if (!isDisappearedDriftItem(item)) continue;
+    if (!currentFingerprints.has(fingerprint(item))) continue;
+    item.status = "unresolved";
+    item.detected = new Date().toISOString();
+    reopenedItems.push(item);
+  }
+
+  // Auto-dismiss drift items whose underlying fingerprint is no longer present. This is a
+  // machine observation, not a human verdict, so it uses its own status: reusing
+  // "rejected" here would make the item indistinguishable from one a person dismissed and
+  // suppress it forever.
   for (const item of existing.items) {
     const fp = fingerprint(item);
     if (item.status === "unresolved" && !currentFingerprints.has(fp)) {
-      item.status = "rejected";
+      item.status = asDriftItemStatus(DRIFT_STATUS_DISAPPEARED);
       log({
         event: "drift:resolved",
         system: item.system ?? item.risk ?? item.type,
@@ -66,6 +93,12 @@ export function computeDrift(diff: SpecDiff): {
       });
     }
   }
+
+  // Only items that are still open or that a person ruled on suppress a fresh detection.
+  // Auto-dismissed items are handled by the reopen pass above.
+  const suppressedFingerprints = new Set(
+    existing.items.filter((item) => !isDisappearedDriftItem(item)).map((item) => fingerprint(item))
+  );
 
   for (const violation of diff.violations) {
     const item: DriftItem = {
@@ -77,8 +110,8 @@ export function computeDrift(diff: SpecDiff): {
       status: "unresolved",
     };
 
-    if (!existingFingerprints.has(fingerprint(item))) {
-      newItems.push(item);
+    if (!suppressedFingerprints.has(fingerprint(item))) {
+      appendedItems.push(item);
     }
   }
 
@@ -92,8 +125,8 @@ export function computeDrift(diff: SpecDiff): {
       status: "unresolved",
     };
 
-    if (!existingFingerprints.has(fingerprint(item))) {
-      newItems.push(item);
+    if (!suppressedFingerprints.has(fingerprint(item))) {
+      appendedItems.push(item);
     }
   }
 
@@ -107,16 +140,21 @@ export function computeDrift(diff: SpecDiff): {
       status: "unresolved",
     };
 
-    if (!existingFingerprints.has(fingerprint(item))) {
-      newItems.push(item);
+    if (!suppressedFingerprints.has(fingerprint(item))) {
+      appendedItems.push(item);
     }
   }
 
   const state: DriftState = {
-    items: [...existing.items, ...newItems],
+    items: [...existing.items, ...appendedItems],
   };
 
-  writeDrift(state);
+  if (!readError) {
+    writeDrift(state);
+  }
+
+  // Reopened items are new to the operator even though they already have an id.
+  const newItems = [...reopenedItems, ...appendedItems];
 
   for (const item of newItems) {
     log({
@@ -135,7 +173,7 @@ export function resolveDriftItem(
   action: "accepted" | "rejected" | "skipped",
   note?: string
 ): DriftState {
-  const state = readDrift();
+  const { state, error: readError } = readDriftWithError();
   const item = state.items.find((i) => i.id === id);
   let previousStatus: DriftItem["status"] | null = null;
   if (item) {
@@ -143,7 +181,10 @@ export function resolveDriftItem(
     item.status = action === "skipped" ? "unresolved" : action;
     if (note) item.note = note;
   }
-  writeDrift(state);
+  // Same rule as computeDrift: never persist on top of a state that failed to load.
+  if (!readError) {
+    writeDrift(state);
+  }
   if (item && previousStatus === "unresolved" && item.status !== "unresolved") {
     log({
       event: "drift:resolved",

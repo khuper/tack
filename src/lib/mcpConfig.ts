@@ -11,14 +11,18 @@ export type McpClientDefinition = {
   label: string;
   agentName: string;
   format: McpConfigFormat;
+  /** Canonical path the writer creates when no config file exists yet. */
   configPath: (repoRoot: string) => string;
-  detectionPaths: (repoRoot: string) => string[];
+  /** Every filename this client accepts, canonical first. Also the detection signal. */
+  configPaths: (repoRoot: string) => string[];
   description: string;
 };
 
 export type McpConfigOptions = {
   runner?: McpServerRunner;
   serverName?: string;
+  /** Target platform for the generated command. Defaults to `process.platform`. */
+  platform?: NodeJS.Platform;
   /** Plan the merge without writing. Only `applyMcpConfig` reads this; the merge helpers are pure. */
   dryRun?: boolean;
 };
@@ -38,7 +42,12 @@ export type McpConfigResult = {
 };
 
 export const TACK_MCP_SERVER_NAME = "tack";
-const PARSE_ERROR_PREFIX = "Could not parse ";
+
+/**
+ * Raised when a config file cannot be rewritten safely. Callers downgrade to the
+ * `manual` status and print the snippet instead of touching the file.
+ */
+class McpManualMergeError extends Error {}
 
 const MCP_CLIENT_DEFINITIONS: McpClientDefinition[] = [
   {
@@ -48,7 +57,7 @@ const MCP_CLIENT_DEFINITIONS: McpClientDefinition[] = [
     agentName: "claude",
     format: "json",
     configPath: (repoRoot) => path.join(repoRoot, ".mcp.json"),
-    detectionPaths: (repoRoot) => [path.join(repoRoot, ".mcp.json")],
+    configPaths: (repoRoot) => [path.join(repoRoot, ".mcp.json")],
     description: "checked-in project scope in .mcp.json",
   },
   {
@@ -58,7 +67,7 @@ const MCP_CLIENT_DEFINITIONS: McpClientDefinition[] = [
     agentName: "cursor",
     format: "json",
     configPath: (repoRoot) => path.join(repoRoot, ".cursor", "mcp.json"),
-    detectionPaths: (repoRoot) => [path.join(repoRoot, ".cursor")],
+    configPaths: (repoRoot) => [path.join(repoRoot, ".cursor", "mcp.json")],
     description: "project scope in .cursor/mcp.json",
   },
   {
@@ -68,7 +77,7 @@ const MCP_CLIENT_DEFINITIONS: McpClientDefinition[] = [
     agentName: "copilot",
     format: "json",
     configPath: (repoRoot) => path.join(repoRoot, ".vscode", "mcp.json"),
-    detectionPaths: (repoRoot) => [path.join(repoRoot, ".vscode")],
+    configPaths: (repoRoot) => [path.join(repoRoot, ".vscode", "mcp.json")],
     description: "workspace scope in .vscode/mcp.json",
   },
   {
@@ -78,7 +87,7 @@ const MCP_CLIENT_DEFINITIONS: McpClientDefinition[] = [
     agentName: "gemini",
     format: "json",
     configPath: (repoRoot) => path.join(repoRoot, ".gemini", "settings.json"),
-    detectionPaths: (repoRoot) => [path.join(repoRoot, ".gemini")],
+    configPaths: (repoRoot) => [path.join(repoRoot, ".gemini", "settings.json")],
     description: "project scope in .gemini/settings.json",
   },
   {
@@ -88,7 +97,7 @@ const MCP_CLIENT_DEFINITIONS: McpClientDefinition[] = [
     agentName: "codex",
     format: "toml",
     configPath: (repoRoot) => path.join(repoRoot, ".codex", "config.toml"),
-    detectionPaths: (repoRoot) => [path.join(repoRoot, ".codex")],
+    configPaths: (repoRoot) => [path.join(repoRoot, ".codex", "config.toml")],
     description: "project scope in .codex/config.toml (trusted projects only)",
   },
   {
@@ -98,8 +107,8 @@ const MCP_CLIENT_DEFINITIONS: McpClientDefinition[] = [
     agentName: "opencode",
     format: "json",
     configPath: (repoRoot) => path.join(repoRoot, "opencode.json"),
-    detectionPaths: (repoRoot) => [path.join(repoRoot, "opencode.json")],
-    description: "project scope in opencode.json",
+    configPaths: (repoRoot) => [path.join(repoRoot, "opencode.json"), path.join(repoRoot, "opencode.jsonc")],
+    description: "project scope in opencode.json (opencode.jsonc is never rewritten)",
   },
 ];
 
@@ -113,10 +122,6 @@ export function getAvailableMcpClients(): McpClientKey[] {
 
 export function getAvailableMcpClientAliases(): string[] {
   return MCP_CLIENT_DEFINITIONS.flatMap((client) => client.aliases);
-}
-
-export function isMcpClient(value: string): value is McpClientKey {
-  return MCP_CLIENT_DEFINITIONS.some((client) => client.key === value);
 }
 
 export function resolveMcpClient(value: string): McpClientKey | null {
@@ -133,21 +138,44 @@ export function getMcpClientDefinition(client: McpClientKey): McpClientDefinitio
   return match;
 }
 
+/**
+ * Resolves the config file this client is actually using: the first candidate that
+ * exists, otherwise the canonical path the writer would create.
+ */
 export function getMcpConfigPath(client: McpClientKey, repoRoot: string): string {
-  return getMcpClientDefinition(client).configPath(repoRoot);
+  const definition = getMcpClientDefinition(client);
+  const existing = definition.configPaths(repoRoot).find((candidate) => fs.existsSync(candidate));
+  return existing ?? definition.configPath(repoRoot);
 }
 
+/**
+ * Detects clients by the presence of an actual MCP config file. Bare `.vscode/` or
+ * `.cursor/` directories are not a signal: nearly every repo has one.
+ */
 export function detectMcpClients(repoRoot: string): McpClientKey[] {
   return MCP_CLIENT_DEFINITIONS.filter((client) =>
-    client.detectionPaths(repoRoot).some((candidate) => fs.existsSync(candidate))
+    client.configPaths(repoRoot).some((candidate) => fs.existsSync(candidate))
   ).map((client) => client.key);
 }
 
+function resolvePlatform(options: McpConfigOptions): NodeJS.Platform {
+  return options.platform ?? process.platform;
+}
+
+/**
+ * On win32 `npx` and `tack` are `.cmd` shims. MCP clients spawn stdio servers without a
+ * shell, and `child_process.spawn` only resolves `.cmd` through PATHEXT when a shell is
+ * used, so a bare `npx` fails with `spawn npx ENOENT`. `cmd /c` works for every client.
+ */
 export function buildServerCommand(options: McpConfigOptions = {}): { command: string; args: string[] } {
-  if (options.runner === "tack") {
-    return { command: "tack", args: ["mcp"] };
+  const base =
+    options.runner === "tack" ? { command: "tack", args: ["mcp"] } : { command: "npx", args: ["-y", "tack-cli", "mcp"] };
+
+  if (resolvePlatform(options) !== "win32") {
+    return base;
   }
-  return { command: "npx", args: ["-y", "tack-cli", "mcp"] };
+
+  return { command: "cmd", args: ["/c", base.command, ...base.args] };
 }
 
 function getServerName(options: McpConfigOptions): string {
@@ -158,7 +186,7 @@ function getServerName(options: McpConfigOptions): string {
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
 
-function getContainerKey(client: McpClientKey): string {
+export function getMcpContainerKey(client: McpClientKey): string {
   if (client === "vscode") {
     return "servers";
   }
@@ -182,7 +210,7 @@ export function buildServerEntry(client: McpClientKey, options: McpConfigOptions
     };
   }
 
-  if (client === "vscode" || client === "claude-code") {
+  if (client === "vscode" || client === "claude-code" || client === "cursor") {
     return { type: "stdio", command, args, env };
   }
 
@@ -211,10 +239,13 @@ function isDeepEqual(a: JsonValue | undefined, b: JsonValue | undefined): boolea
 function detectJsonIndent(content: string): string | number {
   const match = content.match(/\n([ \t]+)\S/);
   const indent = match?.[1];
-  if (!indent) {
-    return 2;
+  if (indent) {
+    return indent.startsWith("\t") ? "\t" : indent.length;
   }
-  return indent.startsWith("\t") ? "\t" : indent.length;
+  // No indented line at all: a config minified on purpose stays minified instead of
+  // being reflowed into a whole-file diff. An empty `{}` has no style to preserve.
+  const trimmed = content.trim();
+  return !trimmed.includes("\n") && trimmed.length > 2 ? 0 : 2;
 }
 
 function usesCrlf(content: string): boolean {
@@ -226,7 +257,7 @@ function applyLineEndings(content: string, crlf: boolean): string {
 }
 
 export function isMcpParseError(error: unknown): boolean {
-  return error instanceof Error && error.message.startsWith(PARSE_ERROR_PREFIX);
+  return error instanceof McpManualMergeError;
 }
 
 export function mergeJsonMcpConfig(
@@ -235,7 +266,7 @@ export function mergeJsonMcpConfig(
   options: McpConfigOptions = {},
   configLabel = "the MCP config file"
 ): McpMergeResult {
-  const containerKey = getContainerKey(client);
+  const containerKey = getMcpContainerKey(client);
   const serverName = getServerName(options);
   const entry = buildServerEntry(client, options);
 
@@ -252,21 +283,21 @@ export function mergeJsonMcpConfig(
   try {
     parsed = JSON.parse(existingContent) as unknown;
   } catch {
-    throw new Error(
-      `${PARSE_ERROR_PREFIX}${configLabel} as JSON. Add the Tack server entry manually, then rerun.`
+    throw new McpManualMergeError(
+      `Could not parse ${configLabel} as JSON. Add the Tack server entry manually, then rerun.`
     );
   }
 
   if (!isPlainObject(parsed)) {
-    throw new Error(
-      `${PARSE_ERROR_PREFIX}${configLabel} as a JSON object. Add the Tack server entry manually, then rerun.`
+    throw new McpManualMergeError(
+      `Could not parse ${configLabel} as a JSON object. Add the Tack server entry manually, then rerun.`
     );
   }
 
   const container = parsed[containerKey];
   if (container !== undefined && !isPlainObject(container)) {
-    throw new Error(
-      `${PARSE_ERROR_PREFIX}${configLabel}: "${containerKey}" is not an object. Fix it manually, then rerun.`
+    throw new McpManualMergeError(
+      `Could not update ${configLabel}: "${containerKey}" is not an object. Fix it manually, then rerun.`
     );
   }
 
@@ -277,23 +308,49 @@ export function mergeJsonMcpConfig(
 
   const nextServers: JsonObject = { ...currentServers, [serverName]: entry };
   const next: JsonObject = { ...parsed, [containerKey]: nextServers };
-  const trailingNewline = existingContent.endsWith("\n") || existingContent.endsWith("\r\n") ? "\n" : "";
+  const trailingNewline = existingContent.endsWith("\n") ? "\n" : "";
   const serialized = `${JSON.stringify(next, null, detectJsonIndent(existingContent))}${trailingNewline}`;
 
   return { content: applyLineEndings(serialized, usesCrlf(existingContent)), changed: true };
 }
 
 function escapeTomlString(value: string): string {
-  return value
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, "\\n")
-    .replace(/\r/g, "\\r")
-    .replace(/\t/g, "\\t");
+  let out = "";
+
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    if (char === "\\") {
+      out += "\\\\";
+    } else if (char === '"') {
+      out += '\\"';
+    } else if (char === "\n") {
+      out += "\\n";
+    } else if (char === "\r") {
+      out += "\\r";
+    } else if (char === "\t") {
+      out += "\\t";
+    } else if (char === "\b") {
+      out += "\\b";
+    } else if (char === "\f") {
+      out += "\\f";
+    } else if (code <= 0x1f || code === 0x7f) {
+      out += `\\u${code.toString(16).toUpperCase().padStart(4, "0")}`;
+    } else {
+      out += char;
+    }
+  }
+
+  return out;
 }
 
 function formatTomlString(value: string): string {
   return `"${escapeTomlString(value)}"`;
+}
+
+const TOML_BARE_KEY = /^[A-Za-z0-9_-]+$/;
+
+function formatTomlKey(key: string): string {
+  return TOML_BARE_KEY.test(key) ? key : formatTomlString(key);
 }
 
 function formatTomlStringArray(values: string[]): string {
@@ -301,7 +358,7 @@ function formatTomlStringArray(values: string[]): string {
 }
 
 function formatTomlInlineTable(entries: Array<[string, string]>): string {
-  return `{ ${entries.map(([key, value]) => `${key} = ${formatTomlString(value)}`).join(", ")} }`;
+  return `{ ${entries.map(([key, value]) => `${formatTomlKey(key)} = ${formatTomlString(value)}`).join(", ")} }`;
 }
 
 export function buildTomlServerBlock(serverName: string, options: McpConfigOptions = {}): string {
@@ -309,58 +366,377 @@ export function buildTomlServerBlock(serverName: string, options: McpConfigOptio
   const { command, args } = buildServerCommand(options);
 
   return [
-    `[mcp_servers.${serverName}]`,
+    `[mcp_servers.${formatTomlKey(serverName)}]`,
     `command = ${formatTomlString(command)}`,
     `args = ${formatTomlStringArray(args)}`,
     `env = ${formatTomlInlineTable([["TACK_AGENT_NAME", definition.agentName]])}`,
   ].join("\n");
 }
 
-const TOML_TABLE_HEADER = /^\s*\[\[?\s*([^\]]*?)\s*\]\]?\s*(?:#.*)?$/;
+type TomlNode = {
+  kind: "comment" | "table" | "keyval";
+  /** Offset of the first character of the construct, in the LF-normalized document. */
+  start: number;
+  /** Offset just past its last character, excluding the terminating newline. */
+  end: number;
+  /** Table path for `table`; absolute dotted key path for `keyval`. */
+  path: string[];
+  /** Table the node was declared in. Empty for root-level keys. */
+  table: string[];
+};
 
-function isTackTableHeader(headerName: string, serverName: string): boolean {
-  const normalized = headerName.replace(/\s+/g, "").replace(/"/g, "");
-  return normalized === `mcp_servers.${serverName}` || normalized.startsWith(`mcp_servers.${serverName}.`);
-}
+class TomlScanError extends Error {}
+
+const TOML_BARE_VALUE = /^[A-Za-z0-9_+\-.:]+(?: [0-9][A-Za-z0-9_+\-.:]*)?$/;
 
 /**
- * Removes the `[mcp_servers.<name>]` table and any of its subtables, leaving every
- * other line of the file untouched. Returns the remaining lines plus the index where
- * the first removed table started, so the regenerated block can be written back in place.
+ * A deliberately strict TOML recognizer. It understands table headers, array-of-tables,
+ * bare/quoted/dotted keys, every string form (including multi-line), arrays, and inline
+ * tables well enough to locate declarations by path. Anything it does not fully
+ * understand throws, which the caller turns into the `manual` status rather than
+ * rewriting a file it cannot read.
  */
-function stripTackTomlTables(lines: string[], serverName: string): { lines: string[]; insertAt: number | null } {
-  const kept: string[] = [];
-  let insertAt: number | null = null;
-  let removing = false;
+function scanTomlDocument(text: string): TomlNode[] {
+  const nodes: TomlNode[] = [];
+  const length = text.length;
+  let pos = 0;
+  let currentTable: string[] = [];
 
-  for (const line of lines) {
-    const header = line.match(TOML_TABLE_HEADER);
-    if (header) {
-      const headerName = header[1] ?? "";
-      removing = isTackTableHeader(headerName, serverName);
-      if (removing && insertAt === null) {
-        insertAt = kept.length;
+  const fail = (message: string): never => {
+    throw new TomlScanError(`${message} at offset ${pos}`);
+  };
+
+  const isSpace = (char: string | undefined): boolean => char === " " || char === "\t";
+
+  const skipSpace = (): void => {
+    while (pos < length && isSpace(text[pos])) {
+      pos += 1;
+    }
+  };
+
+  const skipCommentBody = (): void => {
+    while (pos < length && text[pos] !== "\n") {
+      pos += 1;
+    }
+  };
+
+  const skipSpaceNewlinesAndComments = (): void => {
+    for (;;) {
+      if (pos < length && (isSpace(text[pos]) || text[pos] === "\n")) {
+        pos += 1;
+        continue;
+      }
+      if (pos < length && text[pos] === "#") {
+        skipCommentBody();
+        continue;
+      }
+      return;
+    }
+  };
+
+  const expect = (char: string): void => {
+    if (text[pos] !== char) {
+      fail(`expected "${char}"`);
+    }
+    pos += 1;
+  };
+
+  const finishLine = (): void => {
+    skipSpace();
+    if (pos < length && text[pos] === "#") {
+      skipCommentBody();
+      return;
+    }
+    if (pos < length && text[pos] !== "\n") {
+      fail("unexpected trailing content");
+    }
+  };
+
+  /** Consumes a `'''`/`"""` body, honouring the "up to two extra quotes" closing rule. */
+  const readMultilineString = (delimiter: string, escapes: boolean): string => {
+    pos += 3;
+    const start = pos;
+
+    for (;;) {
+      if (pos >= length) {
+        fail("unterminated multi-line string");
+      }
+      if (escapes && text[pos] === "\\") {
+        pos += 2;
+        continue;
+      }
+      if (text.startsWith(delimiter, pos)) {
+        let close = pos;
+        while (text[close + 3] === delimiter[0]) {
+          close += 1;
+        }
+        const body = text.slice(start, close);
+        pos = close + 3;
+        return body;
+      }
+      pos += 1;
+    }
+  };
+
+  const decodeEscape = (): string => {
+    const char = text[pos + 1];
+    switch (char) {
+      case '"':
+        pos += 2;
+        return '"';
+      case "\\":
+        pos += 2;
+        return "\\";
+      case "b":
+        pos += 2;
+        return "\b";
+      case "f":
+        pos += 2;
+        return "\f";
+      case "n":
+        pos += 2;
+        return "\n";
+      case "r":
+        pos += 2;
+        return "\r";
+      case "t":
+        pos += 2;
+        return "\t";
+      case "u":
+      case "U": {
+        const width = char === "u" ? 4 : 8;
+        const hex = text.slice(pos + 2, pos + 2 + width);
+        if (!new RegExp(`^[0-9A-Fa-f]{${width}}$`).test(hex)) {
+          fail("invalid unicode escape");
+        }
+        pos += 2 + width;
+        return String.fromCodePoint(Number.parseInt(hex, 16));
+      }
+      default:
+        return fail("invalid string escape");
+    }
+  };
+
+  const readBasicString = (): string => {
+    if (text.startsWith('"""', pos)) {
+      return readMultilineString('"""', true);
+    }
+
+    pos += 1;
+    let out = "";
+    for (;;) {
+      if (pos >= length || text[pos] === "\n") {
+        fail("unterminated string");
+      }
+      if (text[pos] === "\\") {
+        out += decodeEscape();
+        continue;
+      }
+      if (text[pos] === '"') {
+        pos += 1;
+        return out;
+      }
+      out += text[pos];
+      pos += 1;
+    }
+  };
+
+  const readLiteralString = (): string => {
+    if (text.startsWith("'''", pos)) {
+      return readMultilineString("'''", false);
+    }
+
+    pos += 1;
+    const start = pos;
+    for (;;) {
+      if (pos >= length || text[pos] === "\n") {
+        fail("unterminated literal string");
+      }
+      if (text[pos] === "'") {
+        const body = text.slice(start, pos);
+        pos += 1;
+        return body;
+      }
+      pos += 1;
+    }
+  };
+
+  const readKey = (): string[] => {
+    const parts: string[] = [];
+
+    for (;;) {
+      skipSpace();
+      const char = text[pos];
+      if (char === '"') {
+        parts.push(readBasicString());
+      } else if (char === "'") {
+        parts.push(readLiteralString());
+      } else {
+        const start = pos;
+        while (pos < length && TOML_BARE_KEY.test(text[pos]!)) {
+          pos += 1;
+        }
+        if (pos === start) {
+          fail("expected a key");
+        }
+        parts.push(text.slice(start, pos));
+      }
+
+      skipSpace();
+      if (text[pos] === ".") {
+        pos += 1;
+        continue;
+      }
+      return parts;
+    }
+  };
+
+  const readValue = (): void => {
+    const char = text[pos];
+    if (char === undefined) {
+      fail("expected a value");
+    }
+    if (char === '"') {
+      readBasicString();
+      return;
+    }
+    if (char === "'") {
+      readLiteralString();
+      return;
+    }
+    if (char === "[") {
+      pos += 1;
+      for (;;) {
+        skipSpaceNewlinesAndComments();
+        if (pos >= length) {
+          fail("unterminated array");
+        }
+        if (text[pos] === "]") {
+          pos += 1;
+          return;
+        }
+        readValue();
+        skipSpaceNewlinesAndComments();
+        if (text[pos] === ",") {
+          pos += 1;
+          continue;
+        }
+        if (text[pos] === "]") {
+          pos += 1;
+          return;
+        }
+        fail("expected \",\" or \"]\"");
+      }
+    }
+    if (char === "{") {
+      pos += 1;
+      skipSpace();
+      if (text[pos] === "}") {
+        pos += 1;
+        return;
+      }
+      for (;;) {
+        skipSpace();
+        readKey();
+        skipSpace();
+        expect("=");
+        skipSpace();
+        readValue();
+        skipSpace();
+        if (text[pos] === ",") {
+          pos += 1;
+          continue;
+        }
+        if (text[pos] === "}") {
+          pos += 1;
+          return;
+        }
+        fail("expected \",\" or \"}\"");
       }
     }
 
-    if (!removing) {
-      kept.push(line);
+    const start = pos;
+    while (pos < length && !"\n,]}#".includes(text[pos]!)) {
+      pos += 1;
     }
+    const raw = text.slice(start, pos).trim();
+    if (raw.length === 0 || !TOML_BARE_VALUE.test(raw)) {
+      pos = start;
+      fail("unrecognized value");
+    }
+  };
+
+  while (pos < length) {
+    while (pos < length && (isSpace(text[pos]) || text[pos] === "\n")) {
+      pos += 1;
+    }
+    if (pos >= length) {
+      break;
+    }
+
+    const start = pos;
+
+    if (text[pos] === "#") {
+      skipCommentBody();
+      nodes.push({ kind: "comment", start, end: pos, path: [], table: currentTable });
+      continue;
+    }
+
+    if (text[pos] === "[") {
+      const arrayOfTables = text[pos + 1] === "[";
+      pos += arrayOfTables ? 2 : 1;
+      const tablePath = readKey();
+      skipSpace();
+      expect("]");
+      if (arrayOfTables) {
+        expect("]");
+      }
+      finishLine();
+      currentTable = tablePath;
+      nodes.push({ kind: "table", start, end: pos, path: tablePath, table: tablePath });
+      continue;
+    }
+
+    const keyPath = readKey();
+    skipSpace();
+    expect("=");
+    skipSpace();
+    readValue();
+    finishLine();
+    nodes.push({ kind: "keyval", start, end: pos, path: [...currentTable, ...keyPath], table: currentTable });
   }
 
-  return { lines: kept, insertAt };
+  return nodes;
 }
 
-function trimTrailingBlankLines(lines: string[]): string[] {
-  const trimmed = [...lines];
-  while (trimmed.length > 0 && trimmed[trimmed.length - 1]!.trim().length === 0) {
-    trimmed.pop();
-  }
-  return trimmed;
+function pathStartsWith(candidate: string[], prefix: string[]): boolean {
+  return candidate.length >= prefix.length && prefix.every((part, index) => candidate[index] === part);
 }
 
-export function mergeTomlMcpConfig(existingContent: string | null, options: McpConfigOptions = {}): McpMergeResult {
+function pathEquals(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((part, index) => part === b[index]);
+}
+
+/**
+ * True when the server is declared as a dotted key or an inline table
+ * (`mcp_servers.tack = { ... }`, or `tack.command = "..."` under `[mcp_servers]`)
+ * rather than as its own `[mcp_servers.tack]` table. Those forms cannot be replaced by
+ * appending a table without declaring the same key twice, which makes the whole file
+ * unparseable for Codex.
+ */
+function hasInlineTackDeclaration(nodes: TomlNode[], serverPath: string[]): boolean {
+  return nodes.some(
+    (node) => node.kind === "keyval" && pathStartsWith(node.path, serverPath) && !pathStartsWith(node.table, serverPath)
+  );
+}
+
+export function mergeTomlMcpConfig(
+  existingContent: string | null,
+  options: McpConfigOptions = {},
+  configLabel = "the MCP config file"
+): McpMergeResult {
   const serverName = getServerName(options);
+  const serverPath = ["mcp_servers", serverName];
   const block = buildTomlServerBlock(serverName, options);
 
   if (existingContent === null || existingContent.trim().length === 0) {
@@ -369,38 +745,105 @@ export function mergeTomlMcpConfig(existingContent: string | null, options: McpC
 
   const crlf = usesCrlf(existingContent);
   const normalized = existingContent.replace(/\r\n/g, "\n");
-  const hadTrailingNewline = normalized.endsWith("\n");
-  const sourceLines = normalized.split("\n");
-  if (hadTrailingNewline) {
-    sourceLines.pop();
+
+  let nodes: TomlNode[];
+  try {
+    nodes = scanTomlDocument(normalized);
+  } catch {
+    throw new McpManualMergeError(
+      `Could not parse ${configLabel} as TOML. Add the Tack server entry manually, then rerun.`
+    );
   }
 
-  const stripped = stripTackTomlTables(sourceLines, serverName);
-  const blockLines = block.split("\n");
-  let nextLines: string[];
+  if (hasInlineTackDeclaration(nodes, serverPath)) {
+    throw new McpManualMergeError(
+      `Could not update ${configLabel}: "${serverPath.join(".")}" is declared as a dotted or inline key. Replace it manually, then rerun.`
+    );
+  }
 
-  if (stripped.insertAt === null) {
-    const before = trimTrailingBlankLines(stripped.lines);
-    nextLines = before.length > 0 ? [...before, "", ...blockLines] : [...blockLines];
+  // Locate the contiguous span owned by [mcp_servers.<name>] and its subtables.
+  let regionStart: number | null = null;
+  let regionEnd: number | null = null;
+  let inServerTable = false;
+  let leftServerTable = false;
+  let splitByForeignTable = false;
+
+  for (const node of nodes) {
+    if (node.kind === "table") {
+      inServerTable = pathStartsWith(node.path, serverPath);
+      if (!inServerTable) {
+        leftServerTable = regionStart !== null;
+        continue;
+      }
+      if (leftServerTable) {
+        splitByForeignTable = true;
+      }
+      if (regionStart === null) {
+        regionStart = node.start;
+      }
+      regionEnd = node.end;
+      continue;
+    }
+    // Comments never extend the region, so a comment block introducing the *next*
+    // table survives the rewrite.
+    if (node.kind === "keyval" && inServerTable) {
+      regionEnd = node.end;
+    }
+  }
+
+  if (splitByForeignTable) {
+    throw new McpManualMergeError(
+      `Could not update ${configLabel}: "${serverPath.join(".")}" is declared in more than one place. Consolidate it manually, then rerun.`
+    );
+  }
+
+  let merged: string;
+  if (regionStart === null) {
+    const trimmed = normalized.replace(/\n+$/, "");
+    merged = trimmed.length > 0 ? `${trimmed}\n\n${block}\n` : `${block}\n`;
   } else {
-    const before = stripped.lines.slice(0, stripped.insertAt);
-    const after = stripped.lines.slice(stripped.insertAt);
-    const gapBefore = before.length > 0 && before[before.length - 1]!.trim().length > 0 ? [""] : [];
-    const gapAfter = after.length > 0 && after[0]!.trim().length > 0 ? [""] : [];
-    nextLines = [...before, ...gapBefore, ...blockLines, ...gapAfter, ...after];
+    merged = `${normalized.slice(0, regionStart)}${block}${normalized.slice(regionEnd!)}`;
   }
 
-  const serialized = `${nextLines.join("\n")}${hadTrailingNewline || stripped.insertAt === null ? "\n" : ""}`;
-  const content = applyLineEndings(serialized, crlf);
+  // Never hand back TOML we cannot read back.
+  let mergedNodes: TomlNode[];
+  try {
+    mergedNodes = scanTomlDocument(merged);
+  } catch {
+    throw new McpManualMergeError(
+      `Could not rewrite ${configLabel} safely. Add the Tack server entry manually, then rerun.`
+    );
+  }
 
+  const declarations = mergedNodes.filter((node) => node.kind === "table" && pathEquals(node.path, serverPath));
+  if (declarations.length !== 1 || hasInlineTackDeclaration(mergedNodes, serverPath)) {
+    throw new McpManualMergeError(
+      `Could not rewrite ${configLabel} safely. Add the Tack server entry manually, then rerun.`
+    );
+  }
+
+  const content = applyLineEndings(merged, crlf);
   return { content, changed: content !== existingContent };
 }
 
-export function renderMcpSnippet(client: McpClientKey, options: McpConfigOptions = {}): string {
+/**
+ * The fragment to paste into an existing config: the `"tack": { ... }` member for JSON
+ * clients, the `[mcp_servers.tack]` table for Codex. Never a whole root document -
+ * pasting one of those on top of an existing file destroys the other servers.
+ */
+export function renderMcpEntrySnippet(client: McpClientKey, options: McpConfigOptions = {}): string {
+  const serverName = getServerName(options);
+
   if (getMcpClientDefinition(client).format === "toml") {
-    return buildTomlServerBlock(getServerName(options), options);
+    return buildTomlServerBlock(serverName, options);
   }
-  return mergeJsonMcpConfig(client, null, options).content.trimEnd();
+
+  const document = JSON.stringify({ [serverName]: buildServerEntry(client, options) }, null, 2);
+  return document
+    .split("\n")
+    .slice(1, -1)
+    .map((line) => line.slice(2))
+    .join("\n");
 }
 
 export function applyMcpConfig(
@@ -409,16 +852,26 @@ export function applyMcpConfig(
   options: McpConfigOptions = {}
 ): McpConfigResult {
   const definition = getMcpClientDefinition(client);
-  const configPath = definition.configPath(repoRoot);
+  const configPath = getMcpConfigPath(client, repoRoot);
   const configLabel = path.relative(repoRoot, configPath) || path.basename(configPath);
   const exists = fs.existsSync(configPath);
+
+  if (configPath.endsWith(".jsonc")) {
+    return {
+      client,
+      configLabel,
+      status: "manual",
+      detail: `${configLabel} may contain comments, so Tack will not rewrite it.`,
+    };
+  }
+
   const existingContent = exists ? fs.readFileSync(configPath, "utf-8") : null;
 
   let merged: McpMergeResult;
   try {
     merged =
       definition.format === "toml"
-        ? mergeTomlMcpConfig(existingContent, options)
+        ? mergeTomlMcpConfig(existingContent, options, configLabel)
         : mergeJsonMcpConfig(client, existingContent, options, configLabel);
   } catch (error) {
     if (isMcpParseError(error)) {

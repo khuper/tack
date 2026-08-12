@@ -11,8 +11,31 @@ const DRIFT_TYPES = new Set([
   "risk",
   "undeclared_system",
 ] as const);
-const DRIFT_STATUS = new Set(["unresolved", "accepted", "rejected"] as const);
+/**
+ * Status Tack writes itself when a drift item's underlying signal is no longer detected.
+ *
+ * It is deliberately not one of the `DriftStatus` values a person can choose: `accepted`
+ * and `rejected` are human judgments and suppress the item forever, whereas a disappeared
+ * item is only dormant and must reopen if the violation is reintroduced. Keeping the two
+ * apart is what stops a removed-then-restored guardrail violation from being suppressed
+ * permanently (see engine/computeDrift.ts).
+ */
+export const DRIFT_STATUS_DISAPPEARED = "disappeared";
+const DRIFT_STATUS = new Set(["unresolved", "accepted", "rejected", DRIFT_STATUS_DISAPPEARED] as const);
 const KNOWN_CONSTRAINTS = new Set<string>(KNOWN_CONSTRAINT_KEYS);
+
+/** True when `item` was auto-dismissed by a sweep rather than resolved by a person. */
+export function isDisappearedDriftItem(item: DriftItem): boolean {
+  return String(item.status) === DRIFT_STATUS_DISAPPEARED;
+}
+
+/**
+ * `DriftStatus` in lib/signals.ts is the vocabulary a person can choose from, so the
+ * machine-only `disappeared` status needs a cast to be stored on a `DriftItem`.
+ */
+export function asDriftItemStatus(status: string): DriftItem["status"] {
+  return status as DriftItem["status"];
+}
 
 type ValidationResult<T> = {
   data: T;

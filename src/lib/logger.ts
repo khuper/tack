@@ -1,5 +1,5 @@
 import type { LogEvent, LogEventInput } from "./signals.js";
-import { appendSafe, logsPath } from "./files.js";
+import { appendSafe, isWriteBlockedError, logsPath, writeSafe } from "./files.js";
 import { createNdjsonTailReader, rotateNdjsonFile, safeReadNdjson } from "./ndjson.js";
 
 const LOG_MAX_BYTES = 5 * 1024 * 1024;
@@ -51,6 +51,23 @@ export type McpInstallVerification = {
   writeLabel: string | null;
 };
 
+let reportedWriteBlocked = false;
+
+/**
+ * Prints a blocked-write message to stderr exactly once per process.
+ *
+ * `log()` runs on nearly every code path, including inside the Ink render loop, so it
+ * cannot throw and cannot print on every call. But silently swallowing a WRITE BLOCKED
+ * error hides an active symlink attack inside `.tack/`: the operator would only notice
+ * that logging quietly stopped. Ordinary IO failures stay silent.
+ */
+export function reportBlockedWrite(err: unknown): void {
+  if (!isWriteBlockedError(err) || reportedWriteBlocked) return;
+  reportedWriteBlocked = true;
+  // eslint-disable-next-line no-console
+  console.error(`[tack] ${(err as Error).message}`);
+}
+
 export function log(event: LogEventInput): void {
   const entry: LogEvent = {
     ts: new Date().toISOString(),
@@ -58,10 +75,12 @@ export function log(event: LogEventInput): void {
   } as LogEvent;
   const filepath = logsPath();
   try {
-    rotateNdjsonFile(filepath, LOG_MAX_BYTES, LOG_KEEP_LINES);
+    // Rotation rewrites the whole file, so it goes through the same guarded writer as
+    // the append. Without this it was the one write path that bypassed the .tack/ boundary.
+    rotateNdjsonFile(filepath, LOG_MAX_BYTES, LOG_KEEP_LINES, writeSafe);
     appendSafe(filepath, `${JSON.stringify(entry)}\n`);
-  } catch {
-    return;
+  } catch (err) {
+    reportBlockedWrite(err);
   }
 }
 

@@ -20,6 +20,7 @@ tack setup-mcp --client cursor          # one client
 tack setup-mcp --client gemini --client codex
 tack setup-mcp --all                    # every supported client
 tack setup-mcp --runner tack            # use the tack binary instead of npx
+tack setup-mcp --windows                # generate the Windows form from macOS or Linux
 tack setup-mcp --dry-run                # show what would change
 tack setup-mcp --list                   # clients, aliases, and config paths
 ```
@@ -36,7 +37,8 @@ tack setup-mcp --list                   # clients, aliases, and config paths
 Rules the writer follows:
 
 - only the `tack` entry is created or replaced; sibling servers, unrelated top-level keys, indentation, trailing newline, and CRLF line endings are preserved
-- a config file it cannot parse as JSON (for example JSONC with comments) is never rewritten; the command prints the snippet to paste instead
+- clients are detected by the **config file**, not by the directory: a `.vscode/` or `.cursor/` folder with no `mcp.json` in it is not a signal, and if nothing is detected Tack creates `.mcp.json` for Claude Code
+- a config file it cannot parse is never rewritten; the command prints the entry to paste instead and exits non-zero, so a bootstrap script can tell "configured" from "nothing written"
 - reruns are idempotent, so `tack setup-mcp` is safe in a bootstrap script
 
 Default server entry (with `--runner npx`, the default):
@@ -47,7 +49,39 @@ Default server entry (with `--runner npx`, the default):
 
 With `--runner tack` the entry becomes command `tack`, args `["mcp"]`. Use it when `tack` is installed globally and you want to skip the `npx` resolution step.
 
-Tack reads `.tack/` from the working directory the client starts the server in, so always open the client at the repo root that contains `.tack/`.
+### Windows output
+
+On Windows, `npx` and `tack` are `.cmd` shims. MCP clients spawn stdio servers without a
+shell, and Node only resolves `.cmd` through `PATHEXT` when a shell is involved, so a bare
+`"command": "npx"` fails with `spawn npx ENOENT`. Tack therefore generates a `cmd /c`
+wrapper when it runs on `win32`:
+
+```json
+{
+  "mcpServers": {
+    "tack": {
+      "type": "stdio",
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "tack-cli", "mcp"],
+      "env": { "TACK_AGENT_NAME": "claude" }
+    }
+  }
+}
+```
+
+The same wrapping applies to `--runner tack` (`cmd /c tack mcp`), to the opencode `command`
+array, and to the Codex TOML block. The output depends on the machine that ran the command,
+so on a mixed-platform team either commit the form your teammates need or pass `--windows`
+from macOS/Linux to generate the Windows form deliberately.
+
+### Working directory
+
+Tack resolves the project from `.tack/` upward from the server's working directory, and
+falls back to that directory when it finds none. No generated entry sets `cwd`, so the
+client must start the server at the repo root that contains `.tack/` - open the project at
+its root rather than at a subfolder. If your client launches servers from somewhere else,
+add an explicit working directory yourself: VS Code, Codex, and Gemini CLI all accept a
+`cwd` field, and VS Code and Cursor expand `${workspaceFolder}` inside it.
 
 ## Claude Code
 
@@ -90,6 +124,7 @@ claude mcp add --transport stdio tack -- cmd /c "set TACK_AGENT_NAME=claude&& np
 {
   "mcpServers": {
     "tack": {
+      "type": "stdio",
       "command": "npx",
       "args": ["-y", "tack-cli", "mcp"],
       "env": { "TACK_AGENT_NAME": "cursor" }
@@ -98,21 +133,22 @@ claude mcp add --transport stdio tack -- cmd /c "set TACK_AGENT_NAME=claude&& np
 }
 ```
 
-Cursor infers the transport from the fields, so no `type` is written. `${workspaceFolder}` is available if you need an absolute path to a local build:
+Cursor uses `mcpServers` and documents `"type": "stdio"` for local servers. `${workspaceFolder}` is available if you need an absolute path to a local build:
 
 ```json
 {
   "mcpServers": {
     "tack": {
+      "type": "stdio",
       "command": "node",
-      "args": ["/path/to/tack/dist/index.js", "mcp"],
+      "args": ["${workspaceFolder}/dist/index.js", "mcp"],
       "env": { "TACK_AGENT_NAME": "cursor" }
     }
   }
 }
 ```
 
-On Windows, prefer command `tack.cmd` (or the absolute `.cmd` path from your global npm bin directory) over shell-style `env TACK_AGENT_NAME=... tack mcp`. Cursor sets env vars directly through the `env` field.
+On Windows the generated entry is `cmd /c npx -y tack-cli mcp` (see [Windows output](#windows-output)); never a bare `npx`, and never shell-style `env TACK_AGENT_NAME=... tack mcp`. Cursor sets env vars directly through the `env` field.
 
 Restart Cursor after changing MCP config.
 
@@ -133,9 +169,9 @@ Restart Cursor after changing MCP config.
 }
 ```
 
-VS Code uses `servers`, not `mcpServers`, and requires an explicit `type`. Copying a Cursor or Claude Code block verbatim is the most common setup mistake here.
+VS Code uses `servers`, not `mcpServers`, and takes an explicit `type` for stdio servers. Copying a Cursor or Claude Code block verbatim is the most common setup mistake here. `cwd` and `envFile` are also accepted and expand `${workspaceFolder}`.
 
-If your `.vscode/mcp.json` contains comments, Tack will not rewrite it. Paste the `tack` entry into the existing `servers` object yourself.
+If your `.vscode/mcp.json` contains comments, Tack will not rewrite it. It prints the `tack` member on its own for you to paste into the existing `servers` object, and exits non-zero.
 
 Start the server from the MCP view or the `MCP: List Servers` command, then check Copilot agent mode for the `tack` tools.
 
@@ -170,7 +206,11 @@ args = ["-y", "tack-cli", "mcp"]
 env = { TACK_AGENT_NAME = "codex" }
 ```
 
+Codex uses the snake_case table `mcp_servers`, not `mcpServers`.
+
 Project-scoped `.codex/config.toml` is only loaded for trusted projects. If the server never starts, trust the project (`trust_level = "trusted"` for this project in `~/.codex/config.toml`) or move the block into `~/.codex/config.toml`.
+
+Tack parses the whole file before touching it and replaces only the `[mcp_servers.tack]` table and its subtables, in place. It refuses to write - printing the block to paste instead - when the file does not parse as TOML, when the tack server is declared as a dotted key or inline table (`mcp_servers.tack = { ... }`, or `tack = { ... }` under `[mcp_servers]`), or when it is declared in more than one place. Rewrite those forms as a plain `[mcp_servers.tack]` table and rerun.
 
 Per-user fallback on macOS/Linux:
 
@@ -204,7 +244,9 @@ Verify with `codex mcp get tack` or `codex mcp list`, and start Codex from the p
 }
 ```
 
-opencode uses `mcp` (not `mcpServers`), a single `command` array instead of `command` plus `args`, and `environment` instead of `env`. If you keep config in `opencode.jsonc`, Tack will not rewrite it; paste the entry in manually.
+opencode uses `mcp` (not `mcpServers`), a single `command` array instead of `command` plus `args`, `environment` instead of `env`, and needs `"type": "local"` plus `"enabled": true`.
+
+opencode also accepts `opencode.jsonc`. If that file exists, Tack treats it as your config: it will not rewrite it and it will not create a competing `opencode.json`. Paste the `tack` entry in manually.
 
 ## Other clients
 
@@ -233,7 +275,7 @@ If your MCP client provides neither `TACK_AGENT_NAME` nor `initialize.clientInfo
 Tack treats MCP identity and MCP session ids as separate things:
 
 - `TACK_AGENT_NAME` is the strongest identity source and is set for you by `tack setup-mcp`.
-- If `TACK_AGENT_NAME` is missing, Tack falls back to `initialize.clientInfo.name` and normalizes common clients (Codex, Claude Code, Cursor, Gemini CLI, opencode, Copilot, Zed, Amp, Cline, Roo, Windsurf, Continue) automatically.
+- If `TACK_AGENT_NAME` is missing, Tack falls back to `initialize.clientInfo.name`. Handshake names containing `codex`, `claude`/`claude code`, `cursor`, `gemini`, `opencode`, `copilot`, `cline`, `roo`, `windsurf`, `continue`, `zed`, or `amp` are normalized to a short label; anything else is slugified as-is. VS Code identifies itself as `Visual Studio Code`, which slugifies to `visual-studio-code` rather than `copilot` - another reason to let `tack setup-mcp` set `TACK_AGENT_NAME`.
 - If both are missing, the session shows up as `unknown` until you call `register_agent_identity`.
 
 In `tack watch`, this means:

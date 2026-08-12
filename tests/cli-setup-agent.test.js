@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runSetupAgent } from "../dist/cli/setupAgent.js";
+import { runSetupAgent, runSetupMcp } from "../dist/cli/setupAgent.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf-8"));
@@ -61,8 +61,12 @@ test("setup-agent --list prints usage and targets", () => {
 
     assert.strictEqual(result.code, 0);
     assert.match(result.stdout, /Usage:/);
-    assert.match(result.stdout, /Canonical targets: claude, codex, generic/);
-    assert.match(result.stdout, /All target names: claude, claude-code, codex, cursor, cline, windsurf, continue, generic/);
+    assert.match(result.stdout, /Canonical targets: claude, codex, gemini, generic/);
+    assert.match(
+      result.stdout,
+      /All target names: claude, claude-code, codex, cursor, cline, windsurf, continue, opencode, copilot, vscode, zed, amp, jules, gemini, gemini-cli, generic/
+    );
+    assert.match(result.stdout, /gemini, gemini-cli -> GEMINI\.md/);
   });
 });
 
@@ -233,6 +237,113 @@ test("setup-agent default mode fails before writing anything when a target is ma
     assert.match(result.stderr, /Malformed Tack instruction markers in CLAUDE\.md\. Fix the file manually\./);
     assert.ok(!fs.existsSync(path.join(tmpDir, "AGENTS.md")));
     assert.ok(!fs.existsSync(path.join(tmpDir, ".tack", "AGENT.md")));
+  });
+});
+
+test("setup-agent writes the gemini target into GEMINI.md", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+
+    const result = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "gemini-cli" }, pkg.version));
+
+    assert.strictEqual(result.code, 0);
+    assert.match(result.stdout, /installed\s+GEMINI\.md/);
+
+    const content = fs.readFileSync(path.join(tmpDir, "GEMINI.md"), "utf-8");
+    assert.match(content, /<!-- BEGIN TACK AGENT INSTRUCTIONS v/);
+
+    const settings = JSON.parse(fs.readFileSync(path.join(tmpDir, ".gemini", "settings.json"), "utf-8"));
+    assert.strictEqual(settings.mcpServers.tack.env.TACK_AGENT_NAME, "gemini");
+  });
+});
+
+test("setup-agent still configures Claude Code when the repo only has a bare .vscode directory", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, ".vscode"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".vscode", "settings.json"), "{}\n", "utf-8");
+
+    const result = captureOutput(() => runSetupAgent({ _: ["setup-agent"] }, pkg.version));
+
+    assert.strictEqual(result.code, 0);
+    assert.ok(fs.existsSync(path.join(tmpDir, ".mcp.json")));
+    assert.ok(!fs.existsSync(path.join(tmpDir, ".vscode", "mcp.json")));
+
+    const config = JSON.parse(fs.readFileSync(path.join(tmpDir, ".mcp.json"), "utf-8"));
+    assert.deepStrictEqual(Object.keys(config.mcpServers), ["tack"]);
+  });
+});
+
+test("setup-agent updates an existing .vscode/mcp.json without touching other servers", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, ".vscode"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, ".vscode", "mcp.json"),
+      JSON.stringify({ servers: { other: { type: "stdio", command: "other" } } }, null, 2) + "\n",
+      "utf-8"
+    );
+
+    const result = captureOutput(() => runSetupAgent({ _: ["setup-agent"] }, pkg.version));
+
+    assert.strictEqual(result.code, 0);
+
+    const config = JSON.parse(fs.readFileSync(path.join(tmpDir, ".vscode", "mcp.json"), "utf-8"));
+    assert.deepStrictEqual(Object.keys(config.servers), ["other", "tack"]);
+    assert.strictEqual(config.servers.tack.env.TACK_AGENT_NAME, "copilot");
+  });
+});
+
+test("setup-mcp creates .mcp.json by default and reruns as unchanged", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+
+    const first = captureOutput(() => runSetupMcp({ _: ["setup-mcp"] }));
+    assert.strictEqual(first.code, 0);
+    assert.match(first.stdout, /installed\s+\.mcp\.json/);
+
+    const second = captureOutput(() => runSetupMcp({ _: ["setup-mcp"] }));
+    assert.strictEqual(second.code, 0);
+    assert.match(second.stdout, /unchanged\s+\.mcp\.json/);
+
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, ".mcp.json"), "utf-8"),
+      fs.readFileSync(path.join(tmpDir, ".mcp.json"), "utf-8")
+    );
+  });
+});
+
+test("setup-mcp exits non-zero and prints a pasteable entry when nothing could be written", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, ".vscode"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".vscode", "mcp.json"), '{\n  // comment\n  "servers": {}\n}\n', "utf-8");
+
+    const result = captureOutput(() => runSetupMcp({ _: ["setup-mcp"], client: "vscode" }));
+
+    assert.strictEqual(result.code, 1);
+    assert.match(result.stdout, /manual\s+\.vscode[\\/]mcp\.json/);
+    assert.match(result.stdout, /Add this entry inside the existing "servers" object/);
+    assert.match(result.stdout, /^"tack": \{$/m);
+    assert.doesNotMatch(result.stdout, /^\{$/m);
+    assert.match(result.stdout, /No MCP config was written\./);
+
+    assert.strictEqual(
+      fs.readFileSync(path.join(tmpDir, ".vscode", "mcp.json"), "utf-8"),
+      '{\n  // comment\n  "servers": {}\n}\n'
+    );
+  });
+});
+
+test("setup-mcp --dry-run reports without writing", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+
+    const result = captureOutput(() => runSetupMcp({ _: ["setup-mcp"], "dry-run": true }));
+
+    assert.strictEqual(result.code, 0);
+    assert.match(result.stdout, /Planned project MCP config \(dry run\):/);
+    assert.ok(!fs.existsSync(path.join(tmpDir, ".mcp.json")));
   });
 });
 

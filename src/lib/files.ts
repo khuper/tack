@@ -249,11 +249,14 @@ function pathEntryExists(target: string): boolean {
 }
 
 /**
- * Throws when `target` exists and is a symlink.
+ * Throws when `target` is a symlink that escapes the project.
  *
  * Git stores symlinks (mode 120000), so a cloned repo can ship `.tack/` or
- * `.tack/handoffs/` as a link pointing anywhere on disk. Writes follow those links,
- * so Tack refuses to use them at all.
+ * `.tack/handoffs/` as a link pointing anywhere on disk, and writes follow those links.
+ * The threat is redirection *out of the repository*, not symlinks as such: whole projects
+ * legitimately live under symlinked paths (shared monorepo memory, XDG-style layouts,
+ * linked worktrees), so a link that still resolves inside the project root is allowed.
+ * Writes are additionally confined to `.tack/` by `assertInsideTackDir`.
  */
 export function assertNotSymlink(target: string): void {
   let stats: fs.Stats;
@@ -263,13 +266,27 @@ export function assertNotSymlink(target: string): void {
     return; // Missing entries are fine; Tack creates them itself.
   }
 
-  if (stats.isSymbolicLink()) {
+  if (!stats.isSymbolicLink()) return;
+
+  let realTarget: string;
+  let realRoot: string;
+  try {
+    realTarget = fs.realpathSync(target);
+    realRoot = fs.realpathSync(projectRoot());
+  } catch {
     throw new Error(
-      `${WRITE_BLOCKED_PREFIX}: "${target}" is a symlink. ` +
-        "Tack never writes through symlinks inside .tack/ because a checked-in symlink can redirect writes " +
-        "outside the repository. Delete it and let Tack recreate a real file or directory."
+      `${WRITE_BLOCKED_PREFIX}: "${target}" is a symlink that cannot be resolved (a broken or dangling link). ` +
+        "Delete it and let Tack recreate a real file or directory."
     );
   }
+
+  if (isPathInside(realTarget, realRoot)) return;
+
+  throw new Error(
+    `${WRITE_BLOCKED_PREFIX}: "${target}" is a symlink pointing to "${realTarget}", which is outside the ` +
+      `project at "${realRoot}". Tack never writes through such a link because a checked-in symlink can ` +
+      "redirect writes outside the repository. Delete it and let Tack recreate a real file or directory."
+  );
 }
 
 /** Rejects a symlink at `root` or at any path segment between `root` and `target`. */
@@ -345,15 +362,69 @@ function assertInsideTackDir(filepath: string): void {
   }
 }
 
-function isWriteBlockedError(err: unknown): boolean {
+/** True for errors raised by the `.tack/` write boundary rather than by the filesystem. */
+export function isWriteBlockedError(err: unknown): boolean {
   return err instanceof Error && err.message.startsWith(WRITE_BLOCKED_PREFIX);
 }
 
 /**
+ * On Windows, `rename(2)` over an existing target fails with EPERM/EACCES/EBUSY whenever
+ * another process holds a transient handle on the destination (Defender real-time scan,
+ * the Search indexer, an open editor). Those handles clear in milliseconds.
+ */
+const WINDOWS_RENAME_RETRY_DELAYS_MS = [10, 20, 40, 80] as const;
+
+function isTransientRenameError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Renames with a bounded backoff on Windows, then falls back to a direct write.
+ *
+ * The fallback gives up atomicity for that one write, but a plain `writeFileSync` is
+ * exactly what this code did before it became atomic, so a Windows user never sees a
+ * write start failing because of the hardening.
+ */
+function renameIntoPlace(tempPath: string, filepath: string, content: string): void {
+  if (process.platform !== "win32") {
+    fs.renameSync(tempPath, filepath);
+    return;
+  }
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(tempPath, filepath);
+      return;
+    } catch (err) {
+      if (!isTransientRenameError(err)) throw err;
+      if (attempt >= WINDOWS_RENAME_RETRY_DELAYS_MS.length) {
+        fs.writeFileSync(filepath, content, "utf-8");
+        try {
+          fs.rmSync(tempPath, { force: true });
+        } catch {
+          // Best-effort cleanup only; the temp file is never read back.
+        }
+        return;
+      }
+      sleepSync(WINDOWS_RENAME_RETRY_DELAYS_MS[attempt]!);
+    }
+  }
+}
+
+/**
  * Writes `content` by creating a sibling temp file and renaming it over `filepath`.
- * `rename(2)` is atomic within a directory, so a crash or a concurrent agent can never
- * observe a torn or truncated `.tack/` state file. No cross-process locking is implied:
- * concurrent writers still race, but each reader sees one complete version.
+ * `rename(2)` is atomic within a directory, so a process crash mid-write, or a concurrent
+ * agent reading the file, can never observe a torn or truncated `.tack/` state file.
+ *
+ * This is not a durability guarantee: the temp file and the parent directory are not
+ * fsynced, so power loss or a kernel panic can still leave the file zero-length or lose
+ * the rename entirely. No cross-process locking is implied either: concurrent writers
+ * still race, but each reader sees one complete version.
  */
 function writeFileAtomic(filepath: string, content: string): void {
   const dir = path.dirname(filepath);
@@ -372,7 +443,7 @@ function writeFileAtomic(filepath: string, content: string): void {
     if (existingMode !== null) {
       fs.chmodSync(tempPath, existingMode);
     }
-    fs.renameSync(tempPath, filepath);
+    renameIntoPlace(tempPath, filepath, content);
   } catch (err) {
     try {
       fs.rmSync(tempPath, { force: true });
@@ -635,13 +706,47 @@ export function driftPath(): string {
   return path.join(getTackDir(), "_drift.yaml");
 }
 
-export function readDrift(): DriftState {
+/**
+ * Reads `_drift.yaml`, keeping "absent or empty" distinct from "failed to parse".
+ *
+ * `readYaml` collapses both to `null`, and `validateDriftState(null)` returns an empty
+ * state without a warning, so a torn or conflict-marked `_drift.yaml` used to look
+ * exactly like a fresh project — and the next `writeDrift` erased every accepted and
+ * rejected resolution. Callers that persist drift state must use this and refuse to
+ * write when `error` is set.
+ */
+export function readDriftWithError(): { state: DriftState; error: string | null } {
   migrateLegacyDirIfNeeded();
   migrateMachineFilesIfNeeded();
-  const raw = readYaml<unknown>(driftPath());
-  const validated = validateDriftState(raw);
+  const { data, error } = safeLoadYaml<unknown>(driftPath(), null);
+  if (error) return { state: { items: [] }, error };
+  const validated = validateDriftState(data);
   emitValidationWarnings("_drift.yaml", validated.warnings);
-  return validated.data;
+  return { state: validated.data, error: null };
+}
+
+export function readDrift(): DriftState {
+  const { state, error } = readDriftWithError();
+  if (error) emitValidationWarnings("_drift.yaml", [error]);
+  return state;
+}
+
+/**
+ * Copies an unreadable `_drift.yaml` aside so its accepted/rejected resolutions survive
+ * whatever overwrites the file next. Returns the backup path, or null when there is
+ * nothing to copy or the copy itself was refused.
+ */
+export function quarantineCorruptDrift(): string | null {
+  const source = driftPath();
+  const backup = `${source}.corrupt`;
+  try {
+    if (!fs.existsSync(source)) return null;
+    assertInsideTackDir(backup);
+    fs.copyFileSync(source, backup);
+    return backup;
+  } catch {
+    return null;
+  }
 }
 
 export function writeDrift(state: DriftState): void {

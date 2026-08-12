@@ -19,9 +19,11 @@ import {
   detectMcpClients,
   getAvailableMcpClientAliases,
   getAvailableMcpClients,
+  getMcpClientDefinition,
   getMcpConfigPath,
+  getMcpContainerKey,
   listMcpClients,
-  renderMcpSnippet,
+  renderMcpEntrySnippet,
   resolveMcpClient,
 } from "../lib/mcpConfig.js";
 import type { McpClientKey, McpConfigOptions, McpConfigResult, McpServerRunner } from "../lib/mcpConfig.js";
@@ -33,6 +35,7 @@ type SetupAgentArgs = {
   list?: boolean;
   mcp?: boolean;
   runner?: string;
+  windows?: boolean;
 };
 
 type SetupMcpArgs = {
@@ -41,6 +44,7 @@ type SetupMcpArgs = {
   all?: boolean;
   list?: boolean;
   runner?: string;
+  windows?: boolean;
   "dry-run"?: boolean;
 };
 
@@ -59,6 +63,7 @@ function printSetupAgentUsage(): void {
       "  tack setup-agent --target generic",
       "  tack setup-agent --no-mcp",
       "  tack setup-agent --runner tack",
+      "  tack setup-agent --windows",
       "  tack setup-agent --list",
       "",
       "Default behavior:",
@@ -86,17 +91,23 @@ function printSetupMcpUsage(): void {
       "  tack setup-mcp --client cursor --client codex",
       "  tack setup-mcp --all",
       "  tack setup-mcp --runner tack",
+      "  tack setup-mcp --windows",
       "  tack setup-mcp --dry-run",
       "  tack setup-mcp --list",
       "",
       "Default behavior:",
-      "  - update project MCP config files already present in the repo",
+      "  - update the MCP config files already present in the repo (detected by file, not by directory)",
       "  - if none exist yet, create .mcp.json for Claude Code",
       "  - only the `tack` server entry is touched; every other entry is preserved",
       "",
       "Runner:",
       "  --runner npx (default)  npx -y tack-cli mcp",
       "  --runner tack           tack mcp (requires tack on PATH)",
+      "",
+      "Platform:",
+      "  entries are generated for the current platform; on Windows the command is wrapped",
+      "  in `cmd /c` so the npx/tack .cmd shims resolve. Pass --windows to generate the",
+      "  Windows form from macOS or Linux.",
       "",
       `Canonical clients: ${getAvailableMcpClients().join(", ")}`,
       `All client names: ${getAvailableMcpClientAliases().join(", ")}`,
@@ -251,6 +262,10 @@ function resolveRunner(value: unknown): McpServerRunner {
   throw new Error(`Unknown runner: "${String(value)}". Use --runner npx or --runner tack.`);
 }
 
+function resolvePlatformFlag(windows: boolean | undefined): NodeJS.Platform | undefined {
+  return windows === true ? "win32" : undefined;
+}
+
 function parseClientArg(value: string | string[] | undefined): string[] {
   if (value === undefined) {
     return [];
@@ -279,16 +294,36 @@ function resolveRequestedClients(requested: string[]): McpClientKey[] {
   return resolved;
 }
 
-function detectDefaultClients(repoRoot: string, targetArg?: string): McpClientKey[] {
-  const clients = detectMcpClients(repoRoot);
-  const implied = targetArg ? resolveMcpClient(targetArg) : null;
+/** Agent targets that imply a specific MCP client. AGENTS.md is shared by too many
+ * clients to imply any single config file, so `codex` is deliberately absent. */
+const CLIENT_BY_AGENT_TARGET: Partial<Record<AgentTarget, McpClientKey>> = {
+  claude: "claude-code",
+  gemini: "gemini",
+};
 
-  if (implied && !clients.includes(implied)) {
-    clients.push(implied);
+/**
+ * Detection is driven by MCP config files that actually exist, plus the clients implied
+ * by the agent files being written. A bare `.vscode/` directory is not a signal.
+ */
+function detectDefaultClients(repoRoot: string, targetArg?: string, writtenTargets: AgentTarget[] = []): McpClientKey[] {
+  const clients = detectMcpClients(repoRoot);
+
+  const add = (client: McpClientKey | null | undefined): void => {
+    if (client && !clients.includes(client)) {
+      clients.push(client);
+    }
+  };
+
+  if (targetArg) {
+    add(resolveMcpClient(targetArg));
+  }
+
+  for (const target of writtenTargets) {
+    add(CLIENT_BY_AGENT_TARGET[target]);
   }
 
   if (clients.length === 0) {
-    clients.push(DEFAULT_MCP_CLIENT);
+    add(DEFAULT_MCP_CLIENT);
   }
 
   return clients;
@@ -306,10 +341,15 @@ function printMcpSummary(results: McpConfigResult[], options: McpConfigOptions):
     if (result.status !== "manual") {
       continue;
     }
+    const definition = getMcpClientDefinition(result.client);
     console.log("");
     console.log(result.detail ?? `Could not update ${result.configLabel} automatically.`);
-    console.log(`Add this to ${result.configLabel}:`);
-    console.log(renderMcpSnippet(result.client, options));
+    console.log(
+      definition.format === "toml"
+        ? `Add this table to ${result.configLabel}:`
+        : `Add this entry inside the existing "${getMcpContainerKey(result.client)}" object in ${result.configLabel}:`
+    );
+    console.log(renderMcpEntrySnippet(result.client, options));
   }
 
   if (options.dryRun !== true && sorted.some((result) => result.status !== "manual")) {
@@ -353,8 +393,8 @@ export function runSetupAgent(args: SetupAgentArgs, version: string): number {
     printSetupSummary(results);
 
     if (args.mcp !== false) {
-      const options: McpConfigOptions = { runner };
-      const clients = detectDefaultClients(repoRoot, targetArg);
+      const options: McpConfigOptions = { runner, platform: resolvePlatformFlag(args.windows) };
+      const clients = detectDefaultClients(repoRoot, targetArg, targets);
       printMcpSummary(applyMcpClients(clients, repoRoot, options), options);
     }
 
@@ -380,13 +420,25 @@ export function runSetupMcp(args: SetupMcpArgs): number {
   const repoRoot = findProjectRoot();
 
   try {
-    const options: McpConfigOptions = { runner: resolveRunner(args.runner), dryRun: args["dry-run"] === true };
+    const options: McpConfigOptions = {
+      runner: resolveRunner(args.runner),
+      platform: resolvePlatformFlag(args.windows),
+      dryRun: args["dry-run"] === true,
+    };
     const requested = resolveRequestedClients(parseClientArg(args.client));
     const clients =
       args.all === true ? getAvailableMcpClients() : requested.length > 0 ? requested : detectDefaultClients(repoRoot);
 
     const results = applyMcpClients(clients, repoRoot, options);
     printMcpSummary(results, options);
+
+    // Every client fell back to a paste-it-yourself snippet, so nothing is configured.
+    // Bootstrap scripts need to be able to tell that apart from success.
+    if (results.every((result) => result.status === "manual")) {
+      console.log("");
+      console.log("No MCP config was written. Paste the entry above, then rerun.");
+      return 1;
+    }
 
     if (options.dryRun !== true) {
       console.log("");

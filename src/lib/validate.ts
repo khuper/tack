@@ -338,11 +338,19 @@ export function validateDriftState(raw: unknown): ValidationResult<DriftState> &
     return { data: { items: [] }, warnings, lossy: true };
   }
 
-  const unknownRootKeys = Object.keys(raw).filter((key) => key !== "items");
+  const unknownRootKeys = Object.keys(raw).filter((key) => key !== "items" && key !== "schema_version");
+  const schemaVersion =
+    typeof raw.schema_version === "number" && Number.isFinite(raw.schema_version)
+      ? raw.schema_version
+      : undefined;
 
   if (!Array.isArray(raw.items)) {
     if (raw.items !== undefined) warnings.push("_drift.yaml items must be an array");
-    return { data: { items: [] }, warnings, lossy: raw.items !== undefined || unknownRootKeys.length > 0 };
+    return {
+      data: { ...(schemaVersion !== undefined ? { schema_version: schemaVersion } : {}), items: [] },
+      warnings,
+      lossy: raw.items !== undefined || unknownRootKeys.length > 0,
+    };
   }
 
   const items = raw.items
@@ -361,7 +369,7 @@ export function validateDriftState(raw: unknown): ValidationResult<DriftState> &
         (typeof item.status === "string" && !DRIFT_STATUS.has(item.status as DriftItem["status"])))
   );
   return {
-    data: { items },
+    data: { ...(schemaVersion !== undefined ? { schema_version: schemaVersion } : {}), items },
     warnings,
     lossy: droppedItems > 0 || hasUnrepresentableContent || unknownRootKeys.length > 0,
   };

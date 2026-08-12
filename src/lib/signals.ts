@@ -87,7 +87,16 @@ export type DriftItem = {
   note?: string;
 };
 
+/**
+ * Version stamped into `_drift.yaml` on every write. Version 2 introduced the
+ * machine-only `disappeared` status; files without the field predate it, and the
+ * legacy-migration pass in engine/computeDrift.ts runs only for those files.
+ */
+export const DRIFT_SCHEMA_VERSION = 2;
+
 export type DriftState = {
+  /** Absent on files written before versioning existed (treated as version 1). */
+  schema_version?: number;
   items: DriftItem[];
 };
 

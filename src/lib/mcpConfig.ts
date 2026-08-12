@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { writeFileAtomic } from "./files.js";
+import { findSymlinkComponentBeneath, writeFileAtomic } from "./files.js";
 
 const UTF8_BOM = "\ufeff";
 
@@ -948,40 +948,6 @@ export function renderMcpEntrySnippet(client: McpClientKey, options: McpConfigOp
     .join("\n");
 }
 
-/**
- * MCP config files live at the repository root, outside the `.tack/` boundary that
- * lib/files.ts guards, so they need their own symlink check: git stores symlinks
- * (mode 120000), so a cloned repo can ship `.mcp.json` or `.cursor/` as a link.
- * Following it would pull external file contents into the merge (and then write them
- * back into the repository), or place the write outside the checkout entirely when a
- * parent directory is the link. Returns the offending path, or null when every
- * component between the repo root and the config file is a real entry (missing
- * components are fine — Tack creates them). The repo root itself may be a symlinked
- * path (whole projects legitimately live behind links); only components beneath it
- * are checked.
- */
-function findSymlinkComponent(repoRoot: string, configPath: string): string | null {
-  const resolvedRoot = path.resolve(repoRoot);
-  const relative = path.relative(resolvedRoot, path.resolve(configPath));
-  if (relative.length === 0 || relative.startsWith("..") || path.isAbsolute(relative)) {
-    return path.resolve(configPath);
-  }
-
-  let current = resolvedRoot;
-  for (const segment of relative.split(path.sep)) {
-    if (segment.length === 0) continue;
-    current = path.join(current, segment);
-    try {
-      if (fs.lstatSync(current).isSymbolicLink()) {
-        return current;
-      }
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
 export function applyMcpConfig(
   client: McpClientKey,
   repoRoot: string,
@@ -992,7 +958,10 @@ export function applyMcpConfig(
   const configLabel = path.relative(repoRoot, configPath) || path.basename(configPath);
   const exists = fs.existsSync(configPath);
 
-  const symlinkComponent = findSymlinkComponent(repoRoot, configPath);
+  // MCP config files live at the repository root, outside the `.tack/` boundary that
+  // lib/files.ts guards, so a checked-in `.mcp.json` or `.cursor/` symlink could pull
+  // external contents into the merge or place the write outside the checkout.
+  const symlinkComponent = findSymlinkComponentBeneath(repoRoot, configPath);
   if (symlinkComponent !== null) {
     return {
       client,

@@ -68,3 +68,68 @@ test("quarantine never overwrites an existing backup", () => {
     assert.strictEqual(fs.readFileSync(backupFile, "utf-8"), "first-backup\n");
   });
 });
+
+// --- legacy rejected-item migration (schema_version gate) ---
+
+import { computeDrift } from "../dist/engine/computeDrift.js";
+
+const EMPTY_DIFF = { aligned: [], violations: [], risks: [], undeclared: [] };
+
+test("legacy note-less rejections migrate to disappeared and the file gains schema_version", () => {
+  withTempProject((tmpDir) => {
+    const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+    fs.writeFileSync(
+      driftFile,
+      [
+        "items:",
+        "  - id: legacy-auto",
+        "    type: risk",
+        "    risk: eval-usage",
+        "    signal: 'eval usage: src/a.ts'",
+        "    detected: 2026-01-01T00:00:00Z",
+        "    status: rejected",
+        "  - id: legacy-human",
+        "    type: risk",
+        "    risk: fs-usage",
+        "    signal: 'fs usage: src/b.ts'",
+        "    detected: 2026-01-01T00:00:00Z",
+        "    status: rejected",
+        "    note: Rejected via tack watch",
+        "",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const { state, readOnly } = computeDrift(EMPTY_DIFF);
+
+    assert.strictEqual(readOnly, false);
+    assert.strictEqual(state.items.find((i) => i.id === "legacy-auto").status, "disappeared");
+    assert.strictEqual(state.items.find((i) => i.id === "legacy-human").status, "rejected");
+    assert.match(fs.readFileSync(driftFile, "utf-8"), /schema_version: 2/);
+  });
+});
+
+test("note-less rejections in a version-2 file are preserved as human verdicts", () => {
+  withTempProject((tmpDir) => {
+    const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+    fs.writeFileSync(
+      driftFile,
+      [
+        "schema_version: 2",
+        "items:",
+        "  - id: api-rejection",
+        "    type: risk",
+        "    risk: eval-usage",
+        "    signal: 'eval usage: src/a.ts'",
+        "    detected: 2026-01-01T00:00:00Z",
+        "    status: rejected",
+        "",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const { state } = computeDrift(EMPTY_DIFF);
+
+    assert.strictEqual(state.items.find((i) => i.id === "api-rejection").status, "rejected");
+  });
+});

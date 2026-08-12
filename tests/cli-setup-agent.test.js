@@ -366,3 +366,36 @@ test("setup-agent --force repairs malformed markers in the generic fallback file
     assert.match(repaired, /<!-- END TACK AGENT INSTRUCTIONS -->/);
   });
 });
+
+test("setup-agent refuses a symlinked instruction target before writing anything", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    const outside = path.join(os.tmpdir(), `tack-gemini-victim-${path.basename(tmpDir)}.md`);
+    fs.writeFileSync(outside, "victim content\n", "utf-8");
+    try {
+      fs.symlinkSync(outside, path.join(tmpDir, "GEMINI.md"));
+
+      const result = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "gemini" }, pkg.version));
+
+      assert.strictEqual(result.code, 1);
+      assert.match(result.stderr, /symlink/);
+      assert.strictEqual(fs.readFileSync(outside, "utf-8"), "victim content\n");
+    } finally {
+      fs.rmSync(outside, { force: true });
+    }
+  });
+});
+
+test("setup-agent validates --platform before writing any instruction files", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+
+    const result = captureOutput(() =>
+      runSetupAgent({ _: ["setup-agent"], target: "claude", platform: "amiga" }, pkg.version)
+    );
+
+    assert.strictEqual(result.code, 1);
+    assert.match(result.stderr, /Unknown platform/);
+    assert.ok(!fs.existsSync(path.join(tmpDir, "CLAUDE.md")), "no instruction file may be written on invalid flags");
+  });
+});

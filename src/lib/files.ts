@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as yaml from "js-yaml";
-import { createAudit, createEmptySpec, type Spec, type Audit, type DriftState } from "./signals.js";
+import { createAudit, createEmptySpec, DRIFT_SCHEMA_VERSION, type Spec, type Audit, type DriftState } from "./signals.js";
 import { safeLoadYaml } from "./yaml.js";
 import { validateAudit, validateDriftState, validateSpec } from "./validate.js";
 
@@ -315,6 +315,39 @@ export function assertNotSymlinkStrict(target: string): void {
       "file or directory because writes here would follow the link. Delete the symlink and let " +
       "Tack recreate it."
   );
+}
+
+/**
+ * Returns the first path component beneath `root` (down to and including `target`)
+ * that is a symlink, or null when every component is a real entry (missing
+ * components are fine — Tack creates them). Git stores symlinks (mode 120000), so a
+ * cloned repo can ship any checked-in file or directory as a link; writers outside
+ * the `.tack/` boundary (MCP configs, agent instruction files) use this to refuse
+ * reading external content into the repo or writing outside the checkout. The root
+ * itself may be a symlinked path — whole projects legitimately live behind links —
+ * so only components strictly beneath it are checked. A `target` that escapes
+ * `root` entirely is reported as unsafe (the target path itself is returned).
+ */
+export function findSymlinkComponentBeneath(root: string, target: string): string | null {
+  const resolvedRoot = path.resolve(root);
+  const relative = path.relative(resolvedRoot, path.resolve(target));
+  if (relative.length === 0 || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return path.resolve(target);
+  }
+
+  let current = resolvedRoot;
+  for (const segment of relative.split(path.sep)) {
+    if (segment.length === 0) continue;
+    current = path.join(current, segment);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) {
+        return current;
+      }
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 /** Rejects a symlink at `root` or at any path segment between `root` and `target`. */
@@ -802,11 +835,16 @@ export function quarantineCorruptDrift(): string | null {
 }
 
 export function writeDrift(state: DriftState): void {
-  const content = yaml.dump(state, {
-    lineWidth: 120,
-    noRefs: true,
-    sortKeys: false,
-  });
+  // Every write stamps the current schema version, so one-time migrations (see
+  // engine/computeDrift.ts) can tell "written by an old Tack" from "written by this one".
+  const content = yaml.dump(
+    { schema_version: DRIFT_SCHEMA_VERSION, items: state.items },
+    {
+      lineWidth: 120,
+      noRefs: true,
+      sortKeys: false,
+    }
+  );
   writeSafe(driftPath(), content);
 }
 

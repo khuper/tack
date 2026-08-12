@@ -1,5 +1,5 @@
 import type { SpecDiff, DriftState, DriftItem } from "../lib/signals.js";
-import { createDriftId } from "../lib/signals.js";
+import { createDriftId, DRIFT_SCHEMA_VERSION } from "../lib/signals.js";
 import { quarantineCorruptDrift, readDriftWithError, writeDrift } from "../lib/files.js";
 import { DRIFT_STATUS_DISAPPEARED, isDisappearedDriftItem } from "../lib/validate.js";
 import { log } from "../lib/logger.js";
@@ -29,14 +29,19 @@ export function computeDrift(diff: SpecDiff): {
     );
   }
 
-  // One-time migration: versions before the `disappeared` status auto-dismissed items as
-  // `rejected` with no note, which the code below would treat as a permanent human
-  // verdict. Human rejections always carry a note ("Rejected via tack watch"), so
-  // note-less rejections are machine-written with certainty and become `disappeared`,
-  // eligible to reopen if their violation comes back.
-  for (const item of existing.items) {
-    if (item.status === "rejected" && !item.note) {
-      item.status = DRIFT_STATUS_DISAPPEARED;
+  // One-time migration, gated on the file's schema version: Tack versions before the
+  // `disappeared` status (schema_version < 2, i.e. no version field) auto-dismissed
+  // items as `rejected` with no note, which the code below would treat as a permanent
+  // human verdict. The TUI always attaches a note to human rejections, so on legacy
+  // files a note-less rejection is overwhelmingly a machine dismissal and becomes
+  // `disappeared`, eligible to reopen if its violation comes back. Files written by
+  // this version (schema_version >= 2) are never migrated: a note-less `rejected`
+  // there is a deliberate verdict (hand-edited or via the API) and is preserved.
+  if ((existing.schema_version ?? 1) < DRIFT_SCHEMA_VERSION) {
+    for (const item of existing.items) {
+      if (item.status === "rejected" && !item.note) {
+        item.status = DRIFT_STATUS_DISAPPEARED;
+      }
     }
   }
 

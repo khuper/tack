@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { findProjectRoot, tackDirExists } from "../lib/files.js";
+import { findProjectRoot, findSymlinkComponentBeneath, tackDirExists } from "../lib/files.js";
 import {
   buildBlock,
   getAvailableTargets,
@@ -154,6 +154,18 @@ function appendWithBlankLine(content: string, block: string): string {
 function validateTargetBeforeWrite(target: AgentTarget, repoRoot: string, force = false): void {
   const destinationPath = getDestinationPath(target, repoRoot);
   const destinationLabel = path.relative(repoRoot, destinationPath) || path.basename(destinationPath);
+
+  // Agent instruction files are read and rewritten in place, and a cloned repo can
+  // ship any of them (GEMINI.md, CLAUDE.md, ...) or a parent directory as a checked-in
+  // symlink. Following it would append Tack's block to an arbitrary file outside the
+  // checkout, so symlinked targets are refused before anything is written.
+  const symlinkComponent = findSymlinkComponentBeneath(repoRoot, destinationPath);
+  if (symlinkComponent !== null) {
+    throw new Error(
+      `${destinationLabel} is (or sits behind) a symlink at "${symlinkComponent}", so Tack will not ` +
+        "read or write it. Replace the symlink with a real file or directory and rerun."
+    );
+  }
 
   if (!fs.existsSync(destinationPath)) {
     return;
@@ -416,7 +428,10 @@ export function runSetupAgent(args: SetupAgentArgs, version: string): number {
   }
 
   try {
+    // Every flag is validated before the first write, so an invalid --runner or
+    // --platform can never leave a partial installation behind.
     const runner = resolveRunner(args.runner);
+    const platform = resolvePlatformFlag(args.windows, args.platform);
     const targets = resolvedTarget ? [resolvedTarget] : detectDefaultTargets(repoRoot);
     for (const target of targets) {
       validateTargetBeforeWrite(target, repoRoot, args.force === true);
@@ -426,7 +441,7 @@ export function runSetupAgent(args: SetupAgentArgs, version: string): number {
 
     let mcpAllManual = false;
     if (args.mcp !== false) {
-      const options: McpConfigOptions = { runner, platform: resolvePlatformFlag(args.windows, args.platform) };
+      const options: McpConfigOptions = { runner, platform };
       const clients = detectDefaultClients(repoRoot, targetArg, targets);
       const mcpResults = applyMcpClients(clients, repoRoot, options);
       printMcpSummary(mcpResults, options);

@@ -827,17 +827,19 @@ export function readDrift(): DriftState {
  */
 export function quarantineCorruptDrift(): string | null {
   const source = driftPath();
-  const backup = `${source}.corrupt`;
   try {
     if (!fs.existsSync(source)) return null;
-    // Never overwrite an existing backup: the watch loop calls this on every scan, and a
-    // later, differently-corrupt file must not replace the copy that still holds the
-    // accepted/rejected resolutions this function exists to preserve.
-    if (fs.existsSync(backup)) return backup;
     // A symlinked _drift.yaml must not be quarantined: copyFileSync follows the source
     // link, so a checked-in `_drift.yaml -> /etc/hosts` whose content fails validation
     // would capture that external file into the repository as the .corrupt copy.
     assertNotSymlinkStrict(source);
+    // Backups are content-addressed so every distinct corruption episode keeps its own
+    // copy: rescanning the same corruption is idempotent (same hash, same file), while
+    // a corrupt -> repaired -> corrupt-again sequence gets a NEW backup instead of the
+    // warning pointing at a stale copy that lacks post-repair resolutions.
+    const digest = crypto.createHash("sha256").update(fs.readFileSync(source)).digest("hex").slice(0, 8);
+    const backup = `${source}.${digest}.corrupt`;
+    if (fs.existsSync(backup)) return backup;
     assertInsideTackDir(backup);
     fs.copyFileSync(source, backup);
     return backup;

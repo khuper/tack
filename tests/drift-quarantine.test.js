@@ -55,17 +55,18 @@ test("quarantine refuses to copy through a symlinked _drift.yaml", () => {
   });
 });
 
-test("quarantine never overwrites an existing backup", () => {
+test("quarantine never rewrites an existing backup for the same content", () => {
   withTempProject((tmpDir) => {
     const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
-    const backupFile = `${driftFile}.corrupt`;
-    fs.writeFileSync(backupFile, "first-backup\n", "utf-8");
-    fs.writeFileSync(driftFile, "second corruption\n", "utf-8");
+    fs.writeFileSync(driftFile, "same corruption\n", "utf-8");
 
     const backup = quarantineCorruptDrift();
+    assert.ok(backup, "a backup must be created");
+    // Simulate an existing backup by planting sentinel content at the same path.
+    fs.writeFileSync(backup, "sentinel\n", "utf-8");
 
-    assert.strictEqual(backup, backupFile);
-    assert.strictEqual(fs.readFileSync(backupFile, "utf-8"), "first-backup\n");
+    assert.strictEqual(quarantineCorruptDrift(), backup);
+    assert.strictEqual(fs.readFileSync(backup, "utf-8"), "sentinel\n", "the existing backup must not be re-copied");
   });
 });
 
@@ -462,4 +463,24 @@ test("non-string drift statuses make the read lossy, not silently coerced", () =
       assert.strictEqual(fs.readFileSync(driftFile, "utf-8"), original, "the file must not be rewritten");
     });
   }
+});
+
+test("each corruption episode gets its own content-addressed backup", () => {
+  withTempProject((tmpDir) => {
+    const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+
+    fs.writeFileSync(driftFile, "<<<<<<< first corruption\nitems: []\n", "utf-8");
+    const first = quarantineCorruptDrift();
+    assert.ok(first && first.endsWith(".corrupt"));
+
+    // Same corruption rescanned: idempotent, same backup.
+    assert.strictEqual(quarantineCorruptDrift(), first);
+
+    // Repaired, then corrupted differently: a NEW backup preserving the newer content.
+    fs.writeFileSync(driftFile, "<<<<<<< second corruption\nitems: []\n", "utf-8");
+    const second = quarantineCorruptDrift();
+    assert.ok(second && second !== first, "a distinct episode must not reuse the stale backup");
+    assert.match(fs.readFileSync(second, "utf-8"), /second corruption/);
+    assert.match(fs.readFileSync(first, "utf-8"), /first corruption/);
+  });
 });

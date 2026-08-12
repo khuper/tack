@@ -527,6 +527,20 @@ export function runSetupMcp(args: SetupMcpArgs): number {
       return 1;
     }
 
+    // When the user named the clients (or asked for --all), a partial result is a
+    // failure too: `--client claude --client vscode` with only Claude written must
+    // not exit 0, or bootstrap scripts read "vscode configured" out of success.
+    const explicitlyRequested = args.all === true || requested.length > 0;
+    const manualCount = results.filter((result) => result.status === "manual").length;
+    if (explicitlyRequested && manualCount > 0) {
+      console.log("");
+      console.log(
+        `${manualCount} of ${results.length} requested client(s) could not be written automatically. ` +
+          "Paste the entries above, then rerun."
+      );
+      return 1;
+    }
+
     if (options.dryRun !== true) {
       console.log("");
       console.log("Restart your client, then confirm the `tack` server is connected.");

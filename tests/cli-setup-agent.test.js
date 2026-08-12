@@ -454,3 +454,17 @@ test("a bare or empty --target is a usage error, not silent default targets", ()
     }
   });
 });
+
+test("setup-mcp exits non-zero when any explicitly requested client stays manual", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, ".vscode"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".vscode", "mcp.json"), '{\n  // comment\n  "servers": {}\n}\n', "utf-8");
+
+    const result = captureOutput(() => runSetupMcp({ _: ["setup-mcp"], client: ["claude", "vscode"] }));
+
+    assert.strictEqual(result.code, 1, "partial success of an explicit request must fail");
+    assert.match(result.stdout, /1 of 2 requested client\(s\) could not be written/);
+    assert.ok(fs.existsSync(path.join(tmpDir, ".mcp.json")), "the writable client is still configured");
+  });
+});

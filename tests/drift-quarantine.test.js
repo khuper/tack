@@ -533,3 +533,30 @@ test("malformed known drift fields make the read lossy", () => {
     });
   }
 });
+
+test("normalized (trimmed/truncated) drift strings make the read lossy", () => {
+  const longNote = "n".repeat(600);
+  for (const badLine of [`    note: "${longNote}"`, '    note: "  padded  "']) {
+    withTempProject((tmpDir) => {
+      const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+      const original = [
+        "schema_version: 2",
+        "items:",
+        "  - id: normalized",
+        "    type: risk",
+        "    risk: eval-usage",
+        "    signal: 'eval usage: src/a.ts'",
+        "    detected: '2026-01-01T00:00:00Z'",
+        "    status: unresolved",
+        badLine,
+        "",
+      ].join("\n");
+      fs.writeFileSync(driftFile, original, "utf-8");
+
+      const { readOnly } = computeDrift(EMPTY_DIFF);
+
+      assert.strictEqual(readOnly, true, "a value the validator would alter must stay read-only");
+      assert.strictEqual(fs.readFileSync(driftFile, "utf-8"), original, "the file must not be rewritten");
+    });
+  }
+});

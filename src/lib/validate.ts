@@ -375,9 +375,8 @@ export function validateDriftState(raw: unknown): ValidationResult<DriftState> &
     };
   }
 
-  const items = raw.items
-    .map((item) => validateDriftItem(item, warnings))
-    .filter((item): item is DriftItem => item !== null);
+  const validated = raw.items.map((item) => validateDriftItem(item, warnings));
+  const items = validated.filter((item): item is DriftItem => item !== null);
   const droppedItems = raw.items.length - items.length;
   if (droppedItems > 0) {
     warnings.push(`_drift.yaml: ${droppedItems} item(s) were not recognized by this version of Tack`);
@@ -389,16 +388,33 @@ export function validateDriftState(raw: unknown): ValidationResult<DriftState> &
   // value (`detected: null`, `note: {…}`) that validateDriftItem would coerce away.
   // Rewriting on top of those would erase content a newer Tack — or a human — wrote.
   const STRING_FIELDS = ["id", "type", "system", "risk", "constraint", "signal", "detected", "note"] as const;
-  const isRepresentable = (field: (typeof STRING_FIELDS)[number], value: unknown): boolean =>
-    typeof value === "string" || (field === "detected" && value instanceof Date);
-  const hasUnrepresentableContent = raw.items.some(
-    (item) =>
-      isRecord(item) &&
-      (Object.keys(item).some((key) => !DRIFT_ITEM_KEYS.has(key)) ||
-        (item.status !== undefined &&
-          (typeof item.status !== "string" || !DRIFT_STATUS.has(item.status as DriftItem["status"]))) ||
-        STRING_FIELDS.some((field) => item[field] !== undefined && !isRepresentable(field, item[field])))
-  );
+  /**
+   * The validated value a field must equal for the item to round-trip. A YAML-native
+   * Date on `detected` is representable as its ISO string; everything else must be a
+   * string that survived sanitization byte-for-byte. Comparing values (rather than
+   * enumerating coercion rules) catches trimming, control-character stripping and
+   * length truncation automatically.
+   */
+  const roundTripsVerbatim = (rawItem: Record<string, unknown>, item: DriftItem): boolean =>
+    STRING_FIELDS.every((field) => {
+      const rawValue = rawItem[field];
+      if (rawValue === undefined) return true;
+      const expected = field === "detected" && rawValue instanceof Date ? rawValue.toISOString() : rawValue;
+      return typeof expected === "string" && expected === (item as Record<string, unknown>)[field];
+    });
+
+  const hasUnrepresentableContent = raw.items.some((rawItem, index) => {
+    if (!isRecord(rawItem)) return false; // Already counted as a dropped item.
+    if (Object.keys(rawItem).some((key) => !DRIFT_ITEM_KEYS.has(key))) return true;
+    if (
+      rawItem.status !== undefined &&
+      (typeof rawItem.status !== "string" || !DRIFT_STATUS.has(rawItem.status as DriftItem["status"]))
+    ) {
+      return true;
+    }
+    const item = validated[index];
+    return item !== null && item !== undefined && !roundTripsVerbatim(rawItem, item);
+  });
   return {
     data: { ...(schemaVersion !== undefined ? { schema_version: schemaVersion } : {}), items },
     warnings,

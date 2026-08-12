@@ -675,3 +675,41 @@ test("the drift lock serializes resolution and is released after each transactio
     }
   });
 });
+
+test("a scan cannot overwrite a verdict recorded by another process mid-scan", () => {
+  withTempProject((tmpDir) => {
+    const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+    const lockPath = `${driftFile}.lock`;
+    seedHealthyDrift(tmpDir);
+
+    // Simulate the other process holding the lock while it records its verdict:
+    // this scan must decline to write rather than persisting its stale snapshot.
+    fs.writeFileSync(lockPath, "999999\n", "utf-8");
+    try {
+      const before = fs.readFileSync(driftFile, "utf-8");
+      const { readOnly } = computeDrift(EMPTY_DIFF);
+      assert.strictEqual(readOnly, true, "a scan that cannot take the lock is read-only");
+      assert.strictEqual(fs.readFileSync(driftFile, "utf-8"), before, "no stale write may land");
+    } finally {
+      fs.rmSync(lockPath, { force: true });
+    }
+  });
+});
+
+test("the spec transaction holds one lock across claim and spec write", () => {
+  withTempProject((tmpDir) => {
+    seedHealthyDrift(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "spec.yaml"),
+      "project: t\nallowed_systems: []\nforbidden_systems: []\nconstraints: {}\n",
+      "utf-8"
+    );
+    const lockPath = path.join(tmpDir, ".tack", "_drift.yaml.lock");
+
+    const outcome = resolveDriftItemWithSpec(ITEM, "accepted");
+
+    assert.strictEqual(outcome.persisted, true);
+    assert.ok(!fs.existsSync(lockPath), "the lock is released after the whole transaction");
+    assert.match(fs.readFileSync(path.join(tmpDir, ".tack", "spec.yaml"), "utf-8"), /- redis/);
+  });
+});

@@ -890,8 +890,27 @@ function sleepSyncMs(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** Runs `fn` while holding the drift lock. Throws if the lock cannot be acquired. */
+/**
+ * Re-entrancy depth for the current process. The lock guards `.tack/` state across
+ * PROCESSES; within one process the transactions nest (a spec transaction contains a
+ * drift claim), and a non-re-entrant lock would deadlock against itself.
+ */
+let driftLockDepth = 0;
+
+/**
+ * Runs `fn` while holding the `.tack/` state lock (drift + spec). Throws if the lock
+ * cannot be acquired. Re-entrant within a process; mutually exclusive across processes.
+ */
 export function withDriftLock<T>(fn: () => T): T {
+  if (driftLockDepth > 0) {
+    driftLockDepth += 1;
+    try {
+      return fn();
+    } finally {
+      driftLockDepth -= 1;
+    }
+  }
+
   const lockPath = `${driftPath()}.lock`;
   assertInsideTackDir(lockPath);
   const deadline = Date.now() + DRIFT_LOCK_WAIT_MS;
@@ -925,8 +944,10 @@ export function withDriftLock<T>(fn: () => T): T {
 
   try {
     fs.writeSync(fd, `${process.pid}\n`);
+    driftLockDepth = 1;
     return fn();
   } finally {
+    driftLockDepth = 0;
     try {
       fs.closeSync(fd);
     } catch {

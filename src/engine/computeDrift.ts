@@ -19,6 +19,23 @@ export function computeDrift(diff: SpecDiff): {
   /** True when `_drift.yaml` failed to load and this sweep neither persisted nor should re-alert. */
   readOnly: boolean;
 } {
+  // The whole scan (read -> reopen/dismiss -> append -> write) runs under the state
+  // lock, so a resolution recorded by another watch process cannot be overwritten by
+  // this scan's stale snapshot. If the lock is unavailable the scan degrades to a
+  // read-only sweep rather than crashing the watch loop or racing the writer.
+  try {
+    return withDriftLock(() => computeDriftLocked(diff));
+  } catch {
+    const { state } = readDriftWithError();
+    return { newItems: [], state, readOnly: true };
+  }
+}
+
+function computeDriftLocked(diff: SpecDiff): {
+  newItems: DriftItem[];
+  state: DriftState;
+  readOnly: boolean;
+} {
   const { state: existing, error: readError } = readDriftWithError();
 
   // A successful read ends the current failure episode, so a LATER corruption warns
@@ -253,6 +270,24 @@ export type DriftResolutionOutcome = {
  * human verdict while losing the architecture rule it was supposed to create.
  */
 export function resolveDriftItemWithSpec(
+  item: DriftItem,
+  action: "accepted" | "rejected"
+): DriftResolutionOutcome {
+  // The claim AND the spec read/write happen under one lock hold, so two processes
+  // resolving DIFFERENT items cannot both read the same spec and have the last write
+  // drop the other's rule. The lock is re-entrant, so the nested claim below reuses it.
+  return withDriftLockOrFailure(() => resolveDriftItemWithSpecLocked(item, action));
+}
+
+function withDriftLockOrFailure(fn: () => DriftResolutionOutcome): DriftResolutionOutcome {
+  try {
+    return withDriftLock(fn);
+  } catch {
+    return { persisted: false, specUpdated: false, error: "drift_write_failed" };
+  }
+}
+
+function resolveDriftItemWithSpecLocked(
   item: DriftItem,
   action: "accepted" | "rejected"
 ): DriftResolutionOutcome {

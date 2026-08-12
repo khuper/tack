@@ -478,9 +478,24 @@ export function runSetupAgent(args: SetupAgentArgs, version: string): number {
         // Same contract as `tack setup-mcp`: a bootstrap script must be able to tell
         // "configured" from "nothing written" by the exit code.
         mcpAllManual = mcpResults.length > 0 && mcpResults.every((result) => result.status === "manual");
+        // An explicit --target names one client specifically. If THAT client fell back
+        // to manual, the run failed for what the user asked for, even when another
+        // detected client succeeded — the instructions we just wrote tell the agent it
+        // has MCP access, so exiting 0 would make a bootstrap script believe it.
+        const requestedClient = targetArg ? resolveMcpClient(targetArg) : null;
+        const requestedManual =
+          requestedClient !== null &&
+          mcpResults.some((result) => result.client === requestedClient && result.status === "manual");
         if (mcpAllManual) {
           console.log("");
           console.log("No MCP config was written. Paste the entry above, then rerun.");
+        } else if (requestedManual) {
+          console.log("");
+          console.log(
+            `The MCP config for "${targetArg}" could not be written automatically. ` +
+              "Paste the entry above, then rerun."
+          );
+          mcpAllManual = true;
         }
       }
     }

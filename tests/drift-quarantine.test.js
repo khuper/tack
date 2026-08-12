@@ -508,3 +508,28 @@ test("impostors at every predictable path cannot starve the backup", () => {
     assert.match(fs.readFileSync(backup, "utf-8"), /starved/);
   });
 });
+
+test("malformed known drift fields make the read lossy", () => {
+  for (const badLine of ["    note: {text: hi}", "    system: 42", "    signal: [a, b]"]) {
+    withTempProject((tmpDir) => {
+      const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+      const original = [
+        "schema_version: 2",
+        "items:",
+        "  - id: odd-field",
+        "    type: risk",
+        "    risk: eval-usage",
+        "    detected: 2026-01-01T00:00:00Z",
+        "    status: unresolved",
+        badLine,
+        "",
+      ].join("\n");
+      fs.writeFileSync(driftFile, original, "utf-8");
+
+      const { readOnly } = computeDrift(EMPTY_DIFF);
+
+      assert.strictEqual(readOnly, true, `${badLine} must force a read-only sweep`);
+      assert.strictEqual(fs.readFileSync(driftFile, "utf-8"), original, "the file must not be rewritten");
+    });
+  }
+});

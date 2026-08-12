@@ -294,9 +294,13 @@ function validateDriftItem(raw: unknown, warnings: string[]): DriftItem | null {
       : "unresolved";
   if (status !== raw.status) warnings.push(`Drift item ${raw.id} had invalid status and defaulted to unresolved`);
 
+  // YAML parses an unquoted `detected: 2026-01-01T00:00:00Z` into a Date, so accept
+  // that form and serialize it back to ISO rather than silently stamping "now" over
+  // the original detection time.
+  const rawDetected = raw.detected instanceof Date ? raw.detected.toISOString() : raw.detected;
   const detected =
-    typeof raw.detected === "string" && raw.detected.trim()
-      ? cleanString(raw.detected, `drift.${raw.id}.detected`, warnings, MAX_SOURCE_LENGTH)
+    typeof rawDetected === "string" && rawDetected.trim()
+      ? cleanString(rawDetected, `drift.${raw.id}.detected`, warnings, MAX_SOURCE_LENGTH)
       : new Date().toISOString();
 
   const item: DriftItem = {
@@ -380,12 +384,20 @@ export function validateDriftState(raw: unknown): ValidationResult<DriftState> &
   }
   // A status outside DRIFT_STATUS or a field this version doesn't know (both what a file
   // written by a newer Tack looks like) would be coerced or silently shed on rewrite.
+  // Any defined value this validator cannot represent verbatim makes the read lossy:
+  // unknown keys, an unusable status, and any known field defined with a non-string
+  // value (`detected: null`, `note: {…}`) that validateDriftItem would coerce away.
+  // Rewriting on top of those would erase content a newer Tack — or a human — wrote.
+  const STRING_FIELDS = ["id", "type", "system", "risk", "constraint", "signal", "detected", "note"] as const;
+  const isRepresentable = (field: (typeof STRING_FIELDS)[number], value: unknown): boolean =>
+    typeof value === "string" || (field === "detected" && value instanceof Date);
   const hasUnrepresentableContent = raw.items.some(
     (item) =>
       isRecord(item) &&
       (Object.keys(item).some((key) => !DRIFT_ITEM_KEYS.has(key)) ||
         (item.status !== undefined &&
-          (typeof item.status !== "string" || !DRIFT_STATUS.has(item.status as DriftItem["status"]))))
+          (typeof item.status !== "string" || !DRIFT_STATUS.has(item.status as DriftItem["status"]))) ||
+        STRING_FIELDS.some((field) => item[field] !== undefined && !isRepresentable(field, item[field])))
   );
   return {
     data: { ...(schemaVersion !== undefined ? { schema_version: schemaVersion } : {}), items },

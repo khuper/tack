@@ -468,3 +468,19 @@ test("setup-mcp exits non-zero when any explicitly requested client stays manual
     assert.ok(fs.existsSync(path.join(tmpDir, ".mcp.json")), "the writable client is still configured");
   });
 });
+
+test("setup-agent fails when the explicitly targeted client's MCP config stays manual", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    // Claude is the explicit target but its config is unparseable; Cursor is detected
+    // and writable, so the all-manual rule alone would let this exit 0.
+    fs.writeFileSync(path.join(tmpDir, ".mcp.json"), "{ not json at all", "utf-8");
+    fs.mkdirSync(path.join(tmpDir, ".cursor"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".cursor", "mcp.json"), "{}\n", "utf-8");
+
+    const result = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "claude" }, pkg.version));
+
+    assert.strictEqual(result.code, 1, "the requested client failed, so the run failed");
+    assert.match(result.stdout, /could not be written automatically/);
+  });
+});

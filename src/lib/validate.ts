@@ -384,7 +384,8 @@ export function validateDriftState(raw: unknown): ValidationResult<DriftState> &
     (item) =>
       isRecord(item) &&
       (Object.keys(item).some((key) => !DRIFT_ITEM_KEYS.has(key)) ||
-        (typeof item.status === "string" && !DRIFT_STATUS.has(item.status as DriftItem["status"])))
+        (item.status !== undefined &&
+          (typeof item.status !== "string" || !DRIFT_STATUS.has(item.status as DriftItem["status"]))))
   );
   return {
     data: { ...(schemaVersion !== undefined ? { schema_version: schemaVersion } : {}), items },

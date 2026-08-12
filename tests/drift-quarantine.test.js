@@ -439,3 +439,27 @@ test("a drift write failure surfaces as an unpersisted outcome, not an exception
     }
   });
 });
+
+test("non-string drift statuses make the read lossy, not silently coerced", () => {
+  for (const statusLine of ["    status: null", "    status: 2"]) {
+    withTempProject((tmpDir) => {
+      const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+      const original = [
+        "items:",
+        "  - id: odd-status",
+        "    type: risk",
+        "    risk: eval-usage",
+        "    signal: 'eval usage: src/a.ts'",
+        "    detected: 2026-01-01T00:00:00Z",
+        statusLine,
+        "",
+      ].join("\n");
+      fs.writeFileSync(driftFile, original, "utf-8");
+
+      const { readOnly } = computeDrift(EMPTY_DIFF);
+
+      assert.strictEqual(readOnly, true, `${statusLine} must force a read-only sweep`);
+      assert.strictEqual(fs.readFileSync(driftFile, "utf-8"), original, "the file must not be rewritten");
+    });
+  }
+});

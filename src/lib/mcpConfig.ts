@@ -450,14 +450,43 @@ const TOML_BARE_VALUE_FORMS: RegExp[] = [
   // Decimal integers and floats (fraction and/or exponent), no leading zeros.
   /^[+-]?(?:0|[1-9](?:_?\d)*)(?:\.\d(?:_?\d)*)?(?:[eE][+-]?\d(?:_?\d)*)?$/,
   /^[+-]?(?:inf|nan)$/,
-  // Offset/local date-times and local dates (T, t, or space separator).
-  /^\d{4}-\d{2}-\d{2}(?:[Tt ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})?)?$/,
-  // Local times.
-  /^\d{2}:\d{2}:\d{2}(?:\.\d+)?$/,
 ];
 
+// Offset/local date-times, local dates, and local times, with capture groups so the
+// calendar and clock ranges can be validated: shape alone would bless 2026-99-99.
+const TOML_DATE_TIME =
+  /^(\d{4})-(\d{2})-(\d{2})(?:[Tt ](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:[Zz]|[+-](\d{2}):(\d{2}))?)?$/;
+const TOML_LOCAL_TIME = /^(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?$/;
+
+function isValidCalendarDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function isValidClockTime(hours: number, minutes: number, seconds: number): boolean {
+  // Seconds up to 60 for RFC 3339 leap seconds, which TOML defers to.
+  return hours <= 23 && minutes <= 59 && seconds <= 60;
+}
+
 function isTomlBareValue(raw: string): boolean {
-  return TOML_BARE_VALUE_FORMS.some((form) => form.test(raw));
+  if (TOML_BARE_VALUE_FORMS.some((form) => form.test(raw))) return true;
+
+  const dateTime = raw.match(TOML_DATE_TIME);
+  if (dateTime) {
+    const [, year, month, day, hours, minutes, seconds, offsetHours, offsetMinutes] = dateTime;
+    if (!isValidCalendarDate(Number(year), Number(month), Number(day))) return false;
+    if (hours !== undefined && !isValidClockTime(Number(hours), Number(minutes), Number(seconds))) return false;
+    if (offsetHours !== undefined && (Number(offsetHours) > 23 || Number(offsetMinutes) > 59)) return false;
+    return true;
+  }
+
+  const localTime = raw.match(TOML_LOCAL_TIME);
+  if (localTime) {
+    return isValidClockTime(Number(localTime[1]), Number(localTime[2]), Number(localTime[3]));
+  }
+
+  return false;
 }
 
 /**

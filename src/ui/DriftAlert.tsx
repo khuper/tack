@@ -12,11 +12,15 @@ type Props = {
   onResolved: () => void;
 };
 
-type ViewState = "options" | "cleanup" | "resolved";
+type ViewState = "options" | "cleanup" | "resolved" | "unpersisted";
+
+const UNPERSISTED_MESSAGE =
+  "NOT saved — .tack/_drift.yaml is unreadable. Fix or delete it, then retry; nothing was changed.";
 
 export function DriftAlert({ item, onResolved }: Props) {
   const [view, setView] = useState<ViewState>("options");
   const [resolutionLabel, setResolutionLabel] = useState("");
+  const [failedAction, setFailedAction] = useState<"accept" | "deny" | null>(null);
 
   const options = [
     { label: "[a] Accept — add to allowed_systems", value: "accept" },
@@ -29,6 +33,15 @@ export function DriftAlert({ item, onResolved }: Props) {
   function handleSelect(opt: { value: string }) {
     switch (opt.value) {
       case "accept": {
+        // Persist the drift verdict FIRST: if _drift.yaml is unreadable, nothing
+        // else may happen — no spec change, no success log, no alert dismissal —
+        // or the spec and drift state silently diverge.
+        const accepted = resolveDriftItem(item.id, "accepted", "Accepted via tack watch");
+        if (!accepted.persisted) {
+          setFailedAction("accept");
+          setView("unpersisted");
+          break;
+        }
         const spec = readSpec();
         if (spec && item.system) {
           let changed = false;
@@ -46,23 +59,24 @@ export function DriftAlert({ item, onResolved }: Props) {
           }
           writeSpec(spec);
         }
-        const accepted = resolveDriftItem(item.id, "accepted", "Accepted via tack watch");
         log({
           event: "decision",
           decision: `Accepted drift item ${item.id}`,
           reasoning: "Added detected system to allowed_systems from watch flow",
           actor: "user",
         });
-        setResolutionLabel(
-          accepted.persisted
-            ? "Accepted — spec updated"
-            : "NOT saved — .tack/_drift.yaml is unreadable; fix or delete it, then resolve again"
-        );
+        setResolutionLabel("Accepted — spec updated");
         setView("resolved");
         onResolved();
         break;
       }
       case "deny": {
+        const denied = resolveDriftItem(item.id, "rejected", "Rejected via tack watch");
+        if (!denied.persisted) {
+          setFailedAction("deny");
+          setView("unpersisted");
+          break;
+        }
         const spec = readSpec();
         if (spec && item.system) {
           let changed = false;
@@ -80,18 +94,13 @@ export function DriftAlert({ item, onResolved }: Props) {
           }
           writeSpec(spec);
         }
-        const denied = resolveDriftItem(item.id, "rejected", "Rejected via tack watch");
         log({
           event: "decision",
           decision: `Rejected drift item ${item.id}`,
           reasoning: "Added detected system to forbidden_systems from watch flow",
           actor: "user",
         });
-        setResolutionLabel(
-          denied.persisted
-            ? "Denied — spec updated"
-            : "NOT saved — .tack/_drift.yaml is unreadable; fix or delete it, then resolve again"
-        );
+        setResolutionLabel("Denied — spec updated");
         setView("resolved");
         onResolved();
         break;
@@ -102,6 +111,8 @@ export function DriftAlert({ item, onResolved }: Props) {
         break;
       }
       case "skip": {
+        // Skip never changes the stored status (it stays unresolved), so an
+        // unpersisted skip loses nothing; the label just stops claiming a save.
         const skipped = resolveDriftItem(item.id, "skipped");
         log({
           event: "decision",
@@ -112,7 +123,7 @@ export function DriftAlert({ item, onResolved }: Props) {
         setResolutionLabel(
           skipped.persisted
             ? "Skipped — will remind on next scan"
-            : "NOT saved — .tack/_drift.yaml is unreadable; fix or delete it, then resolve again"
+            : "Skipped — item stays unresolved (.tack/_drift.yaml is unreadable)"
         );
         setView("resolved");
         onResolved();
@@ -151,6 +162,30 @@ export function DriftAlert({ item, onResolved }: Props) {
       {view === "resolved" && (
         <Box marginTop={1}>
           <Text color="green">✓ {resolutionLabel}</Text>
+        </Box>
+      )}
+
+      {view === "unpersisted" && (
+        <Box flexDirection="column" marginTop={1}>
+          <Text color="red">✗ {UNPERSISTED_MESSAGE}</Text>
+          <Box marginTop={1}>
+            <SelectInput
+              items={[
+                { label: "[r] Retry now", value: "retry" },
+                { label: "[x] Dismiss alert (verdict stays unrecorded)", value: "dismiss" },
+              ]}
+              onSelect={(opt) => {
+                if (opt.value === "retry" && failedAction) {
+                  setView("options");
+                  handleSelect({ value: failedAction });
+                  return;
+                }
+                setResolutionLabel("Dismissed without saving — the item remains unresolved");
+                setView("resolved");
+                onResolved();
+              }}
+            />
+          </Box>
         </Box>
       )}
     </Box>

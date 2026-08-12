@@ -609,3 +609,13 @@ test("multiline TOML strings reject overlong closing quote runs", () => {
   const literalError = captureManualError(() => mergeToml("x = '''a''''''\n"));
   assert.ok(isMcpParseError(literalError), "same rule for literal strings");
 });
+
+test("TOML dates and times validate calendar and clock ranges, not just shape", () => {
+  const invalid = ["day = 2026-99-99", "day = 2026-02-30", "at = 99:99:99", "t = 2026-01-01T25:00:00Z", "o = 2026-01-01T10:00:00+25:00"];
+  for (const doc of invalid) {
+    const error = captureManualError(() => mergeToml(`${doc}\n`));
+    assert.ok(isMcpParseError(error), `out-of-range date/time must be refused: ${doc}`);
+  }
+  const valid = "a = 2024-02-29\nb = 23:59:60\nc = 2026-01-01T10:00:00+14:00\n";
+  assert.strictEqual(mergeToml(valid).changed, true);
+});

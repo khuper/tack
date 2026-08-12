@@ -228,7 +228,13 @@ export type DriftResolutionOutcome = {
   /** True when spec.yaml was modified (accept/deny of a system item). */
   specUpdated: boolean;
   /** Names the failing stage so the UI can say exactly what did and didn't happen. */
-  error: "spec_unreadable" | "spec_write_failed" | "drift_unreadable" | "drift_write_failed" | "item_stale" | null;
+  error:
+    | "spec_unreadable"
+    | "spec_write_failed"
+    | "drift_unreadable"
+    | "drift_write_failed"
+    | "item_stale"
+    | null;
 };
 
 /**
@@ -306,7 +312,14 @@ export function resolveDriftItemWithSpec(
     return {
       persisted: false,
       specUpdated,
-      error: result.failedStage === "write" ? "drift_write_failed" : "drift_unreadable",
+      // A conflict means someone else resolved it first: from the caller's point of
+      // view the item is no longer theirs to resolve, which is exactly item_stale.
+      error:
+        result.failedStage === "write"
+          ? "drift_write_failed"
+          : result.failedStage === "conflict"
+            ? "item_stale"
+            : "drift_unreadable",
     };
   }
   return { persisted: true, specUpdated, error: null };
@@ -316,7 +329,12 @@ export function resolveDriftItem(
   id: string,
   action: "accepted" | "rejected" | "skipped",
   note?: string
-): { state: DriftState; persisted: boolean; error: string | null; failedStage?: "read" | "write" } {
+): {
+  state: DriftState;
+  persisted: boolean;
+  error: string | null;
+  failedStage?: "read" | "write" | "conflict";
+} {
   const { state, error: readError } = readDriftWithError();
 
   // Same rule as computeDrift: never persist on top of a state that failed to load.
@@ -331,6 +349,19 @@ export function resolveDriftItem(
   let previousStatus: DriftItem["status"] | null = null;
   if (item) {
     previousStatus = item.status;
+    // Last-moment conflict check: callers verified the item was unresolved before
+    // doing their own work (e.g. writing spec.yaml), but another watch process can
+    // record a verdict in the window between that check and this write. Overwriting
+    // it would leave the drift state contradicting the spec, so the loser of the
+    // race reports a conflict instead.
+    if (action !== "skipped" && item.status !== "unresolved") {
+      return {
+        state,
+        persisted: false,
+        error: `drift item ${id} was already resolved as "${item.status}" by another process`,
+        failedStage: "conflict",
+      };
+    }
     // Skip means "leave the item as it is" — it must never overwrite a status a
     // concurrent process set in the meantime (reverting an accepted/rejected/
     // disappeared item to unresolved would undo a verdict without any notice).

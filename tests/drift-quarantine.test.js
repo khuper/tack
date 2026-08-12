@@ -560,3 +560,31 @@ test("normalized (trimmed/truncated) drift strings make the read lossy", () => {
     });
   }
 });
+
+test("a verdict recorded between the pre-check and the write loses the race, not the data", () => {
+  withTempProject((tmpDir) => {
+    const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+    fs.writeFileSync(
+      driftFile,
+      [
+        "schema_version: 2",
+        "items:",
+        "  - id: raced-verdict",
+        "    type: risk",
+        "    risk: eval-usage",
+        "    signal: 'eval usage: src/a.ts'",
+        "    detected: '2026-01-01T00:00:00Z'",
+        "    status: rejected",
+        "    note: Rejected by the other process",
+        "",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const result = resolveDriftItem("raced-verdict", "accepted", "Accepted via tack watch");
+
+    assert.strictEqual(result.persisted, false);
+    assert.strictEqual(result.failedStage, "conflict");
+    assert.match(fs.readFileSync(driftFile, "utf-8"), /status: rejected/, "the first verdict stands");
+  });
+});

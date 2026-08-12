@@ -14,10 +14,17 @@ export function computeDrift(diff: SpecDiff): {
 } {
   const { state: existing, error: readError } = readDriftWithError();
 
+  // A successful read ends the current failure episode, so a LATER corruption warns
+  // again: the once-guard is per episode, not per process lifetime — a watch session
+  // that sees the file repaired and then re-corrupted must not go silent.
+  if (readError === null) {
+    warnedDriftReadOnly = false;
+  }
+
   // A torn `_drift.yaml` (merge-conflict markers are enough: the file is committed to git)
   // reads as an empty state. Persisting on top of that would erase every accepted and
   // rejected resolution, so copy the file aside and run this sweep read-only instead.
-  // The watch loop calls this on every scan, so warn once per process, not per scan.
+  // The watch loop calls this on every scan, so warn once per failure episode.
   if (readError && !warnedDriftReadOnly) {
     warnedDriftReadOnly = true;
     const backup = quarantineCorruptDrift();

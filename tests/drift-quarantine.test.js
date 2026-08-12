@@ -160,3 +160,37 @@ test("unsupported schema_version values make the read lossy instead of re-enabli
     });
   }
 });
+
+test("the read-only warning re-arms after the drift file is repaired", () => {
+  withTempProject((tmpDir) => {
+    const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(" "));
+    try {
+      // Count only the once-per-episode read-only warning; validation warnings
+      // from each read are separate and expected on every scan.
+      const episodeWarnings = () => warnings.filter((line) => line.includes("NOT updated")).length;
+
+      // A clean read first: earlier tests in this process may have left the
+      // module-level episode flag armed, and a successful read resets it.
+      fs.writeFileSync(driftFile, "schema_version: 2\nitems: []\n", "utf-8");
+      computeDrift(EMPTY_DIFF);
+
+      fs.writeFileSync(driftFile, "<<<<<<< conflict\nitems: []\n", "utf-8");
+      computeDrift(EMPTY_DIFF);
+      computeDrift(EMPTY_DIFF);
+      assert.strictEqual(episodeWarnings(), 1, "one warning per failure episode, not per scan");
+
+      fs.writeFileSync(driftFile, "schema_version: 2\nitems: []\n", "utf-8");
+      computeDrift(EMPTY_DIFF);
+
+      fs.rmSync(`${driftFile}.corrupt`, { force: true });
+      fs.writeFileSync(driftFile, "<<<<<<< conflict again\nitems: []\n", "utf-8");
+      computeDrift(EMPTY_DIFF);
+      assert.strictEqual(episodeWarnings(), 2, "a new failure episode must warn again");
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+});

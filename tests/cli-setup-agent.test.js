@@ -399,3 +399,16 @@ test("setup-agent validates --platform before writing any instruction files", ()
     assert.ok(!fs.existsSync(path.join(tmpDir, "CLAUDE.md")), "no instruction file may be written on invalid flags");
   });
 });
+
+test("setup-agent does not fall back to .mcp.json for targets without a managed MCP config", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+
+    const result = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "zed" }, pkg.version));
+
+    assert.strictEqual(result.code, 0, result.stderr);
+    assert.ok(!fs.existsSync(path.join(tmpDir, ".mcp.json")), "no Claude config for a zed target");
+    assert.match(result.stdout, /does not manage a project MCP config file for target "zed"/);
+    assert.match(result.stdout, /npx -y tack-cli mcp/);
+  });
+});

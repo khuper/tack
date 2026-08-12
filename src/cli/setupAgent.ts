@@ -352,7 +352,10 @@ function detectDefaultClients(repoRoot: string, targetArg?: string, writtenTarge
     add(CLIENT_BY_AGENT_TARGET[target]);
   }
 
-  if (clients.length === 0) {
+  // The Claude Code fallback only applies when the user asked for nothing specific.
+  // An explicit target with no managed MCP config (zed, cline, windsurf, ...) must not
+  // get a .mcp.json its client will never read while the summary claims success.
+  if (clients.length === 0 && !targetArg) {
     add(DEFAULT_MCP_CLIENT);
   }
 
@@ -443,14 +446,24 @@ export function runSetupAgent(args: SetupAgentArgs, version: string): number {
     if (args.mcp !== false) {
       const options: McpConfigOptions = { runner, platform };
       const clients = detectDefaultClients(repoRoot, targetArg, targets);
-      const mcpResults = applyMcpClients(clients, repoRoot, options);
-      printMcpSummary(mcpResults, options);
-      // Same contract as `tack setup-mcp`: a bootstrap script must be able to tell
-      // "configured" from "nothing written" by the exit code.
-      mcpAllManual = mcpResults.length > 0 && mcpResults.every((result) => result.status === "manual");
-      if (mcpAllManual) {
+      if (clients.length === 0) {
+        // Explicit target with no managed MCP config file and none detected in the repo.
         console.log("");
-        console.log("No MCP config was written. Paste the entry above, then rerun.");
+        console.log(
+          `Tack does not manage a project MCP config file for target "${targetArg}". ` +
+            "Point your client at the server manually (command: npx -y tack-cli mcp), " +
+            "or run `tack setup-mcp --client <name>` for a supported client."
+        );
+      } else {
+        const mcpResults = applyMcpClients(clients, repoRoot, options);
+        printMcpSummary(mcpResults, options);
+        // Same contract as `tack setup-mcp`: a bootstrap script must be able to tell
+        // "configured" from "nothing written" by the exit code.
+        mcpAllManual = mcpResults.length > 0 && mcpResults.every((result) => result.status === "manual");
+        if (mcpAllManual) {
+          console.log("");
+          console.log("No MCP config was written. Paste the entry above, then rerun.");
+        }
       }
     }
 

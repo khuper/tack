@@ -564,3 +564,19 @@ test("TOML scanner rejects duplicate definitions instead of blessing broken conf
   const distinctTables = '[a]\nx.y = 1\n[b]\nx.y = 2\n';
   assert.strictEqual(mergeToml(distinctTables).changed, true);
 });
+
+test("TOML scanner rejects duplicate keys inside inline tables", () => {
+  const invalid = [
+    "settings = { mode = 1, mode = 2 }\n",
+    "settings = { a = 1, a.b = 2 }\n",
+    "settings = { a.b = 2, a = 1 }\n",
+  ];
+  for (const doc of invalid) {
+    const error = captureManualError(() => mergeToml(doc));
+    assert.ok(isMcpParseError(error), `inline duplicate must be refused: ${JSON.stringify(doc)}`);
+  }
+
+  // Same key in sibling inline tables (and nested levels) stays legal.
+  const valid = "a = { mode = 1, sub = { mode = 2 } }\nb = { mode = 3 }\n";
+  assert.strictEqual(mergeToml(valid).changed, true);
+});

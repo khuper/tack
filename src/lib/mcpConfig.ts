@@ -705,9 +705,26 @@ function scanTomlDocument(text: string): TomlNode[] {
         pos += 1;
         return;
       }
+      // Inline tables enforce their own duplicate-key rule per nesting level:
+      // `{ mode = 1, mode = 2 }` is invalid TOML, and so is assigning through a
+      // key that already holds a value (`{ a = 1, a.b = 2 }` in either order).
+      const assignedKeys = new Set<string>();
+      const dottedParents = new Set<string>();
       for (;;) {
         skipSpace();
-        readKey();
+        const inlineKeyPath = readKey();
+        const inlineJoined = inlineKeyPath.join(".");
+        if (assignedKeys.has(inlineJoined) || dottedParents.has(inlineJoined)) {
+          fail(`duplicate key "${inlineJoined}" in inline table`);
+        }
+        for (let depth = 1; depth < inlineKeyPath.length; depth += 1) {
+          const prefix = inlineKeyPath.slice(0, depth).join(".");
+          if (assignedKeys.has(prefix)) {
+            fail(`duplicate key "${prefix}" in inline table`);
+          }
+          dottedParents.add(prefix);
+        }
+        assignedKeys.add(inlineJoined);
         skipSpace();
         expect("=");
         skipSpace();

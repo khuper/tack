@@ -910,16 +910,26 @@ function assertNoDuplicateTomlDefinitions(nodes: TomlNode[]): void {
     throw new TomlScanError(`duplicate definition of "${label}"`);
   };
 
-  // Nearest enclosing [[array]] element for a header path, so tables repeated once
-  // per array element ([fruit.physical] under each [[fruit]]) stay legal.
+  /**
+   * Logical array path -> the full scope prefix of its CURRENT element (e.g.
+   * "plugins" -> "plugins#1::plugins.items#2::" is impossible — each entry maps its
+   * own path, so "plugins.items" -> "plugins#1::plugins.items#2::"). Kept separate
+   * from `arrayInstances` (whose keys are instance-qualified) so nested arrays can
+   * still be located by their logical path.
+   */
+  const activeArrayScopes = new Map<string, string>();
+
+  // Nearest enclosing [[array]] element for a path, so tables repeated once per
+  // array element ([fruit.physical] under each [[fruit]]) stay legal even when the
+  // enclosing array is itself nested.
   const arrayScopeFor = (joined: string): string => {
     let best: string | null = null;
-    for (const arrayPath of arrayInstances.keys()) {
-      if (joined.length > arrayPath.length && joined.startsWith(`${arrayPath}.`)) {
-        if (best === null || arrayPath.length > best.length) best = arrayPath;
+    for (const logicalPath of activeArrayScopes.keys()) {
+      if (joined.length > logicalPath.length && joined.startsWith(`${logicalPath}.`)) {
+        if (best === null || logicalPath.length > best.length) best = logicalPath;
       }
     }
-    return best === null ? "" : `${best}#${arrayInstances.get(best)}::`;
+    return best === null ? "" : activeArrayScopes.get(best)!;
   };
 
   for (const node of nodes) {
@@ -947,8 +957,17 @@ function assertNoDuplicateTomlDefinitions(nodes: TomlNode[]): void {
           fail(joined);
         }
         failIfAncestorHoldsValue(enclosing);
-        arrayInstances.set(scopedArray, (arrayInstances.get(scopedArray) ?? 0) + 1);
-        scopePrefix = `${scopedArray}#${arrayInstances.get(scopedArray)}::`;
+        const instance = (arrayInstances.get(scopedArray) ?? 0) + 1;
+        arrayInstances.set(scopedArray, instance);
+        scopePrefix = `${scopedArray}#${instance}::`;
+        activeArrayScopes.set(joined, scopePrefix);
+        // Entering a new element invalidates the active scopes of any deeper arrays
+        // that belonged to the previous element.
+        for (const key of [...activeArrayScopes.keys()]) {
+          if (key.length > joined.length && key.startsWith(`${joined}.`)) {
+            activeArrayScopes.delete(key);
+          }
+        }
         continue;
       }
       scopePrefix = arrayScopeFor(joined);

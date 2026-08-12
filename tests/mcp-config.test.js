@@ -684,3 +684,14 @@ test("TOML rejects child tables beneath scalar-valued keys", () => {
   // Normal supertable/subtable layouts stay legal.
   assert.strictEqual(mergeToml("[a]\nx = 1\n[a.b]\ny = 2\n").changed, true);
 });
+
+test("TOML nested array-of-tables scopes resolve recursively", () => {
+  const error = captureManualError(() =>
+    mergeToml('[[plugins]]\n[[plugins.items]]\nname = "x"\n[[plugins.items.name]]\ny = 1\n')
+  );
+  assert.ok(isMcpParseError(error), "a scalar in a nested array element redefined as an array must be refused");
+
+  // Deeply repeated nested arrays stay legal: the same keys recur per element.
+  const valid = "[[a]]\n[[a.b]]\nx = 1\n[[a.b]]\nx = 2\n[[a]]\n[[a.b]]\nx = 3\n";
+  assert.strictEqual(mergeToml(valid).changed, true);
+});

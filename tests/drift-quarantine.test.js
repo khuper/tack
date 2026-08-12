@@ -665,7 +665,7 @@ test("the drift lock serializes resolution and is released after each transactio
 
     // A live lock held by another process makes the next attempt wait, then fail
     // cleanly rather than corrupting state. (Stale locks are broken automatically.)
-    fs.writeFileSync(lockPath, "999999\n", "utf-8");
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, host: os.hostname(), token: "held-by-other" }), "utf-8");
     try {
       const blocked = resolveDriftItem("item-spec", "skipped");
       assert.strictEqual(blocked.persisted, false, "a held lock must not be bypassed");
@@ -684,7 +684,7 @@ test("a scan cannot overwrite a verdict recorded by another process mid-scan", (
 
     // Simulate the other process holding the lock while it records its verdict:
     // this scan must decline to write rather than persisting its stale snapshot.
-    fs.writeFileSync(lockPath, "999999\n", "utf-8");
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, host: os.hostname(), token: "held-by-other" }), "utf-8");
     try {
       const before = fs.readFileSync(driftFile, "utf-8");
       const { readOnly } = computeDrift(EMPTY_DIFF);
@@ -711,5 +711,41 @@ test("the spec transaction holds one lock across claim and spec write", () => {
     assert.strictEqual(outcome.persisted, true);
     assert.ok(!fs.existsSync(lockPath), "the lock is released after the whole transaction");
     assert.match(fs.readFileSync(path.join(tmpDir, ".tack", "spec.yaml"), "utf-8"), /- redis/);
+  });
+});
+
+test("a live holder's lock is never evicted, and an evicted holder cannot delete its successor", () => {
+  withTempProject((tmpDir) => {
+    const lockPath = path.join(tmpDir, ".tack", "_drift.yaml.lock");
+    seedHealthyDrift(tmpDir);
+
+    // A lock owned by THIS (alive) process, backdated well past the stale threshold:
+    // liveness must prevent eviction even though the mtime looks abandoned.
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: process.pid, host: os.hostname(), token: "live-holder" }),
+      "utf-8"
+    );
+    const old = new Date(Date.now() - 120_000);
+    fs.utimesSync(lockPath, old, old);
+
+    const blocked = resolveDriftItem("item-spec", "skipped");
+    assert.strictEqual(blocked.persisted, false, "a live holder must not be evicted on mtime alone");
+    assert.strictEqual(
+      JSON.parse(fs.readFileSync(lockPath, "utf-8")).token,
+      "live-holder",
+      "the live holder's lock survives"
+    );
+
+    // A dead owner's stale lock IS evictable.
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: 2147483646, host: os.hostname(), token: "dead-holder" }),
+      "utf-8"
+    );
+    fs.utimesSync(lockPath, old, old);
+    const acquired = resolveDriftItem("item-spec", "skipped");
+    assert.strictEqual(acquired.persisted, true, "a provably dead owner's lock is broken");
+    assert.ok(!fs.existsSync(lockPath), "and released afterwards");
   });
 });

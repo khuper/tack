@@ -872,22 +872,72 @@ export function quarantineCorruptDrift(): string | null {
 }
 
 /**
- * Cross-process mutex around `_drift.yaml`, used to make a read-modify-write of the
- * drift state atomic between concurrent `tack watch` processes.
+ * Cross-process mutex around `.tack/` state (`_drift.yaml` + `spec.yaml`), used to make
+ * read-modify-write transactions atomic between concurrent `tack watch` processes.
  *
  * `open(2)` with O_CREAT|O_EXCL is atomic on POSIX and Windows alike, so creating the
- * lock file IS the compare-and-set. A lock whose mtime is older than
- * `DRIFT_LOCK_STALE_MS` is assumed to belong to a process that died mid-transaction
- * and is broken deliberately — an abandoned lock must never wedge the tool forever.
- * The wait is bounded: callers get their turn or the transaction reports a failure
- * rather than blocking a TUI indefinitely.
+ * lock file IS the compare-and-set. Two properties make eviction safe:
+ *
+ * - **Liveness before eviction.** The lock records the holder's pid and hostname. A
+ *   lock is only broken when it is old AND its owner is provably gone (same host, pid
+ *   no longer running) — or when it is very old and owned by another host, where
+ *   liveness cannot be checked. A merely slow or paused holder is never evicted.
+ * - **Token-checked release.** Each holder writes a unique token and only unlinks the
+ *   lock if that token is still there, so a holder that WAS evicted can never delete
+ *   its successor's lock.
  */
 const DRIFT_LOCK_STALE_MS = 30_000;
+const DRIFT_LOCK_FOREIGN_STALE_MS = 300_000;
 const DRIFT_LOCK_WAIT_MS = 5_000;
 const DRIFT_LOCK_POLL_MS = 25;
 
+type DriftLockRecord = { pid: number; host: string; token: string };
+
 function sleepSyncMs(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function readLockRecord(lockPath: string): DriftLockRecord | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(lockPath, "utf-8")) as Partial<DriftLockRecord>;
+    if (typeof parsed.token !== "string" || typeof parsed.pid !== "number" || typeof parsed.host !== "string") {
+      return null;
+    }
+    return { pid: parsed.pid, host: parsed.host, token: parsed.token };
+  } catch {
+    return null; // Unreadable or malformed: treated as an unknown owner.
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM means the process exists but belongs to another user.
+    return (err as NodeJS.ErrnoException)?.code === "EPERM";
+  }
+}
+
+/** True when the lock may be broken: old enough AND its owner is provably gone. */
+function isEvictableLock(lockPath: string): boolean {
+  let ageMs: number;
+  try {
+    ageMs = Date.now() - fs.statSync(lockPath).mtimeMs;
+  } catch {
+    return false; // Vanished between checks; the caller just retries.
+  }
+
+  const record = readLockRecord(lockPath);
+  if (!record) {
+    // Unknown owner (malformed or pre-token lock): only the long timeout applies.
+    return ageMs > DRIFT_LOCK_FOREIGN_STALE_MS;
+  }
+  if (record.host !== os.hostname()) {
+    // Cannot check liveness on another host (shared filesystem): wait much longer.
+    return ageMs > DRIFT_LOCK_FOREIGN_STALE_MS;
+  }
+  return ageMs > DRIFT_LOCK_STALE_MS && !isProcessAlive(record.pid);
 }
 
 /**
@@ -898,8 +948,8 @@ function sleepSyncMs(ms: number): void {
 let driftLockDepth = 0;
 
 /**
- * Runs `fn` while holding the `.tack/` state lock (drift + spec). Throws if the lock
- * cannot be acquired. Re-entrant within a process; mutually exclusive across processes.
+ * Runs `fn` while holding the `.tack/` state lock. Throws if the lock cannot be
+ * acquired. Re-entrant within a process; mutually exclusive across processes.
  */
 export function withDriftLock<T>(fn: () => T): T {
   if (driftLockDepth > 0) {
@@ -914,6 +964,8 @@ export function withDriftLock<T>(fn: () => T): T {
   const lockPath = `${driftPath()}.lock`;
   assertInsideTackDir(lockPath);
   const deadline = Date.now() + DRIFT_LOCK_WAIT_MS;
+  const token = crypto.randomBytes(12).toString("hex");
+  const record: DriftLockRecord = { pid: process.pid, host: os.hostname(), token };
   let fd: number | null = null;
 
   for (;;) {
@@ -922,19 +974,13 @@ export function withDriftLock<T>(fn: () => T): T {
       break;
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") throw err;
-      // Break a stale lock left by a process that died mid-transaction.
-      try {
-        const age = Date.now() - fs.statSync(lockPath).mtimeMs;
-        if (age > DRIFT_LOCK_STALE_MS) {
-          fs.rmSync(lockPath, { force: true });
-          continue;
-        }
-      } catch {
-        // The holder released it between our open and stat: just retry.
+      if (isEvictableLock(lockPath)) {
+        fs.rmSync(lockPath, { force: true });
+        continue;
       }
       if (Date.now() >= deadline) {
         throw new Error(
-          `Timed out waiting for ${lockPath}. Another Tack process is resolving drift; ` +
+          `Timed out waiting for ${lockPath}. Another Tack process is updating .tack/ state; ` +
             "retry, or delete the lock file if no other Tack process is running."
         );
       }
@@ -943,7 +989,7 @@ export function withDriftLock<T>(fn: () => T): T {
   }
 
   try {
-    fs.writeSync(fd, `${process.pid}\n`);
+    fs.writeSync(fd, JSON.stringify(record));
     driftLockDepth = 1;
     return fn();
   } finally {
@@ -951,12 +997,16 @@ export function withDriftLock<T>(fn: () => T): T {
     try {
       fs.closeSync(fd);
     } catch {
-      // Ignore close failures; the unlink below is what matters.
+      // Ignore close failures; the release below is what matters.
     }
+    // Release only if we still own it: a holder that was evicted (or whose lock was
+    // deleted by hand) must never unlink a successor's lock.
     try {
-      fs.rmSync(lockPath, { force: true });
+      if (readLockRecord(lockPath)?.token === token) {
+        fs.rmSync(lockPath, { force: true });
+      }
     } catch {
-      // A stale lock left behind is recovered by the staleness check above.
+      // A lock left behind is recovered by the liveness check above.
     }
   }
 }

@@ -594,3 +594,9 @@ test("multiline TOML strings validate escapes and support line continuations", (
   ].join("\n");
   assert.strictEqual(mergeToml(valid).changed, true);
 });
+
+test("TOML radix integers reject leading signs", () => {
+  const error = captureManualError(() => mergeToml("v = -0x1\n"));
+  assert.ok(isMcpParseError(error), "signed radix literals are invalid TOML");
+  assert.strictEqual(mergeToml("v = 0xDEAD_beef\nw = -12\n").changed, true);
+});

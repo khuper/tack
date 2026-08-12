@@ -493,13 +493,25 @@ function renameIntoPlace(tempPath: string, filepath: string, content: string): v
  * (e.g. MCP client config files); `writeSafe` is the guarded `.tack/`-only wrapper.
  */
 export function writeFileAtomic(filepath: string, content: string): void {
-  const dir = path.dirname(filepath);
+  // Write through allowed file symlinks, not over them: renaming over a link replaces
+  // the link itself with a regular file, silently breaking a supported shared-memory
+  // arrangement (e.g. `.tack/spec.yaml -> shared/spec.yaml` inside `.tack/`). Callers
+  // have already rejected disallowed links, so resolving here is safe; a missing file
+  // keeps the given path.
+  let target = filepath;
+  try {
+    target = fs.realpathSync(filepath);
+  } catch {
+    target = filepath;
+  }
+
+  const dir = path.dirname(target);
   const suffix = `${process.pid}-${crypto.randomBytes(4).toString("hex")}`;
-  const tempPath = path.join(dir, `.${path.basename(filepath)}.${suffix}.tmp`);
+  const tempPath = path.join(dir, `.${path.basename(target)}.${suffix}.tmp`);
 
   let existingMode: number | null = null;
   try {
-    existingMode = fs.statSync(filepath).mode;
+    existingMode = fs.statSync(target).mode;
   } catch {
     // No existing file: the temp file keeps the default mode.
   }
@@ -509,7 +521,7 @@ export function writeFileAtomic(filepath: string, content: string): void {
     if (existingMode !== null) {
       fs.chmodSync(tempPath, existingMode);
     }
-    renameIntoPlace(tempPath, filepath, content);
+    renameIntoPlace(tempPath, target, content);
   } catch (err) {
     try {
       fs.rmSync(tempPath, { force: true });

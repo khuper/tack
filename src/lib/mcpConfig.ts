@@ -444,8 +444,9 @@ class TomlScanError extends Error {}
  */
 const TOML_BARE_VALUE_FORMS: RegExp[] = [
   /^(?:true|false)$/,
-  // Hex / octal / binary integers with optional underscores.
-  /^[+-]?(?:0x[0-9A-Fa-f](?:_?[0-9A-Fa-f])*|0o[0-7](?:_?[0-7])*|0b[01](?:_?[01])*)$/,
+  // Hex / octal / binary integers with optional underscores. TOML permits leading
+  // signs only on decimal integers, so none is allowed here.
+  /^(?:0x[0-9A-Fa-f](?:_?[0-9A-Fa-f])*|0o[0-7](?:_?[0-7])*|0b[01](?:_?[01])*)$/,
   // Decimal integers and floats (fraction and/or exponent), no leading zeros.
   /^[+-]?(?:0|[1-9](?:_?\d)*)(?:\.\d(?:_?\d)*)?(?:[eE][+-]?\d(?:_?\d)*)?$/,
   /^[+-]?(?:inf|nan)$/,

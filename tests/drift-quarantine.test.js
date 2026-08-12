@@ -194,3 +194,24 @@ test("the read-only warning re-arms after the drift file is repaired", () => {
     }
   });
 });
+
+// --- atomic writes through allowed in-.tack symlinks ---
+
+import { writeSafe } from "../dist/lib/files.js";
+
+test("writeSafe writes through an allowed in-.tack file symlink instead of replacing it", () => {
+  withTempProject((tmpDir) => {
+    const tackDir = path.join(tmpDir, ".tack");
+    fs.mkdirSync(path.join(tackDir, "shared"), { recursive: true });
+    const realFile = path.join(tackDir, "shared", "spec.yaml");
+    fs.writeFileSync(realFile, "project: before\n", "utf-8");
+    const linkPath = path.join(tackDir, "spec.yaml");
+    fs.symlinkSync(path.join("shared", "spec.yaml"), linkPath);
+
+    writeSafe(linkPath, "project: after\n");
+
+    assert.ok(fs.lstatSync(linkPath).isSymbolicLink(), "the link must survive the write");
+    assert.strictEqual(fs.readFileSync(realFile, "utf-8"), "project: after\n");
+    assert.strictEqual(fs.readFileSync(linkPath, "utf-8"), "project: after\n");
+  });
+});

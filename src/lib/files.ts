@@ -1021,7 +1021,12 @@ export function driftClaimJournalPath(): string {
   return path.join(getTackDir(), "_drift.claim.json");
 }
 
-export type DriftClaimJournal = { itemId: string; action: "accepted" | "rejected" };
+export type DriftClaimJournal = {
+  itemId: string;
+  action: "accepted" | "rejected";
+  /** System the spec rule applies to, so recovery can check whether it landed. */
+  system: string;
+};
 
 export function writeDriftClaimJournal(entry: DriftClaimJournal): void {
   writeSafe(driftClaimJournalPath(), `${JSON.stringify(entry)}\n`);
@@ -1032,9 +1037,9 @@ export function readDriftClaimJournal(): DriftClaimJournal | null {
   try {
     if (!fs.existsSync(journalPath)) return null;
     const parsed = JSON.parse(fs.readFileSync(journalPath, "utf-8")) as Partial<DriftClaimJournal>;
-    if (typeof parsed.itemId !== "string") return null;
+    if (typeof parsed.itemId !== "string" || typeof parsed.system !== "string") return null;
     if (parsed.action !== "accepted" && parsed.action !== "rejected") return null;
-    return { itemId: parsed.itemId, action: parsed.action };
+    return { itemId: parsed.itemId, action: parsed.action, system: parsed.system };
   } catch {
     return null;
   }

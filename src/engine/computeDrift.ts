@@ -62,6 +62,21 @@ function reconcileInterruptedClaim(): void {
   const { state, error } = readDriftWithError();
   if (error) return; // Unreadable state: the read-only path already warns.
 
+  // The journal alone does not prove the spec write was missed — the process may have
+  // died after writeSpec succeeded but before the journal was cleared. Check the spec
+  // itself: if the rule is already there, the transaction DID complete and the verdict
+  // must be kept.
+  const spec = readSpec();
+  if (!spec) return; // Cannot verify; leave the journal for a later scan.
+  const ruleLanded =
+    journal.action === "accepted"
+      ? spec.allowed_systems.includes(journal.system)
+      : spec.forbidden_systems.includes(journal.system);
+  if (ruleLanded) {
+    clearDriftClaimJournal();
+    return;
+  }
+
   const item = state.items.find((candidate) => candidate.id === journal.itemId);
   if (item && item.status === journal.action) {
     item.status = "unresolved";
@@ -352,7 +367,7 @@ function resolveDriftItemWithSpecLocked(
   // item so it alerts again instead of being suppressed with no rule to show for it.
   if (item.system) {
     try {
-      writeDriftClaimJournal({ itemId: item.id, action });
+      writeDriftClaimJournal({ itemId: item.id, action, system: item.system });
     } catch {
       return { persisted: false, specUpdated: false, error: "drift_write_failed" };
     }
@@ -381,27 +396,30 @@ function resolveDriftItemWithSpecLocked(
     return { persisted: true, specUpdated: false, error: null };
   }
 
-  const rollback = (): void => {
-    // Best-effort: restore the item so the alert can be retried after the operator
-    // fixes spec.yaml. A failure here leaves the verdict recorded without the rule,
-    // which the caller still reports as a spec failure.
+  /**
+   * Restores the item so the alert can be retried after the operator fixes spec.yaml.
+   * Returns false when the verdict could NOT be un-recorded — in that case the claim
+   * journal must be kept, because it is the only marker that will let a later scan
+   * repair the half-applied transaction.
+   */
+  const rollback = (): boolean => {
     const current = readDriftWithError();
-    if (current.error) return;
+    if (current.error) return false;
     const stored = current.state.items.find((candidate) => candidate.id === item.id);
-    if (!stored) return;
+    if (!stored) return true; // Nothing recorded to undo.
     stored.status = "unresolved";
     delete stored.note;
     try {
       writeDrift(current.state);
+      return true;
     } catch {
-      // Nothing further to do; the outcome already reports the spec failure.
+      return false;
     }
   };
 
   const spec = readSpec();
   if (!spec) {
-    rollback();
-    clearDriftClaimJournal();
+    if (rollback()) clearDriftClaimJournal();
     return { persisted: false, specUpdated: false, error: "spec_unreadable" };
   }
 
@@ -427,8 +445,7 @@ function resolveDriftItemWithSpecLocked(
   try {
     writeSpec(spec);
   } catch {
-    rollback();
-    clearDriftClaimJournal();
+    if (rollback()) clearDriftClaimJournal();
     return { persisted: false, specUpdated: false, error: "spec_write_failed" };
   }
   // Both halves are on disk: the transaction is complete.

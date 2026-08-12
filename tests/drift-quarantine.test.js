@@ -777,7 +777,7 @@ test("an interrupted claim (verdict written, spec never updated) is reset on the
     );
     fs.writeFileSync(
       path.join(tmpDir, ".tack", "_drift.claim.json"),
-      JSON.stringify({ itemId: "interrupted", action: "accepted" }),
+      JSON.stringify({ itemId: "interrupted", action: "accepted", system: "redis" }),
       "utf-8"
     );
 
@@ -823,5 +823,52 @@ test("a completed accept leaves no claim journal behind", () => {
 
     assert.strictEqual(outcome.persisted, true);
     assert.ok(!fs.existsSync(path.join(tmpDir, ".tack", "_drift.claim.json")), "journal cleared on success");
+  });
+});
+
+test("a journal left after a completed spec write keeps the verdict", () => {
+  withTempProject((tmpDir) => {
+    // The spec rule IS present: the process died after writeSpec but before the
+    // journal was cleared, so the verdict must survive.
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "spec.yaml"),
+      'project: t\nallowed_systems:\n  - redis\nforbidden_systems: []\nconstraints: {}\n',
+      "utf-8"
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "_drift.yaml"),
+      [
+        "schema_version: 2",
+        "items:",
+        "  - id: committed",
+        "    type: undeclared_system",
+        "    system: redis",
+        "    signal: 'redis: src/cache.ts'",
+        "    detected: '2026-01-01T00:00:00Z'",
+        "    status: accepted",
+        "    note: Accepted via tack watch",
+        "",
+      ].join("\n"),
+      "utf-8"
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "_drift.claim.json"),
+      JSON.stringify({ itemId: "committed", action: "accepted", system: "redis" }),
+      "utf-8"
+    );
+
+    const { state } = computeDrift({
+      aligned: [],
+      violations: [],
+      risks: [],
+      undeclared: [{ id: "redis", source: "src/cache.ts", detail: "redis", category: "system", confidence: 1 }],
+    });
+
+    assert.strictEqual(
+      state.items.find((i) => i.id === "committed").status,
+      "accepted",
+      "a completed transaction must not be rolled back"
+    );
+    assert.ok(!fs.existsSync(path.join(tmpDir, ".tack", "_drift.claim.json")), "the journal is cleared");
   });
 });

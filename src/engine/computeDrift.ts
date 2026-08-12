@@ -1,17 +1,21 @@
 import type { SpecDiff, DriftState, DriftItem } from "../lib/signals.js";
 import { createDriftId, DRIFT_SCHEMA_VERSION } from "../lib/signals.js";
 import {
+  clearDriftClaimJournal,
   quarantineCorruptDrift,
+  readDriftClaimJournal,
   readDriftWithError,
   readSpec,
   withDriftLock,
   writeDrift,
+  writeDriftClaimJournal,
   writeSpec,
 } from "../lib/files.js";
 import { DRIFT_STATUS_DISAPPEARED, isDisappearedDriftItem } from "../lib/validate.js";
 import { log } from "../lib/logger.js";
 
 let warnedDriftReadOnly = false;
+let warnedDriftWriteFailure = false;
 
 export function computeDrift(diff: SpecDiff): {
   newItems: DriftItem[];
@@ -25,10 +29,55 @@ export function computeDrift(diff: SpecDiff): {
   // read-only sweep rather than crashing the watch loop or racing the writer.
   try {
     return withDriftLock(() => computeDriftLocked(diff));
-  } catch {
+  } catch (err) {
+    // Lock contention is expected and silent: another Tack process owns the state
+    // right now, and the next scan will pick it up. A PERSISTENCE failure (full disk,
+    // read-only directory, blocked write) is not expected and must be reported, or
+    // watch would silently stop surfacing drift with no explanation.
+    const isLockContention = err instanceof Error && err.message.includes("Timed out waiting for");
+    if (!isLockContention && !warnedDriftWriteFailure) {
+      warnedDriftWriteFailure = true;
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[tack] drift state could not be saved: ${err instanceof Error ? err.message : String(err)}. ` +
+          "Scans continue read-only; new drift is not being recorded until this is fixed."
+      );
+    }
     const { state } = readDriftWithError();
     return { newItems: [], state, readOnly: true };
   }
+}
+
+/**
+ * Repairs a verdict that was persisted to `_drift.yaml` while its `spec.yaml` rule was
+ * never applied — the state a process killed mid-transaction leaves behind. The verdict
+ * is reverted to `unresolved` so the item alerts again and the operator can redo it;
+ * silently keeping it would suppress the alert forever while the architecture rule the
+ * verdict was supposed to create is missing. Runs under the state lock.
+ */
+function reconcileInterruptedClaim(): void {
+  const journal = readDriftClaimJournal();
+  if (!journal) return;
+
+  const { state, error } = readDriftWithError();
+  if (error) return; // Unreadable state: the read-only path already warns.
+
+  const item = state.items.find((candidate) => candidate.id === journal.itemId);
+  if (item && item.status === journal.action) {
+    item.status = "unresolved";
+    delete item.note;
+    try {
+      writeDrift(state);
+    } catch {
+      return; // Keep the journal so a later scan can retry the repair.
+    }
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[tack] a previous "${journal.action}" on drift item ${journal.itemId} did not finish ` +
+        "(spec.yaml was never updated), so it was reset to unresolved and will alert again."
+    );
+  }
+  clearDriftClaimJournal();
 }
 
 function computeDriftLocked(diff: SpecDiff): {
@@ -36,6 +85,7 @@ function computeDriftLocked(diff: SpecDiff): {
   state: DriftState;
   readOnly: boolean;
 } {
+  reconcileInterruptedClaim();
   const { state: existing, error: readError } = readDriftWithError();
 
   // A successful read ends the current failure episode, so a LATER corruption warns
@@ -43,6 +93,7 @@ function computeDriftLocked(diff: SpecDiff): {
   // that sees the file repaired and then re-corrupted must not go silent.
   if (readError === null) {
     warnedDriftReadOnly = false;
+    warnedDriftWriteFailure = false;
   }
 
   // A torn `_drift.yaml` (merge-conflict markers are enough: the file is committed to git)
@@ -296,12 +347,24 @@ function resolveDriftItemWithSpecLocked(
   // racing process cannot write the opposite architecture rule after we have committed
   // ours. If the spec step then fails, the claim is rolled back to `unresolved` so the
   // item stays actionable and the two files never contradict each other.
+  // Record the intent BEFORE the claim: if this process dies between persisting the
+  // verdict and writing the spec rule, the next scan finds this marker and resets the
+  // item so it alerts again instead of being suppressed with no rule to show for it.
+  if (item.system) {
+    try {
+      writeDriftClaimJournal({ itemId: item.id, action });
+    } catch {
+      return { persisted: false, specUpdated: false, error: "drift_write_failed" };
+    }
+  }
+
   const claim = resolveDriftItem(
     item.id,
     action,
     action === "accepted" ? "Accepted via tack watch" : "Rejected via tack watch"
   );
   if (!claim.persisted) {
+    clearDriftClaimJournal();
     return {
       persisted: false,
       specUpdated: false,
@@ -338,6 +401,7 @@ function resolveDriftItemWithSpecLocked(
   const spec = readSpec();
   if (!spec) {
     rollback();
+    clearDriftClaimJournal();
     return { persisted: false, specUpdated: false, error: "spec_unreadable" };
   }
 
@@ -364,8 +428,11 @@ function resolveDriftItemWithSpecLocked(
     writeSpec(spec);
   } catch {
     rollback();
+    clearDriftClaimJournal();
     return { persisted: false, specUpdated: false, error: "spec_write_failed" };
   }
+  // Both halves are on disk: the transaction is complete.
+  clearDriftClaimJournal();
 
   if (specUpdated) {
     log({

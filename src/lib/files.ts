@@ -887,7 +887,6 @@ export function quarantineCorruptDrift(): string | null {
  *   its successor's lock.
  */
 const DRIFT_LOCK_STALE_MS = 30_000;
-const DRIFT_LOCK_FOREIGN_STALE_MS = 300_000;
 const DRIFT_LOCK_WAIT_MS = 5_000;
 const DRIFT_LOCK_POLL_MS = 25;
 
@@ -929,14 +928,12 @@ function isEvictableLock(lockPath: string): boolean {
   }
 
   const record = readLockRecord(lockPath);
-  if (!record) {
-    // Unknown owner (malformed or pre-token lock): only the long timeout applies.
-    return ageMs > DRIFT_LOCK_FOREIGN_STALE_MS;
-  }
-  if (record.host !== os.hostname()) {
-    // Cannot check liveness on another host (shared filesystem): wait much longer.
-    return ageMs > DRIFT_LOCK_FOREIGN_STALE_MS;
-  }
+  // Only a lock this host can prove is dead may be broken automatically. A lock owned
+  // by another host (a shared filesystem), or one whose owner cannot be identified, is
+  // NEVER auto-evicted: liveness is unknowable there, and a merely slow holder would be
+  // evicted into a concurrent-write corruption. This mirrors git's index.lock, which
+  // also never breaks itself — the operator is told exactly which file to remove.
+  if (!record || record.host !== os.hostname()) return false;
   return ageMs > DRIFT_LOCK_STALE_MS && !isProcessAlive(record.pid);
 }
 
@@ -979,9 +976,12 @@ export function withDriftLock<T>(fn: () => T): T {
         continue;
       }
       if (Date.now() >= deadline) {
+        const holder = readLockRecord(lockPath);
+        const owner = holder ? ` (held by pid ${holder.pid} on ${holder.host})` : "";
         throw new Error(
-          `Timed out waiting for ${lockPath}. Another Tack process is updating .tack/ state; ` +
-            "retry, or delete the lock file if no other Tack process is running."
+          `Timed out waiting for ${lockPath}${owner}. Another Tack process is updating ` +
+            ".tack/ state. Retry; if that process is gone (or ran on another machine), " +
+            "delete the lock file to release it."
         );
       }
       sleepSyncMs(DRIFT_LOCK_POLL_MS);
@@ -1008,6 +1008,43 @@ export function withDriftLock<T>(fn: () => T): T {
     } catch {
       // A lock left behind is recovered by the liveness check above.
     }
+  }
+}
+
+/**
+ * Path of the claim journal: a marker recording that a drift verdict has been written
+ * to `_drift.yaml` but its matching `spec.yaml` rule has NOT been applied yet. It is
+ * written before the claim and removed after the spec write, so a process killed
+ * between the two leaves the marker behind for the next scan to reconcile.
+ */
+export function driftClaimJournalPath(): string {
+  return path.join(getTackDir(), "_drift.claim.json");
+}
+
+export type DriftClaimJournal = { itemId: string; action: "accepted" | "rejected" };
+
+export function writeDriftClaimJournal(entry: DriftClaimJournal): void {
+  writeSafe(driftClaimJournalPath(), `${JSON.stringify(entry)}\n`);
+}
+
+export function readDriftClaimJournal(): DriftClaimJournal | null {
+  const journalPath = driftClaimJournalPath();
+  try {
+    if (!fs.existsSync(journalPath)) return null;
+    const parsed = JSON.parse(fs.readFileSync(journalPath, "utf-8")) as Partial<DriftClaimJournal>;
+    if (typeof parsed.itemId !== "string") return null;
+    if (parsed.action !== "accepted" && parsed.action !== "rejected") return null;
+    return { itemId: parsed.itemId, action: parsed.action };
+  } catch {
+    return null;
+  }
+}
+
+export function clearDriftClaimJournal(): void {
+  try {
+    fs.rmSync(driftClaimJournalPath(), { force: true });
+  } catch {
+    // A leftover journal is reconciled (and cleared) by the next scan.
   }
 }
 

@@ -749,3 +749,79 @@ test("a live holder's lock is never evicted, and an evicted holder cannot delete
     assert.ok(!fs.existsSync(lockPath), "and released afterwards");
   });
 });
+
+test("an interrupted claim (verdict written, spec never updated) is reset on the next scan", () => {
+  withTempProject((tmpDir) => {
+    const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "spec.yaml"),
+      "project: t\nallowed_systems: []\nforbidden_systems: []\nconstraints: {}\n",
+      "utf-8"
+    );
+    // The exact state a kill between the two writes leaves behind.
+    fs.writeFileSync(
+      driftFile,
+      [
+        "schema_version: 2",
+        "items:",
+        "  - id: interrupted",
+        "    type: undeclared_system",
+        "    system: redis",
+        "    signal: 'redis: src/cache.ts'",
+        "    detected: '2026-01-01T00:00:00Z'",
+        "    status: accepted",
+        "    note: Accepted via tack watch",
+        "",
+      ].join("\n"),
+      "utf-8"
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "_drift.claim.json"),
+      JSON.stringify({ itemId: "interrupted", action: "accepted" }),
+      "utf-8"
+    );
+
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(" "));
+    try {
+      // The violation is still present, so the reset item stays unresolved (with an
+      // empty diff it would be correctly auto-dismissed as disappeared instead).
+      const diffWithRedis = {
+        aligned: [],
+        violations: [],
+        risks: [],
+        undeclared: [{ id: "redis", source: "src/cache.ts", detail: "redis", category: "system", confidence: 1 }],
+      };
+      const { state } = computeDrift(diffWithRedis);
+      assert.strictEqual(
+        state.items.find((i) => i.id === "interrupted").status,
+        "unresolved",
+        "the unfinished verdict must be reset so it alerts again"
+      );
+      assert.ok(
+        warnings.some((line) => line.includes("did not finish")),
+        "the operator must be told why the verdict came back"
+      );
+      assert.ok(!fs.existsSync(path.join(tmpDir, ".tack", "_drift.claim.json")), "the journal is cleared");
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+});
+
+test("a completed accept leaves no claim journal behind", () => {
+  withTempProject((tmpDir) => {
+    seedHealthyDrift(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "spec.yaml"),
+      "project: t\nallowed_systems: []\nforbidden_systems: []\nconstraints: {}\n",
+      "utf-8"
+    );
+
+    const outcome = resolveDriftItemWithSpec(ITEM, "accepted");
+
+    assert.strictEqual(outcome.persisted, true);
+    assert.ok(!fs.existsSync(path.join(tmpDir, ".tack", "_drift.claim.json")), "journal cleared on success");
+  });
+});

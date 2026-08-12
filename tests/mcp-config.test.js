@@ -631,3 +631,27 @@ test("TOML scanner rejects table vs array-of-tables path collisions", () => {
     assert.ok(isMcpParseError(error), `array/table collision must be refused: ${JSON.stringify(doc)}`);
   }
 });
+
+test("TOML strings reject unescaped control characters", () => {
+  const invalid = [
+    'a = "nul\u0000here"',
+    "b = 'lit\u0001eral'",
+    'c = """multi\u0007line"""',
+  ];
+  for (const doc of invalid) {
+    const error = captureManualError(() => mergeToml(`${doc}\n`));
+    assert.ok(isMcpParseError(error), "unescaped control characters are invalid TOML");
+  }
+  // Tab is legal everywhere; newline is legal in multi-line strings.
+  assert.strictEqual(mergeToml('a = "tab\there"\nb = """line\nbreak\tok"""\n').changed, true);
+});
+
+test("TOML scanner scopes nested array-table collisions to the active element", () => {
+  const error = captureManualError(() => mergeToml('[[plugins]]\nname = "x"\n[[plugins.name]]\ny = 1\n'));
+  assert.ok(isMcpParseError(error), "a valued key redeclared as a nested array must be refused");
+
+  // Legal nested arrays-of-tables still pass.
+  const valid =
+    '[[fruit]]\nname = "apple"\n[[fruit.variety]]\nkind = "gala"\n[[fruit]]\nname = "pear"\n[[fruit.variety]]\nkind = "bosc"\n';
+  assert.strictEqual(mergeToml(valid).changed, true);
+});

@@ -324,26 +324,51 @@ test("an unreadable spec aborts the transaction before anything is written", () 
   });
 });
 
-test("an unreadable drift file yields the surfaced partial state and an idempotent retry", () => {
+test("an unreadable drift file aborts before the spec is touched, and retry works after repair", () => {
   withTempProject((tmpDir) => {
-    fs.writeFileSync(
-      path.join(tmpDir, ".tack", "spec.yaml"),
-      "project: t\nallowed_systems: []\nforbidden_systems: []\nconstraints: {}\n",
-      "utf-8"
-    );
+    const specContent = "project: t\nallowed_systems: []\nforbidden_systems: []\nconstraints: {}\n";
+    fs.writeFileSync(path.join(tmpDir, ".tack", "spec.yaml"), specContent, "utf-8");
     fs.writeFileSync(path.join(tmpDir, ".tack", "_drift.yaml"), "<<<<<<< conflict\nitems: []\n", "utf-8");
 
     const first = resolveDriftItemWithSpec(ITEM, "accepted");
     assert.strictEqual(first.persisted, false);
     assert.strictEqual(first.error, "drift_unreadable");
-    assert.strictEqual(first.specUpdated, true, "the spec rule must already be recorded");
+    assert.strictEqual(first.specUpdated, false, "the stale-item pre-check aborts before the spec write");
+    assert.strictEqual(fs.readFileSync(path.join(tmpDir, ".tack", "spec.yaml"), "utf-8"), specContent);
 
-    // Repair the drift file and retry: the spec mutation is a no-op, the verdict lands.
+    // Repair the drift file and retry: everything lands exactly once.
     seedHealthyDrift(tmpDir);
     const second = resolveDriftItemWithSpec(ITEM, "accepted");
-    assert.deepStrictEqual(second, { persisted: true, specUpdated: false, error: null });
+    assert.deepStrictEqual(second, { persisted: true, specUpdated: true, error: null });
     assert.match(fs.readFileSync(path.join(tmpDir, ".tack", "_drift.yaml"), "utf-8"), /status: accepted/);
     const spec = fs.readFileSync(path.join(tmpDir, ".tack", "spec.yaml"), "utf-8");
-    assert.strictEqual((spec.match(/- redis/g) ?? []).length, 1, "no duplicate spec entries after retry");
+    assert.strictEqual((spec.match(/- redis/g) ?? []).length, 1, "exactly one spec entry");
+  });
+});
+
+test("a stale alert (item disappeared in a later scan) never touches the spec", () => {
+  withTempProject((tmpDir) => {
+    const specContent = "project: t\nallowed_systems: []\nforbidden_systems: []\nconstraints: {}\n";
+    fs.writeFileSync(path.join(tmpDir, ".tack", "spec.yaml"), specContent, "utf-8");
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "_drift.yaml"),
+      [
+        "schema_version: 2",
+        "items:",
+        "  - id: item-spec",
+        "    type: undeclared_system",
+        "    system: redis",
+        "    signal: 'redis: src/cache.ts'",
+        "    detected: 2026-01-01T00:00:00Z",
+        "    status: disappeared",
+        "",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const outcome = resolveDriftItemWithSpec(ITEM, "accepted");
+
+    assert.deepStrictEqual(outcome, { persisted: false, specUpdated: false, error: "item_stale" });
+    assert.strictEqual(fs.readFileSync(path.join(tmpDir, ".tack", "spec.yaml"), "utf-8"), specContent);
   });
 });

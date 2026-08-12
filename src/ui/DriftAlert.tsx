@@ -46,6 +46,12 @@ export function DriftAlert({ item, onResolved }: Props) {
         // either changed nothing or left a recoverable, retry-idempotent partial
         // state that is surfaced verbatim to the user.
         const accepted = resolveDriftItemWithSpec(item, "accepted");
+        if (accepted.error === "item_stale") {
+          setResolutionLabel("Already resolved or disappeared in a later scan — nothing changed");
+          setView("resolved");
+          onResolved();
+          break;
+        }
         if (accepted.error) {
           setFailedAction("accept");
           setFailureMessage(failureMessageFor(accepted));
@@ -65,6 +71,12 @@ export function DriftAlert({ item, onResolved }: Props) {
       }
       case "deny": {
         const denied = resolveDriftItemWithSpec(item, "rejected");
+        if (denied.error === "item_stale") {
+          setResolutionLabel("Already resolved or disappeared in a later scan — nothing changed");
+          setView("resolved");
+          onResolved();
+          break;
+        }
         if (denied.error) {
           setFailedAction("deny");
           setFailureMessage(failureMessageFor(denied));

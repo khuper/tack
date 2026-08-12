@@ -553,6 +553,15 @@ function scanTomlDocument(text: string): TomlNode[] {
   };
 
   /** Consumes a `'''`/`"""` body, honouring the "up to two extra quotes" closing rule. */
+  // TOML forbids unescaped control characters in every string form: only tab is
+  // legal in single-line strings, tab and newline in multi-line ones.
+  const isForbiddenStringChar = (char: string, allowNewline: boolean): boolean => {
+    const code = char.codePointAt(0) ?? 0;
+    if (char === "\t") return false;
+    if (allowNewline && char === "\n") return false;
+    return code < 0x20 || code === 0x7f;
+  };
+
   const readMultilineString = (delimiter: string, escapes: boolean): string => {
     pos += 3;
     const start = pos;
@@ -595,6 +604,9 @@ function scanTomlDocument(text: string): TomlNode[] {
         const body = text.slice(start, close);
         pos = close + 3;
         return body;
+      }
+      if (isForbiddenStringChar(text[pos]!, true)) {
+        fail("control character in multi-line string");
       }
       pos += 1;
     }
@@ -658,6 +670,9 @@ function scanTomlDocument(text: string): TomlNode[] {
         pos += 1;
         return out;
       }
+      if (isForbiddenStringChar(text[pos]!, false)) {
+        fail("control character in string");
+      }
       out += text[pos];
       pos += 1;
     }
@@ -678,6 +693,9 @@ function scanTomlDocument(text: string): TomlNode[] {
         const body = text.slice(start, pos);
         pos += 1;
         return body;
+      }
+      if (isForbiddenStringChar(text[pos]!, false)) {
+        fail("control character in literal string");
       }
       pos += 1;
     }
@@ -893,12 +911,17 @@ function assertNoDuplicateTomlDefinitions(nodes: TomlNode[]): void {
 
     if (node.kind === "table") {
       if (node.arrayOfTables === true) {
-        // An array-of-tables path may not already exist as a plain table, a
-        // valued key, or a dotted-key parent ([plugins] then [[plugins]], or
-        // plugins = 1 then [[plugins]]).
-        if (headers.has(joined) || values.has(joined) || dottedParents.has(joined)) fail(joined);
-        arrayInstances.set(joined, (arrayInstances.get(joined) ?? 0) + 1);
-        scopePrefix = `${joined}#${arrayInstances.get(joined)}::`;
+        // An array-of-tables path may not already exist as a plain table, a valued
+        // key, or a dotted-key parent — checked within the enclosing array-element
+        // scope, so [[plugins]] name="x" [[plugins.name]] is caught even though the
+        // value was recorded under the element instance.
+        const enclosing = arrayScopeFor(joined);
+        const scopedArray = `${enclosing}${joined}`;
+        if (headers.has(scopedArray) || values.has(scopedArray) || dottedParents.has(scopedArray)) {
+          fail(joined);
+        }
+        arrayInstances.set(scopedArray, (arrayInstances.get(scopedArray) ?? 0) + 1);
+        scopePrefix = `${scopedArray}#${arrayInstances.get(scopedArray)}::`;
         continue;
       }
       scopePrefix = arrayScopeFor(joined);
@@ -906,7 +929,13 @@ function assertNoDuplicateTomlDefinitions(nodes: TomlNode[]): void {
       // A header may not repeat, re-open a key that already holds a value, re-open
       // a table a dotted key already created (`server.x = 1` then [server]), or
       // redeclare an array-of-tables path as a plain table ([[plugins]] then [plugins]).
-      if (headers.has(scoped) || values.has(scoped) || dottedParents.has(scoped) || arrayInstances.has(joined)) {
+      if (
+        headers.has(scoped) ||
+        values.has(scoped) ||
+        dottedParents.has(scoped) ||
+        arrayInstances.has(joined) ||
+        arrayInstances.has(scoped)
+      ) {
         fail(joined);
       }
       headers.add(scoped);
@@ -914,7 +943,7 @@ function assertNoDuplicateTomlDefinitions(nodes: TomlNode[]): void {
     }
 
     const scoped = `${scopePrefix}${joined}`;
-    if (values.has(scoped) || headers.has(scoped)) fail(joined);
+    if (values.has(scoped) || headers.has(scoped) || arrayInstances.has(scoped)) fail(joined);
     // Dotted-key conflicts in both directions: `a = 1` then `a.b = 2`, and the reverse.
     for (let depth = node.table.length + 1; depth < node.path.length; depth += 1) {
       const prefixJoined = node.path.slice(0, depth).join(".");

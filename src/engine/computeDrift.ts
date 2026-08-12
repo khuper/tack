@@ -225,7 +225,7 @@ export type DriftResolutionOutcome = {
   /** True when spec.yaml was modified (accept/deny of a system item). */
   specUpdated: boolean;
   /** Names the failing stage so the UI can say exactly what did and didn't happen. */
-  error: "spec_unreadable" | "spec_write_failed" | "drift_unreadable" | null;
+  error: "spec_unreadable" | "spec_write_failed" | "drift_unreadable" | "item_stale" | null;
 };
 
 /**
@@ -241,6 +241,22 @@ export function resolveDriftItemWithSpec(
   action: "accepted" | "rejected"
 ): DriftResolutionOutcome {
   let specUpdated = false;
+
+  // The caller may hold a stale copy: a queued alert survives later scans, so the
+  // item can have disappeared or been resolved elsewhere in the meantime. Verify it
+  // is still open in the CURRENT drift state before changing spec.yaml for it. This
+  // also moves the drift-unreadable failure ahead of the spec write, so the partial
+  // state below can only occur if the file breaks between this check and the write.
+  {
+    const { state: current, error: readError } = readDriftWithError();
+    if (readError) {
+      return { persisted: false, specUpdated: false, error: "drift_unreadable" };
+    }
+    const stored = current.items.find((candidate) => candidate.id === item.id);
+    if (!stored || stored.status !== "unresolved") {
+      return { persisted: false, specUpdated: false, error: "item_stale" };
+    }
+  }
 
   if (item.system) {
     const spec = readSpec();

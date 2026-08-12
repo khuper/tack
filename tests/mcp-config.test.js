@@ -467,3 +467,66 @@ test("applyMcpConfig leaves a broken Codex config alone", () => {
     assert.strictEqual(fs.readFileSync(configPath, "utf-8"), broken);
   });
 });
+
+test("TOML scanner rejects invalid bare values instead of blessing broken configs", () => {
+  const error = captureManualError(() => mergeToml('model = nope\n'));
+  assert.ok(isMcpParseError(error), "a bare word is not valid TOML and must not be merged over");
+
+  // Valid bare forms still parse: booleans, ints (incl. radix/underscores), floats, date-times.
+  const valid = [
+    'flag = true',
+    'n = 1_000',
+    'hex = 0xDEAD_beef',
+    'f = -3.14e-2',
+    'inf_val = -inf',
+    'when = 2026-08-12T14:00:00Z',
+    'when_space = 2026-08-12 14:00:00+02:00',
+    'day = 2026-08-12',
+    'at = 07:32:00.999',
+  ].join('\n');
+  const merged = mergeToml(`${valid}\n`);
+  assert.strictEqual(merged.changed, true);
+  for (const line of valid.split('\n')) {
+    assert.ok(merged.content.includes(line), `untouched line survives: ${line}`);
+  }
+});
+
+test("applyMcpConfig refuses a symlinked config file", () => {
+  withTempRepo((repoRoot) => {
+    const outside = path.join(repoRoot, "..", `outside-${path.basename(repoRoot)}.json`);
+    fs.writeFileSync(outside, '{"mcpServers":{"secret":{"command":"x"}}}\n', "utf-8");
+    try {
+      fs.symlinkSync(outside, path.join(repoRoot, ".mcp.json"));
+
+      const result = applyMcpConfig("claude-code", repoRoot, POSIX);
+
+      assert.strictEqual(result.status, "manual");
+      assert.match(result.detail, /symlink/);
+      // Neither the link target nor the repo got written.
+      assert.strictEqual(
+        fs.readFileSync(outside, "utf-8"),
+        '{"mcpServers":{"secret":{"command":"x"}}}\n'
+      );
+      assert.ok(fs.lstatSync(path.join(repoRoot, ".mcp.json")).isSymbolicLink());
+    } finally {
+      fs.rmSync(outside, { force: true });
+    }
+  });
+});
+
+test("applyMcpConfig refuses a config behind a symlinked parent directory", () => {
+  withTempRepo((repoRoot) => {
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "tack-mcp-outside-"));
+    try {
+      fs.symlinkSync(outsideDir, path.join(repoRoot, ".cursor"));
+
+      const result = applyMcpConfig("cursor", repoRoot, POSIX);
+
+      assert.strictEqual(result.status, "manual");
+      assert.match(result.detail, /symlink/);
+      assert.deepStrictEqual(fs.readdirSync(outsideDir), [], "nothing may be written through the link");
+    } finally {
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+});

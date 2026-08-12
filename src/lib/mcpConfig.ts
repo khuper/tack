@@ -433,7 +433,29 @@ type TomlNode = {
 
 class TomlScanError extends Error {}
 
-const TOML_BARE_VALUE = /^[A-Za-z0-9_+\-.:]+(?: [0-9][A-Za-z0-9_+\-.:]*)?$/;
+/**
+ * Bare (unquoted) TOML values can only be booleans, integers, floats, or
+ * date-times. Accepting arbitrary bare words here would make the scanner
+ * "recognize" documents real TOML parsers reject (`model = nope`), and
+ * setup-mcp would then append the Tack table to an already-broken config and
+ * report success while Codex still cannot parse the file.
+ */
+const TOML_BARE_VALUE_FORMS: RegExp[] = [
+  /^(?:true|false)$/,
+  // Hex / octal / binary integers with optional underscores.
+  /^[+-]?(?:0x[0-9A-Fa-f](?:_?[0-9A-Fa-f])*|0o[0-7](?:_?[0-7])*|0b[01](?:_?[01])*)$/,
+  // Decimal integers and floats (fraction and/or exponent), no leading zeros.
+  /^[+-]?(?:0|[1-9](?:_?\d)*)(?:\.\d(?:_?\d)*)?(?:[eE][+-]?\d(?:_?\d)*)?$/,
+  /^[+-]?(?:inf|nan)$/,
+  // Offset/local date-times and local dates (T, t, or space separator).
+  /^\d{4}-\d{2}-\d{2}(?:[Tt ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})?)?$/,
+  // Local times.
+  /^\d{2}:\d{2}:\d{2}(?:\.\d+)?$/,
+];
+
+function isTomlBareValue(raw: string): boolean {
+  return TOML_BARE_VALUE_FORMS.some((form) => form.test(raw));
+}
 
 /**
  * A deliberately strict TOML recognizer. It understands table headers, array-of-tables,
@@ -706,7 +728,7 @@ function scanTomlDocument(text: string): TomlNode[] {
       pos += 1;
     }
     const raw = text.slice(start, pos).trim();
-    if (raw.length === 0 || !TOML_BARE_VALUE.test(raw)) {
+    if (raw.length === 0 || !isTomlBareValue(raw)) {
       pos = start;
       fail("unrecognized value");
     }
@@ -926,6 +948,40 @@ export function renderMcpEntrySnippet(client: McpClientKey, options: McpConfigOp
     .join("\n");
 }
 
+/**
+ * MCP config files live at the repository root, outside the `.tack/` boundary that
+ * lib/files.ts guards, so they need their own symlink check: git stores symlinks
+ * (mode 120000), so a cloned repo can ship `.mcp.json` or `.cursor/` as a link.
+ * Following it would pull external file contents into the merge (and then write them
+ * back into the repository), or place the write outside the checkout entirely when a
+ * parent directory is the link. Returns the offending path, or null when every
+ * component between the repo root and the config file is a real entry (missing
+ * components are fine — Tack creates them). The repo root itself may be a symlinked
+ * path (whole projects legitimately live behind links); only components beneath it
+ * are checked.
+ */
+function findSymlinkComponent(repoRoot: string, configPath: string): string | null {
+  const resolvedRoot = path.resolve(repoRoot);
+  const relative = path.relative(resolvedRoot, path.resolve(configPath));
+  if (relative.length === 0 || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return path.resolve(configPath);
+  }
+
+  let current = resolvedRoot;
+  for (const segment of relative.split(path.sep)) {
+    if (segment.length === 0) continue;
+    current = path.join(current, segment);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) {
+        return current;
+      }
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 export function applyMcpConfig(
   client: McpClientKey,
   repoRoot: string,
@@ -935,6 +991,18 @@ export function applyMcpConfig(
   const configPath = getMcpConfigPath(client, repoRoot);
   const configLabel = path.relative(repoRoot, configPath) || path.basename(configPath);
   const exists = fs.existsSync(configPath);
+
+  const symlinkComponent = findSymlinkComponent(repoRoot, configPath);
+  if (symlinkComponent !== null) {
+    return {
+      client,
+      configLabel,
+      status: "manual",
+      detail:
+        `${configLabel} is (or sits behind) a symlink at "${symlinkComponent}", so Tack will not read or ` +
+        "write it. Replace the symlink with a real file or directory, or add the Tack server entry manually.",
+    };
+  }
 
   if (configPath.endsWith(".jsonc")) {
     return {

@@ -789,6 +789,10 @@ export function quarantineCorruptDrift(): string | null {
     // later, differently-corrupt file must not replace the copy that still holds the
     // accepted/rejected resolutions this function exists to preserve.
     if (fs.existsSync(backup)) return backup;
+    // A symlinked _drift.yaml must not be quarantined: copyFileSync follows the source
+    // link, so a checked-in `_drift.yaml -> /etc/hosts` whose content fails validation
+    // would capture that external file into the repository as the .corrupt copy.
+    assertNotSymlinkStrict(source);
     assertInsideTackDir(backup);
     fs.copyFileSync(source, backup);
     return backup;

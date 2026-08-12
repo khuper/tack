@@ -46,14 +46,18 @@ export function DriftAlert({ item, onResolved }: Props) {
           }
           writeSpec(spec);
         }
-        resolveDriftItem(item.id, "accepted", "Accepted via tack watch");
+        const accepted = resolveDriftItem(item.id, "accepted", "Accepted via tack watch");
         log({
           event: "decision",
           decision: `Accepted drift item ${item.id}`,
           reasoning: "Added detected system to allowed_systems from watch flow",
           actor: "user",
         });
-        setResolutionLabel("Accepted — spec updated");
+        setResolutionLabel(
+          accepted.persisted
+            ? "Accepted — spec updated"
+            : "NOT saved — .tack/_drift.yaml is unreadable; fix or delete it, then resolve again"
+        );
         setView("resolved");
         onResolved();
         break;
@@ -76,14 +80,18 @@ export function DriftAlert({ item, onResolved }: Props) {
           }
           writeSpec(spec);
         }
-        resolveDriftItem(item.id, "rejected", "Rejected via tack watch");
+        const denied = resolveDriftItem(item.id, "rejected", "Rejected via tack watch");
         log({
           event: "decision",
           decision: `Rejected drift item ${item.id}`,
           reasoning: "Added detected system to forbidden_systems from watch flow",
           actor: "user",
         });
-        setResolutionLabel("Denied — spec updated");
+        setResolutionLabel(
+          denied.persisted
+            ? "Denied — spec updated"
+            : "NOT saved — .tack/_drift.yaml is unreadable; fix or delete it, then resolve again"
+        );
         setView("resolved");
         onResolved();
         break;
@@ -94,14 +102,18 @@ export function DriftAlert({ item, onResolved }: Props) {
         break;
       }
       case "skip": {
-        resolveDriftItem(item.id, "skipped");
+        const skipped = resolveDriftItem(item.id, "skipped");
         log({
           event: "decision",
           decision: `Skipped drift item ${item.id}`,
           reasoning: "Deferred action from watch flow",
           actor: "user",
         });
-        setResolutionLabel("Skipped — will remind on next scan");
+        setResolutionLabel(
+          skipped.persisted
+            ? "Skipped — will remind on next scan"
+            : "NOT saved — .tack/_drift.yaml is unreadable; fix or delete it, then resolve again"
+        );
         setView("resolved");
         onResolved();
         break;

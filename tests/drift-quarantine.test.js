@@ -215,3 +215,47 @@ test("writeSafe writes through an allowed in-.tack file symlink instead of repla
     assert.strictEqual(fs.readFileSync(linkPath, "utf-8"), "project: after\n");
   });
 });
+
+// --- resolveDriftItem read-only surfacing ---
+
+import { resolveDriftItem } from "../dist/engine/computeDrift.js";
+
+test("resolveDriftItem reports unpersisted verdicts on an unreadable drift file", () => {
+  withTempProject((tmpDir) => {
+    const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+    const original = "<<<<<<< conflict\nitems: []\n";
+    fs.writeFileSync(driftFile, original, "utf-8");
+
+    const result = resolveDriftItem("some-id", "accepted", "note");
+
+    assert.strictEqual(result.persisted, false);
+    assert.ok(result.error, "the read error must be surfaced");
+    assert.strictEqual(fs.readFileSync(driftFile, "utf-8"), original, "nothing may be written");
+  });
+});
+
+test("resolveDriftItem persists and reports success on a healthy file", () => {
+  withTempProject((tmpDir) => {
+    const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+    fs.writeFileSync(
+      driftFile,
+      [
+        "schema_version: 2",
+        "items:",
+        "  - id: item-1",
+        "    type: risk",
+        "    risk: eval-usage",
+        "    signal: 'eval usage: src/a.ts'",
+        "    detected: 2026-01-01T00:00:00Z",
+        "    status: unresolved",
+        "",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const result = resolveDriftItem("item-1", "accepted", "Accepted via test");
+
+    assert.strictEqual(result.persisted, true);
+    assert.match(fs.readFileSync(driftFile, "utf-8"), /status: accepted/);
+  });
+});

@@ -553,8 +553,15 @@ function scanTomlDocument(text: string): TomlNode[] {
       }
       if (text.startsWith(delimiter, pos)) {
         let close = pos;
+        let extraQuotes = 0;
         while (text[close + 3] === delimiter[0]) {
           close += 1;
+          extraQuotes += 1;
+        }
+        // TOML permits at most two extra delimiter characters as content before
+        // the closing run ("""a""""" is `a""`); longer runs are unparseable.
+        if (extraQuotes > 2) {
+          fail("too many closing quotes in multi-line string");
         }
         const body = text.slice(start, close);
         pos = close + 3;

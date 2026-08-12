@@ -223,8 +223,17 @@ export function resolveDriftItem(
   id: string,
   action: "accepted" | "rejected" | "skipped",
   note?: string
-): DriftState {
+): { state: DriftState; persisted: boolean; error: string | null } {
   const { state, error: readError } = readDriftWithError();
+
+  // Same rule as computeDrift: never persist on top of a state that failed to load.
+  // The verdict is not applied even in memory and nothing is logged — the caller
+  // must be able to tell the user their resolution was NOT recorded, instead of
+  // showing success while the file stays unreadable.
+  if (readError) {
+    return { state, persisted: false, error: readError };
+  }
+
   const item = state.items.find((i) => i.id === id);
   let previousStatus: DriftItem["status"] | null = null;
   if (item) {
@@ -232,10 +241,7 @@ export function resolveDriftItem(
     item.status = action === "skipped" ? "unresolved" : action;
     if (note) item.note = note;
   }
-  // Same rule as computeDrift: never persist on top of a state that failed to load.
-  if (!readError) {
-    writeDrift(state);
-  }
+  writeDrift(state);
   if (item && previousStatus === "unresolved" && item.status !== "unresolved") {
     log({
       event: "drift:resolved",
@@ -244,7 +250,7 @@ export function resolveDriftItem(
       source: ".tack/_drift.yaml",
     });
   }
-  return state;
+  return { state, persisted: true, error: null };
 }
 
 function fingerprint(item: DriftItem): string {

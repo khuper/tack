@@ -600,3 +600,12 @@ test("TOML radix integers reject leading signs", () => {
   assert.ok(isMcpParseError(error), "signed radix literals are invalid TOML");
   assert.strictEqual(mergeToml("v = 0xDEAD_beef\nw = -12\n").changed, true);
 });
+
+test("multiline TOML strings reject overlong closing quote runs", () => {
+  const error = captureManualError(() => mergeToml('x = """a""""""\n'));
+  assert.ok(isMcpParseError(error), "six closing quotes are invalid TOML");
+  // Up to two extra delimiter characters are content: """a""""" is `a""`.
+  assert.strictEqual(mergeToml('x = """a"""""\n').changed, true);
+  const literalError = captureManualError(() => mergeToml("x = '''a''''''\n"));
+  assert.ok(isMcpParseError(literalError), "same rule for literal strings");
+});

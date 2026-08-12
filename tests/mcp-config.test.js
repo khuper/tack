@@ -616,7 +616,8 @@ test("TOML dates and times validate calendar and clock ranges, not just shape", 
     const error = captureManualError(() => mergeToml(`${doc}\n`));
     assert.ok(isMcpParseError(error), `out-of-range date/time must be refused: ${doc}`);
   }
-  const valid = "a = 2024-02-29\nb = 23:59:60\nc = 2026-01-01T10:00:00+14:00\n";
+  // Leap-second times are rejected by the conformant-parser gate, so they are not in the valid set.
+  const valid = "a = 2024-02-29\nb = 23:59:59\nc = 2026-01-01T10:00:00+14:00\n";
   assert.strictEqual(mergeToml(valid).changed, true);
 });
 
@@ -694,4 +695,9 @@ test("TOML nested array-of-tables scopes resolve recursively", () => {
   // Deeply repeated nested arrays stay legal: the same keys recur per element.
   const valid = "[[a]]\n[[a.b]]\nx = 1\n[[a.b]]\nx = 2\n[[a]]\n[[a.b]]\nx = 3\n";
   assert.strictEqual(mergeToml(valid).changed, true);
+});
+
+test("a conformant TOML parser gates every merge (implicit-parent redefinition and beyond)", () => {
+  const error = captureManualError(() => mergeToml("[profiles.settings]\nx = 1\n[[profiles]]\ny = 2\n"));
+  assert.ok(isMcpParseError(error), "implicit parent tables cannot be redefined as arrays");
 });

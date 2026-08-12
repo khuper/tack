@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { parse as parseToml } from "smol-toml";
 import { findSymlinkComponentBeneath, writeFileAtomic } from "./files.js";
 
 const UTF8_BOM = "\ufeff";
@@ -1024,6 +1025,17 @@ function hasInlineTackDeclaration(nodes: TomlNode[], serverPath: string[]): bool
   );
 }
 
+/** Runs the document through a conformant TOML 1.0 parser; failures become `manual`. */
+function assertParseableToml(normalized: string, configLabel: string): void {
+  try {
+    parseToml(normalized);
+  } catch {
+    throw new McpManualMergeError(
+      `Could not parse ${configLabel} as TOML. Add the Tack server entry manually, then rerun.`
+    );
+  }
+}
+
 export function mergeTomlMcpConfig(
   existingContent: string | null,
   options: McpConfigOptions = {},
@@ -1039,6 +1051,13 @@ export function mergeTomlMcpConfig(
 
   const crlf = usesCrlf(existingContent);
   const normalized = existingContent.replace(/\r\n/g, "\n");
+
+  // A conformant TOML 1.0 parser is the authority on validity: the hand-rolled
+  // scanner below only locates spans, and every document must pass a real parse
+  // BEFORE Tack will append to it. Without this gate, any conformance corner the
+  // scanner misses (implicit-parent redefinition, and whatever else the spec hides)
+  // would let setup-mcp bless a config Codex itself cannot load.
+  assertParseableToml(normalized, configLabel);
 
   // Normalized offset of each removed `\r` so scan positions can be mapped back to the
   // original text. The splice happens on the ORIGINAL document: re-applying line endings
@@ -1134,7 +1153,8 @@ export function mergeTomlMcpConfig(
     )}`;
   }
 
-  // Never hand back TOML we cannot read back.
+  // Never hand back TOML we cannot read back — or that a conformant parser rejects.
+  assertParseableToml(merged.replace(/\r\n/g, "\n"), configLabel);
   let mergedNodes: TomlNode[];
   try {
     mergedNodes = scanTomlDocument(merged.replace(/\r\n/g, "\n"));

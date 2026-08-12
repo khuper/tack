@@ -580,3 +580,17 @@ test("TOML scanner rejects duplicate keys inside inline tables", () => {
   const valid = "a = { mode = 1, sub = { mode = 2 } }\nb = { mode = 3 }\n";
   assert.strictEqual(mergeToml(valid).changed, true);
 });
+
+test("multiline TOML strings validate escapes and support line continuations", () => {
+  const error = captureManualError(() => mergeToml('prompt = """bad \\q"""\n'));
+  assert.ok(isMcpParseError(error), "an invalid escape in a multiline string must be refused");
+
+  const valid = [
+    'a = """tab \\t unicode \\u0041 quote \\" ok"""',
+    'b = """line one \\',
+    "   continued after trim\"\"\"",
+    "c = '''literal \\q needs no escaping'''",
+    "",
+  ].join("\n");
+  assert.strictEqual(mergeToml(valid).changed, true);
+});

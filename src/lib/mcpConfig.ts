@@ -532,7 +532,22 @@ function scanTomlDocument(text: string): TomlNode[] {
         fail("unterminated multi-line string");
       }
       if (escapes && text[pos] === "\\") {
-        pos += 2;
+        // TOML's line-ending backslash: when the backslash is the last
+        // non-whitespace character on the line, it and all whitespace up to the
+        // next non-whitespace character are trimmed. Anything else must be a
+        // valid escape — `\q` makes the whole document unparseable for Codex.
+        let lookahead = pos + 1;
+        while (lookahead < length && (text[lookahead] === " " || text[lookahead] === "\t")) {
+          lookahead += 1;
+        }
+        if (lookahead < length && text[lookahead] === "\n") {
+          pos = lookahead + 1;
+          while (pos < length && (text[pos] === " " || text[pos] === "\t" || text[pos] === "\n")) {
+            pos += 1;
+          }
+          continue;
+        }
+        decodeEscape();
         continue;
       }
       if (text.startsWith(delimiter, pos)) {

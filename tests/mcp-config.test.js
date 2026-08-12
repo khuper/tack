@@ -619,3 +619,15 @@ test("TOML dates and times validate calendar and clock ranges, not just shape", 
   const valid = "a = 2024-02-29\nb = 23:59:60\nc = 2026-01-01T10:00:00+14:00\n";
   assert.strictEqual(mergeToml(valid).changed, true);
 });
+
+test("TOML scanner rejects table vs array-of-tables path collisions", () => {
+  const invalid = [
+    '[[plugins]]\nname = "a"\n[plugins]\nx = 1\n',
+    '[plugins]\nx = 1\n[[plugins]]\nname = "a"\n',
+    'plugins = 1\n[[plugins]]\nname = "a"\n',
+  ];
+  for (const doc of invalid) {
+    const error = captureManualError(() => mergeToml(doc));
+    assert.ok(isMcpParseError(error), `array/table collision must be refused: ${JSON.stringify(doc)}`);
+  }
+});

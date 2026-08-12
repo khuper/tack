@@ -893,15 +893,22 @@ function assertNoDuplicateTomlDefinitions(nodes: TomlNode[]): void {
 
     if (node.kind === "table") {
       if (node.arrayOfTables === true) {
+        // An array-of-tables path may not already exist as a plain table, a
+        // valued key, or a dotted-key parent ([plugins] then [[plugins]], or
+        // plugins = 1 then [[plugins]]).
+        if (headers.has(joined) || values.has(joined) || dottedParents.has(joined)) fail(joined);
         arrayInstances.set(joined, (arrayInstances.get(joined) ?? 0) + 1);
         scopePrefix = `${joined}#${arrayInstances.get(joined)}::`;
         continue;
       }
       scopePrefix = arrayScopeFor(joined);
       const scoped = `${scopePrefix}${joined}`;
-      // A header may not repeat, re-open a key that already holds a value, or
-      // re-open a table a dotted key already created (`server.x = 1` then [server]).
-      if (headers.has(scoped) || values.has(scoped) || dottedParents.has(scoped)) fail(joined);
+      // A header may not repeat, re-open a key that already holds a value, re-open
+      // a table a dotted key already created (`server.x = 1` then [server]), or
+      // redeclare an array-of-tables path as a plain table ([[plugins]] then [plugins]).
+      if (headers.has(scoped) || values.has(scoped) || dottedParents.has(scoped) || arrayInstances.has(joined)) {
+        fail(joined);
+      }
       headers.add(scoped);
       continue;
     }

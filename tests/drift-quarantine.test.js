@@ -259,3 +259,91 @@ test("resolveDriftItem persists and reports success on a healthy file", () => {
     assert.match(fs.readFileSync(driftFile, "utf-8"), /status: accepted/);
   });
 });
+
+// --- spec-first accept/deny transaction ---
+
+import { resolveDriftItemWithSpec } from "../dist/engine/computeDrift.js";
+
+function seedHealthyDrift(tmpDir) {
+  fs.writeFileSync(
+    path.join(tmpDir, ".tack", "_drift.yaml"),
+    [
+      "schema_version: 2",
+      "items:",
+      "  - id: item-spec",
+      "    type: undeclared_system",
+      "    system: redis",
+      "    signal: 'redis: src/cache.ts'",
+      "    detected: 2026-01-01T00:00:00Z",
+      "    status: unresolved",
+      "",
+    ].join("\n"),
+    "utf-8"
+  );
+}
+
+const ITEM = {
+  id: "item-spec",
+  type: "undeclared_system",
+  system: "redis",
+  signal: "redis: src/cache.ts",
+  detected: "2026-01-01T00:00:00Z",
+  status: "unresolved",
+};
+
+test("accept transaction updates spec first, then persists the verdict", () => {
+  withTempProject((tmpDir) => {
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "spec.yaml"),
+      'project: t\nallowed_systems: []\nforbidden_systems: ["redis"]\nconstraints: {}\n',
+      "utf-8"
+    );
+    seedHealthyDrift(tmpDir);
+
+    const outcome = resolveDriftItemWithSpec(ITEM, "accepted");
+
+    assert.deepStrictEqual(outcome, { persisted: true, specUpdated: true, error: null });
+    const spec = fs.readFileSync(path.join(tmpDir, ".tack", "spec.yaml"), "utf-8");
+    assert.match(spec, /allowed_systems:\s*\n\s*- redis/);
+    assert.doesNotMatch(spec, /forbidden_systems:\s*\n\s*- redis/);
+    assert.match(fs.readFileSync(path.join(tmpDir, ".tack", "_drift.yaml"), "utf-8"), /status: accepted/);
+  });
+});
+
+test("an unreadable spec aborts the transaction before anything is written", () => {
+  withTempProject((tmpDir) => {
+    fs.writeFileSync(path.join(tmpDir, ".tack", "spec.yaml"), "<<<<<<< broken:\n  - {", "utf-8");
+    seedHealthyDrift(tmpDir);
+    const driftBefore = fs.readFileSync(path.join(tmpDir, ".tack", "_drift.yaml"), "utf-8");
+
+    const outcome = resolveDriftItemWithSpec(ITEM, "accepted");
+
+    assert.strictEqual(outcome.persisted, false);
+    assert.strictEqual(outcome.error, "spec_unreadable");
+    assert.strictEqual(fs.readFileSync(path.join(tmpDir, ".tack", "_drift.yaml"), "utf-8"), driftBefore);
+  });
+});
+
+test("an unreadable drift file yields the surfaced partial state and an idempotent retry", () => {
+  withTempProject((tmpDir) => {
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "spec.yaml"),
+      "project: t\nallowed_systems: []\nforbidden_systems: []\nconstraints: {}\n",
+      "utf-8"
+    );
+    fs.writeFileSync(path.join(tmpDir, ".tack", "_drift.yaml"), "<<<<<<< conflict\nitems: []\n", "utf-8");
+
+    const first = resolveDriftItemWithSpec(ITEM, "accepted");
+    assert.strictEqual(first.persisted, false);
+    assert.strictEqual(first.error, "drift_unreadable");
+    assert.strictEqual(first.specUpdated, true, "the spec rule must already be recorded");
+
+    // Repair the drift file and retry: the spec mutation is a no-op, the verdict lands.
+    seedHealthyDrift(tmpDir);
+    const second = resolveDriftItemWithSpec(ITEM, "accepted");
+    assert.deepStrictEqual(second, { persisted: true, specUpdated: false, error: null });
+    assert.match(fs.readFileSync(path.join(tmpDir, ".tack", "_drift.yaml"), "utf-8"), /status: accepted/);
+    const spec = fs.readFileSync(path.join(tmpDir, ".tack", "spec.yaml"), "utf-8");
+    assert.strictEqual((spec.match(/- redis/g) ?? []).length, 1, "no duplicate spec entries after retry");
+  });
+});

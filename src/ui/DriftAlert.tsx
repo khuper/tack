@@ -2,8 +2,8 @@ import React, { useState } from "react";
 import { Text, Box } from "ink";
 import SelectInput from "ink-select-input";
 import type { DriftItem } from "../lib/signals.js";
-import { resolveDriftItem } from "../engine/computeDrift.js";
-import { readSpec, writeSpec } from "../lib/files.js";
+import { resolveDriftItem, resolveDriftItemWithSpec } from "../engine/computeDrift.js";
+import type { DriftResolutionOutcome } from "../engine/computeDrift.js";
 import { CleanupPlan as CleanupPlanView } from "./CleanupPlan.js";
 import { log } from "../lib/logger.js";
 
@@ -14,13 +14,22 @@ type Props = {
 
 type ViewState = "options" | "cleanup" | "resolved" | "unpersisted";
 
-const UNPERSISTED_MESSAGE =
-  "NOT saved — .tack/_drift.yaml is unreadable. Fix or delete it, then retry; nothing was changed.";
+function failureMessageFor(outcome: DriftResolutionOutcome): string {
+  if (outcome.error === "spec_unreadable" || outcome.error === "spec_write_failed") {
+    return "NOT saved — .tack/spec.yaml could not be " +
+      (outcome.error === "spec_unreadable" ? "read" : "written") +
+      "; nothing was changed. Fix spec.yaml, then retry.";
+  }
+  return outcome.specUpdated
+    ? "Spec updated, but the verdict was NOT saved — .tack/_drift.yaml is unreadable. Fix or delete it, then retry (retrying is safe)."
+    : "NOT saved — .tack/_drift.yaml is unreadable. Fix or delete it, then retry; nothing was changed.";
+}
 
 export function DriftAlert({ item, onResolved }: Props) {
   const [view, setView] = useState<ViewState>("options");
   const [resolutionLabel, setResolutionLabel] = useState("");
   const [failedAction, setFailedAction] = useState<"accept" | "deny" | null>(null);
+  const [failureMessage, setFailureMessage] = useState("");
 
   const options = [
     { label: "[a] Accept — add to allowed_systems", value: "accept" },
@@ -33,31 +42,15 @@ export function DriftAlert({ item, onResolved }: Props) {
   function handleSelect(opt: { value: string }) {
     switch (opt.value) {
       case "accept": {
-        // Persist the drift verdict FIRST: if _drift.yaml is unreadable, nothing
-        // else may happen — no spec change, no success log, no alert dismissal —
-        // or the spec and drift state silently diverge.
-        const accepted = resolveDriftItem(item.id, "accepted", "Accepted via tack watch");
-        if (!accepted.persisted) {
+        // The engine performs the whole transaction spec-first: every failure mode
+        // either changed nothing or left a recoverable, retry-idempotent partial
+        // state that is surfaced verbatim to the user.
+        const accepted = resolveDriftItemWithSpec(item, "accepted");
+        if (accepted.error) {
           setFailedAction("accept");
+          setFailureMessage(failureMessageFor(accepted));
           setView("unpersisted");
           break;
-        }
-        const spec = readSpec();
-        if (spec && item.system) {
-          let changed = false;
-          if (!spec.allowed_systems.includes(item.system)) {
-            spec.allowed_systems.push(item.system);
-            changed = true;
-          }
-          spec.forbidden_systems = spec.forbidden_systems.filter((s) => s !== item.system);
-          if (changed) {
-            log({
-              event: "spec:updated",
-              field: "allowed_systems",
-              diff: `added ${item.system}`,
-            });
-          }
-          writeSpec(spec);
         }
         log({
           event: "decision",
@@ -71,28 +64,12 @@ export function DriftAlert({ item, onResolved }: Props) {
         break;
       }
       case "deny": {
-        const denied = resolveDriftItem(item.id, "rejected", "Rejected via tack watch");
-        if (!denied.persisted) {
+        const denied = resolveDriftItemWithSpec(item, "rejected");
+        if (denied.error) {
           setFailedAction("deny");
+          setFailureMessage(failureMessageFor(denied));
           setView("unpersisted");
           break;
-        }
-        const spec = readSpec();
-        if (spec && item.system) {
-          let changed = false;
-          if (!spec.forbidden_systems.includes(item.system)) {
-            spec.forbidden_systems.push(item.system);
-            changed = true;
-          }
-          spec.allowed_systems = spec.allowed_systems.filter((s) => s !== item.system);
-          if (changed) {
-            log({
-              event: "spec:updated",
-              field: "forbidden_systems",
-              diff: `added ${item.system}`,
-            });
-          }
-          writeSpec(spec);
         }
         log({
           event: "decision",
@@ -167,7 +144,7 @@ export function DriftAlert({ item, onResolved }: Props) {
 
       {view === "unpersisted" && (
         <Box flexDirection="column" marginTop={1}>
-          <Text color="red">✗ {UNPERSISTED_MESSAGE}</Text>
+          <Text color="red">✗ {failureMessage}</Text>
           <Box marginTop={1}>
             <SelectInput
               items={[

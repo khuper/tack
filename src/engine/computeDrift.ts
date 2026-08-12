@@ -1,6 +1,6 @@
 import type { SpecDiff, DriftState, DriftItem } from "../lib/signals.js";
 import { createDriftId, DRIFT_SCHEMA_VERSION } from "../lib/signals.js";
-import { quarantineCorruptDrift, readDriftWithError, writeDrift } from "../lib/files.js";
+import { quarantineCorruptDrift, readDriftWithError, readSpec, writeDrift, writeSpec } from "../lib/files.js";
 import { DRIFT_STATUS_DISAPPEARED, isDisappearedDriftItem } from "../lib/validate.js";
 import { log } from "../lib/logger.js";
 
@@ -217,6 +217,76 @@ export function computeDrift(diff: SpecDiff): {
   }
 
   return { newItems, state, readOnly: readError !== null };
+}
+
+export type DriftResolutionOutcome = {
+  /** True when the drift verdict is stored in _drift.yaml. */
+  persisted: boolean;
+  /** True when spec.yaml was modified (accept/deny of a system item). */
+  specUpdated: boolean;
+  /** Names the failing stage so the UI can say exactly what did and didn't happen. */
+  error: "spec_unreadable" | "spec_write_failed" | "drift_unreadable" | null;
+};
+
+/**
+ * The full accept/deny transaction: update spec.yaml FIRST, then persist the drift
+ * verdict. This ordering makes every failure mode recoverable — if the spec step
+ * fails nothing has happened, and if the drift step fails the spec rule is already
+ * recorded, the item stays unresolved, and a retry is idempotent (re-adding an
+ * already-present system is a no-op). The reverse order would store a permanent
+ * human verdict while losing the architecture rule it was supposed to create.
+ */
+export function resolveDriftItemWithSpec(
+  item: DriftItem,
+  action: "accepted" | "rejected"
+): DriftResolutionOutcome {
+  let specUpdated = false;
+
+  if (item.system) {
+    const spec = readSpec();
+    if (!spec) {
+      return { persisted: false, specUpdated: false, error: "spec_unreadable" };
+    }
+    if (action === "accepted") {
+      if (!spec.allowed_systems.includes(item.system)) {
+        spec.allowed_systems.push(item.system);
+        specUpdated = true;
+      }
+      const forbiddenBefore = spec.forbidden_systems.length;
+      spec.forbidden_systems = spec.forbidden_systems.filter((s) => s !== item.system);
+      specUpdated = specUpdated || spec.forbidden_systems.length !== forbiddenBefore;
+    } else {
+      if (!spec.forbidden_systems.includes(item.system)) {
+        spec.forbidden_systems.push(item.system);
+        specUpdated = true;
+      }
+      const allowedBefore = spec.allowed_systems.length;
+      spec.allowed_systems = spec.allowed_systems.filter((s) => s !== item.system);
+      specUpdated = specUpdated || spec.allowed_systems.length !== allowedBefore;
+    }
+    try {
+      writeSpec(spec);
+    } catch {
+      return { persisted: false, specUpdated: false, error: "spec_write_failed" };
+    }
+    if (specUpdated) {
+      log({
+        event: "spec:updated",
+        field: action === "accepted" ? "allowed_systems" : "forbidden_systems",
+        diff: `added ${item.system}`,
+      });
+    }
+  }
+
+  const result = resolveDriftItem(
+    item.id,
+    action,
+    action === "accepted" ? "Accepted via tack watch" : "Rejected via tack watch"
+  );
+  if (!result.persisted) {
+    return { persisted: false, specUpdated, error: "drift_unreadable" };
+  }
+  return { persisted: true, specUpdated, error: null };
 }
 
 export function resolveDriftItem(

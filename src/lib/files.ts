@@ -992,18 +992,26 @@ export function quarantineCorruptDrift(): string | null {
  * Cross-process mutex around `.tack/` state (`_drift.yaml` + `spec.yaml`), used to make
  * read-modify-write transactions atomic between concurrent `tack watch` processes.
  *
- * `open(2)` with O_CREAT|O_EXCL is atomic on POSIX and Windows alike, so creating the
- * lock file IS the compare-and-set. Two properties make eviction safe:
+ * Creating the lock file with `O_CREAT|O_EXCL` IS the compare-and-set — atomic on POSIX
+ * and Windows alike — and the owner record is published with the name (see publishLock)
+ * so a lock never exists without saying who holds it. Release is token-checked: a holder
+ * only unlinks the lock while its own token is still in it.
  *
- * - **Liveness before eviction.** The lock records the holder's pid and hostname. A
- *   lock is only broken when it is old AND its owner is provably gone (same host, pid
- *   no longer running) — or when it is very old and owned by another host, where
- *   liveness cannot be checked. A merely slow or paused holder is never evicted.
- * - **Token-checked release.** Each holder writes a unique token and only unlinks the
- *   lock if that token is still there, so a holder that WAS evicted can never delete
- *   its successor's lock.
+ * **A stale lock is never broken automatically.** This is deliberate, and it is the same
+ * choice git makes for `index.lock`. "Break a lock whose owner looks dead" cannot be
+ * implemented soundly on a filesystem: judging and removing are separate operations, and
+ * every arrangement that closes the gap between them — an eviction mutex, a rename with
+ * verification — either needs its own recovery mechanism or leaves a window where a live
+ * holder's lock can be moved out from under it. Successive attempts at this in review
+ * each traded one improbable failure for another, all of them silent corruption or a
+ * permanent wedge. A crash while holding the lock is rare (the critical sections are a
+ * few file operations), the leftover file is harmless, and the operator is told exactly
+ * which path to delete — a failure that is visible, bounded and one command from fixed.
+ *
+ * If self-healing is wanted later, the sound way is OS advisory locking (`flock`), where
+ * the kernel releases the lock when the process dies and there is no staleness to judge.
+ * That means a native dependency; it should not be reimplemented on plain files.
  */
-const DRIFT_LOCK_STALE_MS = 30_000;
 const DRIFT_LOCK_WAIT_MS = 5_000;
 const DRIFT_LOCK_POLL_MS = 25;
 
@@ -1023,124 +1031,6 @@ function readLockRecord(lockPath: string): DriftLockRecord | null {
   } catch {
     return null; // Unreadable or malformed: treated as an unknown owner.
   }
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    // EPERM means the process exists but belongs to another user.
-    return (err as NodeJS.ErrnoException)?.code === "EPERM";
-  }
-}
-
-/**
- * Breaks the lock at `lockPath` if and only if it still holds exactly `expected` — the
- * bytes the caller judged abandoned — and reports whether it did.
- *
- * Judging and unlinking are two operations, and a plain `rmSync` between them races: two
- * contenders can both judge the same dead lock evictable, the first can remove it and
- * publish a replacement, and the second — resuming from a pause — would delete that live
- * replacement and take a *second* lock on the same resource, running both "serialized"
- * transactions at once.
- *
- * `rename(2)` is the conditional the filesystem does give us: it moves whatever object is
- * at the path, atomically, and the mover then gets to inspect what it moved. A contender
- * that finds the successor's record instead of the bytes it judged puts the file straight
- * back with a create-if-absent publish (which cannot clobber anything newer) and goes on
- * waiting. Nothing is ever deleted without proof that it is the abandoned object.
- *
- * This replaces an earlier design that serialized eviction behind an exclusively created
- * marker file. That marker worked, but it was itself unrecoverable: one kill inside its
- * window left it behind forever and disabled stale-lock recovery for good. Making the
- * eviction conditional removes the extra file — and its failure mode — entirely.
- *
- * Residual, stated plainly: between the rename and the restore the lock path is briefly
- * free, so a third contender publishing in that window would leave the restored owner
- * believing it still holds a lock someone else now has. That needs two contenders racing
- * on the same abandoned lock plus a third publishing inside a two-syscall window; the
- * alternative on offer is a guaranteed permanent wedge after a single kill.
- */
-export function evictStaleLock(lockPath: string, expected: Buffer): boolean {
-  const movedPath = `${lockPath}.evicting.${crypto.randomBytes(6).toString("hex")}`;
-  try {
-    fs.renameSync(lockPath, movedPath);
-  } catch {
-    return false; // Vanished, or cannot be moved: the caller retries.
-  }
-
-  let moved: Buffer;
-  try {
-    moved = fs.readFileSync(movedPath);
-  } catch {
-    // Unreadable after the move: it cannot be verified, so it also cannot be restored
-    // faithfully. Leaving it out of the way is the only honest option.
-    return true;
-  }
-
-  if (moved.equals(expected)) {
-    try {
-      fs.rmSync(movedPath, { force: true });
-    } catch {
-      // The lock path is already clear, which is what acquisition needs.
-    }
-    return true;
-  }
-
-  // Not the object that was judged: a successor was published in between. Put it back
-  // without clobbering anything newer, and keep waiting.
-  try {
-    writeFileIfAbsent(lockPath, moved.toString("utf-8"));
-  } catch {
-    // Restoring failed; the successor's own release path tolerates a missing lock.
-  }
-  try {
-    fs.rmSync(movedPath, { force: true });
-  } catch {
-    // Best-effort cleanup of the private copy.
-  }
-  return false;
-}
-
-/**
- * The raw bytes of a lock that may be broken — old enough AND its owner provably gone —
- * or null when the lock must be left alone. The bytes are what makes the eviction
- * conditional: they identify the exact object that was judged.
- */
-function staleLockSnapshot(lockPath: string): Buffer | null {
-  let raw: Buffer;
-  try {
-    raw = fs.readFileSync(lockPath);
-  } catch {
-    return null; // Vanished between checks; the caller just retries.
-  }
-  return isEvictableLock(lockPath) ? raw : null;
-}
-
-/** True when the lock may be broken: old enough AND its owner is provably gone. */
-function isEvictableLock(lockPath: string): boolean {
-  let ageMs: number;
-  try {
-    ageMs = Date.now() - fs.statSync(lockPath).mtimeMs;
-  } catch {
-    return false; // Vanished between checks; the caller just retries.
-  }
-
-  const record = readLockRecord(lockPath);
-  // A lock this code publishes always arrives with its owner record already inside it
-  // (see publishLock), so one with no readable record never belonged to a live holder:
-  // it is debris — a kill during the link-less fallback create, a truncated file, or a
-  // hand-made placeholder. Refusing to break it forever would wedge every later run
-  // behind a lock nobody holds, so it is recoverable once past the stale window.
-  if (!record) return ageMs > DRIFT_LOCK_STALE_MS;
-  // Otherwise only a lock this host can prove is dead may be broken automatically. A
-  // lock owned by another host (a shared filesystem) is NEVER auto-evicted: liveness is
-  // unknowable there, and a merely slow holder would be evicted into a concurrent-write
-  // corruption. This mirrors git's index.lock, which also never breaks itself — the
-  // operator is told exactly which file to remove.
-  if (record.host !== os.hostname()) return false;
-  return ageMs > DRIFT_LOCK_STALE_MS && !isProcessAlive(record.pid);
 }
 
 /**
@@ -1200,19 +1090,18 @@ export function withFileLock<T>(lockPath: string, guarded: string, fn: () => T):
   const record: DriftLockRecord = { pid: process.pid, host: os.hostname(), token };
 
   while (!publishLock(lockPath, record)) {
-    // Breaking a stale lock is conditional on it still being the exact object judged
-    // here, so a successor published in between survives (see evictStaleLock).
-    const abandoned = staleLockSnapshot(lockPath);
-    if (abandoned !== null && evictStaleLock(lockPath, abandoned)) {
-      continue;
-    }
     if (Date.now() >= deadline) {
+      // Nothing is ever broken automatically, so the message has to carry everything
+      // needed to fix it by hand: who holds it, and the exact path to remove.
       const holder = readLockRecord(lockPath);
-      const owner = holder ? ` (held by pid ${holder.pid} on ${holder.host})` : "";
+      const owner = holder
+        ? ` It is held by pid ${holder.pid} on ${holder.host}.`
+        : " It records no owner, so it is left over from an interrupted run.";
       throw new Error(
-        `Timed out waiting for ${lockPath}${owner}. Another Tack process is updating ` +
-          `${guarded}. Retry; if that process is gone (or ran on another machine), ` +
-          "delete the lock file to release it."
+        `Timed out waiting for ${lockPath}. Another Tack process is updating ${guarded}.` +
+          `${owner} Retry while it finishes; if that process is gone, delete ${lockPath} ` +
+          "to release it (Tack never breaks a lock on its own, so a crashed run leaves " +
+          "this file behind)."
       );
     }
     sleepSyncMs(DRIFT_LOCK_POLL_MS);

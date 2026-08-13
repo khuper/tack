@@ -714,39 +714,40 @@ test("the spec transaction holds one lock across claim and spec write", () => {
   });
 });
 
-test("a live holder's lock is never evicted, and an evicted holder cannot delete its successor", () => {
+test("a lock is never broken automatically, whoever owns it", () => {
   withTempProject((tmpDir) => {
     const lockPath = path.join(tmpDir, ".tack", "_drift.yaml.lock");
     seedHealthyDrift(tmpDir);
 
-    // A lock owned by THIS (alive) process, backdated well past the stale threshold:
-    // liveness must prevent eviction even though the mtime looks abandoned.
+    // Backdated well past any plausible staleness threshold, and owned by a pid that no
+    // longer exists: the most tempting lock there is to break. Tack still refuses —
+    // judging "the owner looks dead" and removing the file are separate operations, and
+    // no arrangement of them is safe against a live holder (see files.ts).
     fs.writeFileSync(
       lockPath,
-      JSON.stringify({ pid: process.pid, host: os.hostname(), token: "live-holder" }),
+      JSON.stringify({ pid: 2147483646, host: os.hostname(), token: "dead-holder" }),
       "utf-8"
     );
     const old = new Date(Date.now() - 120_000);
     fs.utimesSync(lockPath, old, old);
 
     const blocked = resolveDriftItem("item-spec", "skipped");
-    assert.strictEqual(blocked.persisted, false, "a live holder must not be evicted on mtime alone");
+
+    assert.strictEqual(blocked.persisted, false, "a lock is never bypassed");
+    assert.match(blocked.error ?? "", /Timed out waiting/);
+    assert.match(blocked.error ?? "", /delete .*_drift\.yaml\.lock/, "the fix must be spelled out");
+    assert.match(blocked.error ?? "", /pid 2147483646/, "and the holder named");
     assert.strictEqual(
       JSON.parse(fs.readFileSync(lockPath, "utf-8")).token,
-      "live-holder",
-      "the live holder's lock survives"
+      "dead-holder",
+      "the lock survives untouched"
     );
 
-    // A dead owner's stale lock IS evictable.
-    fs.writeFileSync(
-      lockPath,
-      JSON.stringify({ pid: 2147483646, host: os.hostname(), token: "dead-holder" }),
-      "utf-8"
-    );
-    fs.utimesSync(lockPath, old, old);
+    // Removing it by hand — what the message asks for — is all it takes to recover.
+    fs.rmSync(lockPath, { force: true });
     const acquired = resolveDriftItem("item-spec", "skipped");
-    assert.strictEqual(acquired.persisted, true, "a provably dead owner's lock is broken");
-    assert.ok(!fs.existsSync(lockPath), "and released afterwards");
+    assert.strictEqual(acquired.persisted, true);
+    assert.ok(!fs.existsSync(lockPath), "and the lock is released afterwards");
   });
 });
 
@@ -995,36 +996,6 @@ test("a link to a file Tack does not manage still writes through", () => {
   });
 });
 
-test("eviction removes only the exact lock it judged, never a successor", () => {
-  withTempProject((tmpDir) => {
-    const lockPath = path.join(tmpDir, ".tack", "_drift.yaml.lock");
-    const abandoned = JSON.stringify({ pid: 2147483646, host: os.hostname(), token: "dead-holder" });
-    fs.writeFileSync(lockPath, abandoned, "utf-8");
-
-    // A contender that judged the abandoned lock but resumes to find a successor in its
-    // place must leave that successor alone: the rename is verified against the bytes it
-    // judged, and anything else is put straight back.
-    const successor = JSON.stringify({ pid: process.pid, host: os.hostname(), token: "live-successor" });
-    fs.writeFileSync(lockPath, successor, "utf-8");
-
-    assert.strictEqual(
-      evictStaleLock(lockPath, Buffer.from(abandoned)),
-      false,
-      "a lock whose contents changed since the judgement must not be evicted"
-    );
-    assert.strictEqual(fs.readFileSync(lockPath, "utf-8"), successor, "the successor survives intact");
-
-    // The same call against the object it actually judged does break it.
-    assert.strictEqual(evictStaleLock(lockPath, Buffer.from(successor)), true);
-    assert.ok(!fs.existsSync(lockPath), "the judged lock is gone");
-    assert.deepStrictEqual(
-      fs.readdirSync(path.join(tmpDir, ".tack")).filter((f) => f.includes(".evicting.")),
-      [],
-      "no private copy is left behind"
-    );
-  });
-});
-
 // --- the quarantine copy preserves the snapshot it was computed from ---
 
 import crypto from "node:crypto";
@@ -1064,7 +1035,7 @@ test("writeQuarantineCopy writes the captured buffer and never clobbers an exist
 
 // --- a lock is published together with its owner record ---
 
-import { evictStaleLock, withFileLock } from "../dist/lib/files.js";
+import { withFileLock } from "../dist/lib/files.js";
 
 test("the lock file already contains its owner record while it is held", () => {
   withTempProject((tmpDir) => {
@@ -1088,21 +1059,20 @@ test("the lock file already contains its owner record while it is held", () => {
   });
 });
 
-test("an ownerless lock left by a kill is recovered instead of wedging every later run", () => {
+test("an ownerless lock names itself in the failure so it can be cleared by hand", () => {
   withTempProject((tmpDir) => {
     const lockPath = path.join(tmpDir, ".tack", "_drift.yaml.lock");
     seedHealthyDrift(tmpDir);
 
-    // The debris an interrupted create leaves behind: a lock with no owner record. It
-    // can be attributed to nobody, so before this it was never evicted and never
-    // released — every later scan and resolution timed out until a human deleted it.
+    // Debris from an interrupted run: a lock with no owner record. Tack cannot know
+    // whether anyone holds it, so it does not guess — it says what it found and which
+    // file to delete.
     fs.writeFileSync(lockPath, "", "utf-8");
-    const old = new Date(Date.now() - 120_000);
-    fs.utimesSync(lockPath, old, old);
 
     const result = resolveDriftItem("item-spec", "skipped");
 
-    assert.strictEqual(result.persisted, true, "an ownerless stale lock must be recoverable");
-    assert.ok(!fs.existsSync(lockPath), "and is not left behind");
+    assert.strictEqual(result.persisted, false);
+    assert.match(result.error ?? "", /records no owner/);
+    assert.match(result.error ?? "", /delete .*_drift\.yaml\.lock/);
   });
 });

@@ -910,6 +910,29 @@ export function readDrift(): DriftState {
 }
 
 /**
+ * Publishes a quarantine copy holding exactly `content`, and reports whether that copy is
+ * now on disk. Creation is exclusive: if a racing quarantine got there first, its file is
+ * kept — and accepted as this one's result only when the bytes are identical, since a
+ * different snapshot under this digest would misrepresent what was preserved.
+ *
+ * Exported as a seam so the "writes the captured bytes, never clobbers" contract is
+ * directly testable without staging a filesystem race.
+ */
+export function writeQuarantineCopy(backup: string, content: Buffer): boolean {
+  try {
+    fs.writeFileSync(backup, content, { flag: "wx" });
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") throw err;
+    try {
+      return fs.readFileSync(backup).equals(content);
+    } catch {
+      return false;
+    }
+  }
+}
+
+/**
  * Copies an unreadable `_drift.yaml` aside so its accepted/rejected resolutions survive
  * whatever overwrites the file next. Returns the backup path, or null when there is
  * nothing to copy or the copy itself was refused.
@@ -953,8 +976,13 @@ export function quarantineCorruptDrift(): string | null {
       if (attempt > 32) return null;
     }
     assertInsideTackDir(backup);
-    fs.copyFileSync(source, backup);
-    return backup;
+    // Write the bytes that were READ, not the ones at `source` now: the digest, the
+    // impostor comparison above and the warning all describe that snapshot, and an
+    // editor repairing _drift.yaml in between would otherwise put post-repair content
+    // behind a filename claiming the corrupt episode's hash — losing exactly the
+    // resolutions the copy exists to preserve. Exclusive creation keeps a racing
+    // quarantine from being clobbered.
+    return writeQuarantineCopy(backup, content) ? backup : null;
   } catch {
     return null;
   }

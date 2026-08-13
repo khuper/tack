@@ -1031,3 +1031,40 @@ test("eviction of a stale lock is serialized, so a replacement lock is never del
     assert.ok(!fs.existsSync(`${lockPath}.evict`), "no eviction marker is left behind");
   });
 });
+
+// --- the quarantine copy preserves the snapshot it was computed from ---
+
+import crypto from "node:crypto";
+import { writeQuarantineCopy } from "../dist/lib/files.js";
+
+test("the quarantine backup holds the bytes the digest in its name was computed from", () => {
+  withTempProject((tmpDir) => {
+    const driftFile = path.join(tmpDir, ".tack", "_drift.yaml");
+    fs.writeFileSync(driftFile, "<<<<<<< conflict\nitems: []\n", "utf-8");
+
+    const backup = quarantineCorruptDrift();
+
+    const digest = crypto.createHash("sha256").update(fs.readFileSync(backup)).digest("hex").slice(0, 8);
+    assert.ok(
+      path.basename(backup).includes(digest),
+      `the backup's content must hash to the digest in its name (${path.basename(backup)} vs ${digest})`
+    );
+  });
+});
+
+test("writeQuarantineCopy writes the captured buffer and never clobbers an existing copy", () => {
+  withTempProject((tmpDir) => {
+    const target = path.join(tmpDir, ".tack", "_drift.yaml.deadbeef.corrupt");
+    const captured = Buffer.from("corrupt snapshot\n");
+
+    assert.strictEqual(writeQuarantineCopy(target, captured), true);
+    assert.strictEqual(fs.readFileSync(target, "utf-8"), "corrupt snapshot\n");
+
+    // A racing quarantine that wrote the same snapshot is this call's result too...
+    assert.strictEqual(writeQuarantineCopy(target, captured), true);
+    // ...but a different snapshot under this name is never overwritten, and never
+    // reported as holding what this caller captured.
+    assert.strictEqual(writeQuarantineCopy(target, Buffer.from("other bytes\n")), false);
+    assert.strictEqual(fs.readFileSync(target, "utf-8"), "corrupt snapshot\n");
+  });
+});

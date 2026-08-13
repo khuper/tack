@@ -25,7 +25,7 @@ import { compactNotes } from "./lib/notes.js";
 import { runDiffPlain } from "./plain/diff.js";
 import { formatMissingTackContextMessage, tackDirExists } from "./lib/files.js";
 import { readPackageMeta } from "./lib/packageMeta.js";
-import { runSetupAgent } from "./cli/setupAgent.js";
+import { runSetupAgent, runSetupMcp } from "./cli/setupAgent.js";
 
 const ASCII_LOGO_LINES = [
   "████████╗ █████╗  ██████╗██╗  ██╗",
@@ -61,7 +61,7 @@ if (args.version || args.v) {
 
 const command = rawCommand ?? getDefaultCommand();
 
-const VALID_COMMANDS = ["init", "status", "watch", "handoff", "log", "note", "diff", "mcp", "setup-agent", "help"] as const;
+const VALID_COMMANDS = ["init", "status", "watch", "handoff", "log", "note", "diff", "mcp", "setup-agent", "setup-mcp", "help"] as const;
 type Command = (typeof VALID_COMMANDS)[number];
 
 function isValidCommand(value: string): value is Command {
@@ -85,6 +85,7 @@ ${ASCII_LOGO}
     npx tack diff <base-branch>    Compare architecture vs base branch (plain)
     npx tack mcp                   Start MCP server (for Cursor / agent integrations)
     npx tack setup-agent [--target] Install or update Tack startup instructions
+    npx tack setup-mcp [--client]  Write project MCP config so agents connect to tack mcp
     npx tack help                  Show this help text
 
   Canonical proof loop:
@@ -377,6 +378,14 @@ if (!shouldUseInk) {
   if (normalizedCommand === "setup-agent") {
     try {
       process.exit(runSetupAgent(args, pkg.version));
+    } catch (err) {
+      printFatal(err);
+    }
+  }
+
+  if (normalizedCommand === "setup-mcp") {
+    try {
+      process.exit(runSetupMcp(args));
     } catch (err) {
       printFatal(err);
     }

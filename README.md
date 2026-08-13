@@ -175,6 +175,6 @@ Instead of making the next session piece things together, it calls `checkpoint_w
 
 ## Notes
 
-- offline only, no hidden network calls in Tack's project-memory engine
+- the project-memory engine works entirely offline; the only network touches are an npm-registry version check on CLI start (standard `update-notifier` behavior) and usage telemetry that is off unless you opt in
 - writes are guarded to `./.tack/`
 - Python virtual environments are ignored during scans (`venv`, `.venv`, `site-packages`) to reduce false positives

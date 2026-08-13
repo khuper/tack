@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import type { Audit, DriftItem, DriftState, Signal, Spec, SpecDomain } from "./signals.js";
-import { KNOWN_CONSTRAINT_KEYS } from "./signals.js";
+import { DRIFT_SCHEMA_VERSION, KNOWN_CONSTRAINT_KEYS } from "./signals.js";
 
 const MAX_FIELD_LENGTH = 200;
 const MAX_SOURCE_LENGTH = 500;
@@ -11,8 +11,24 @@ const DRIFT_TYPES = new Set([
   "risk",
   "undeclared_system",
 ] as const);
-const DRIFT_STATUS = new Set(["unresolved", "accepted", "rejected"] as const);
+/**
+ * Status Tack writes itself when a drift item's underlying signal is no longer detected.
+ *
+ * It is deliberately not one of the `DriftStatus` values a person can choose: `accepted`
+ * and `rejected` are human judgments and suppress the item forever, whereas a disappeared
+ * item is only dormant and must reopen if the violation is reintroduced. Keeping the two
+ * apart is what stops a removed-then-restored guardrail violation from being suppressed
+ * permanently (see engine/computeDrift.ts).
+ */
+export const DRIFT_STATUS_DISAPPEARED = "disappeared";
+const DRIFT_STATUS = new Set(["unresolved", "accepted", "rejected", DRIFT_STATUS_DISAPPEARED] as const);
+const DRIFT_ITEM_KEYS = new Set(["id", "type", "system", "risk", "constraint", "signal", "detected", "status", "note"]);
 const KNOWN_CONSTRAINTS = new Set<string>(KNOWN_CONSTRAINT_KEYS);
+
+/** True when `item` was auto-dismissed by a sweep rather than resolved by a person. */
+export function isDisappearedDriftItem(item: DriftItem): boolean {
+  return item.status === DRIFT_STATUS_DISAPPEARED;
+}
 
 type ValidationResult<T> = {
   data: T;
@@ -278,9 +294,13 @@ function validateDriftItem(raw: unknown, warnings: string[]): DriftItem | null {
       : "unresolved";
   if (status !== raw.status) warnings.push(`Drift item ${raw.id} had invalid status and defaulted to unresolved`);
 
+  // YAML parses an unquoted `detected: 2026-01-01T00:00:00Z` into a Date, so accept
+  // that form and serialize it back to ISO rather than silently stamping "now" over
+  // the original detection time.
+  const rawDetected = raw.detected instanceof Date ? raw.detected.toISOString() : raw.detected;
   const detected =
-    typeof raw.detected === "string" && raw.detected.trim()
-      ? cleanString(raw.detected, `drift.${raw.id}.detected`, warnings, MAX_SOURCE_LENGTH)
+    typeof rawDetected === "string" && rawDetected.trim()
+      ? cleanString(rawDetected, `drift.${raw.id}.detected`, warnings, MAX_SOURCE_LENGTH)
       : new Date().toISOString();
 
   const item: DriftItem = {
@@ -305,20 +325,122 @@ function validateDriftItem(raw: unknown, warnings: string[]): DriftItem | null {
   return item;
 }
 
-export function validateDriftState(raw: unknown): ValidationResult<DriftState> {
+/**
+ * `lossy` is true when the file held content this validator could not represent —
+ * unparseable items, an unknown item type (what a `_drift.yaml` written by a newer Tack
+ * looks like to an older one), or root keys beyond `items`. Persisting the validated
+ * state back on top of a lossy read would silently delete that content, so callers that
+ * write (`readDriftWithError` consumers) must treat `lossy` as a no-persist condition.
+ */
+/**
+ * A short, always-safe description of an arbitrary parsed YAML value for diagnostics.
+ * Scalars print their value; anything structured prints only its shape, so cyclic or
+ * enormous graphs can never throw or flood a warning.
+ */
+function describeYamlValue(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `array of ${value.length}`;
+  if (value instanceof Date) return `date ${value.toISOString()}`;
+  const kind = typeof value;
+  if (kind === "object") return "object";
+  if (kind === "string") {
+    const text = value as string;
+    return `string "${text.length > 40 ? `${text.slice(0, 40)}...` : text}"`;
+  }
+  return `${kind} ${String(value)}`;
+}
+
+export function validateDriftState(raw: unknown): ValidationResult<DriftState> & { lossy: boolean } {
   const warnings: string[] = [];
   if (!isRecord(raw)) {
-    if (raw !== null && raw !== undefined) warnings.push("_drift.yaml root must be an object");
-    return { data: { items: [] }, warnings };
-  }
-  if (!Array.isArray(raw.items)) {
-    if (raw.items !== undefined) warnings.push("_drift.yaml items must be an array");
-    return { data: { items: [] }, warnings };
+    if (raw === null || raw === undefined) {
+      return { data: { items: [] }, warnings, lossy: false };
+    }
+    warnings.push("_drift.yaml root must be an object");
+    return { data: { items: [] }, warnings, lossy: true };
   }
 
-  const items = raw.items
-    .map((item) => validateDriftItem(item, warnings))
-    .filter((item): item is DriftItem => item !== null);
-  return { data: { items }, warnings };
+  const unknownRootKeys = Object.keys(raw).filter((key) => key !== "items" && key !== "schema_version");
+
+  // The version gates a one-time migration, so a value this version cannot vouch for
+  // must make the read lossy (read-only), never silently collapse to "unversioned":
+  // a hand-edited `schema_version: "2"` would otherwise re-enable the legacy
+  // migration, and a future version would be overwritten (downgraded) on rewrite.
+  let schemaVersion: number | undefined;
+  let versionUnusable = false;
+  if (raw.schema_version !== undefined) {
+    if (
+      typeof raw.schema_version === "number" &&
+      Number.isInteger(raw.schema_version) &&
+      raw.schema_version >= 1 &&
+      raw.schema_version <= DRIFT_SCHEMA_VERSION
+    ) {
+      schemaVersion = raw.schema_version;
+    } else {
+      versionUnusable = true;
+      // Never serialize the raw value: YAML aliases can make it cyclic
+      // (`schema_version: &v {self: *v}`), and JSON.stringify would throw out of
+      // validate -> readDriftWithError, aborting the scan instead of treating the
+      // file as lossy, read-only state.
+      warnings.push(
+        `_drift.yaml schema_version (${describeYamlValue(raw.schema_version)}) is not supported by this version of Tack`
+      );
+    }
+  }
+
+  if (!Array.isArray(raw.items)) {
+    if (raw.items !== undefined) warnings.push("_drift.yaml items must be an array");
+    return {
+      data: { ...(schemaVersion !== undefined ? { schema_version: schemaVersion } : {}), items: [] },
+      warnings,
+      lossy: raw.items !== undefined || unknownRootKeys.length > 0 || versionUnusable,
+    };
+  }
+
+  const validated = raw.items.map((item) => validateDriftItem(item, warnings));
+  const items = validated.filter((item): item is DriftItem => item !== null);
+  const droppedItems = raw.items.length - items.length;
+  if (droppedItems > 0) {
+    warnings.push(`_drift.yaml: ${droppedItems} item(s) were not recognized by this version of Tack`);
+  }
+  // A status outside DRIFT_STATUS or a field this version doesn't know (both what a file
+  // written by a newer Tack looks like) would be coerced or silently shed on rewrite.
+  // Any defined value this validator cannot represent verbatim makes the read lossy:
+  // unknown keys, an unusable status, and any known field defined with a non-string
+  // value (`detected: null`, `note: {…}`) that validateDriftItem would coerce away.
+  // Rewriting on top of those would erase content a newer Tack — or a human — wrote.
+  const STRING_FIELDS = ["id", "type", "system", "risk", "constraint", "signal", "detected", "note"] as const;
+  /**
+   * The validated value a field must equal for the item to round-trip. A YAML-native
+   * Date on `detected` is representable as its ISO string; everything else must be a
+   * string that survived sanitization byte-for-byte. Comparing values (rather than
+   * enumerating coercion rules) catches trimming, control-character stripping and
+   * length truncation automatically.
+   */
+  const roundTripsVerbatim = (rawItem: Record<string, unknown>, item: DriftItem): boolean =>
+    STRING_FIELDS.every((field) => {
+      const rawValue = rawItem[field];
+      if (rawValue === undefined) return true;
+      const expected = field === "detected" && rawValue instanceof Date ? rawValue.toISOString() : rawValue;
+      return typeof expected === "string" && expected === (item as Record<string, unknown>)[field];
+    });
+
+  const hasUnrepresentableContent = raw.items.some((rawItem, index) => {
+    if (!isRecord(rawItem)) return false; // Already counted as a dropped item.
+    if (Object.keys(rawItem).some((key) => !DRIFT_ITEM_KEYS.has(key))) return true;
+    if (
+      rawItem.status !== undefined &&
+      (typeof rawItem.status !== "string" || !DRIFT_STATUS.has(rawItem.status as DriftItem["status"]))
+    ) {
+      return true;
+    }
+    const item = validated[index];
+    return item !== null && item !== undefined && !roundTripsVerbatim(rawItem, item);
+  });
+  return {
+    data: { ...(schemaVersion !== undefined ? { schema_version: schemaVersion } : {}), items },
+    warnings,
+    lossy: droppedItems > 0 || hasUnrepresentableContent || unknownRootKeys.length > 0 || versionUnusable,
+  };
 }
 

@@ -1,0 +1,1398 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { parse as parseToml } from "smol-toml";
+import {
+  findSymlinkComponentBeneath,
+  withFileLock,
+  writeFileAtomic,
+  writeFileIfAbsent,
+} from "./files.js";
+
+const UTF8_BOM = "\ufeff";
+
+export type McpClientKey = "claude-code" | "cursor" | "vscode" | "gemini" | "codex" | "opencode";
+export type McpConfigFormat = "json" | "toml";
+export type McpServerRunner = "npx" | "tack";
+
+export type McpClientDefinition = {
+  key: McpClientKey;
+  aliases: string[];
+  label: string;
+  agentName: string;
+  format: McpConfigFormat;
+  /** Canonical path the writer creates when no config file exists yet. */
+  configPath: (repoRoot: string) => string;
+  /** Every filename this client accepts, canonical first. Also the detection signal. */
+  configPaths: (repoRoot: string) => string[];
+  description: string;
+};
+
+export type McpConfigOptions = {
+  runner?: McpServerRunner;
+  serverName?: string;
+  /** Target platform for the generated command. Defaults to `process.platform`. */
+  platform?: NodeJS.Platform;
+  /** Plan the merge without writing. Only `applyMcpConfig` reads this; the merge helpers are pure. */
+  dryRun?: boolean;
+};
+
+export type McpMergeResult = {
+  content: string;
+  changed: boolean;
+};
+
+export type McpConfigStatus = "installed" | "updated" | "unchanged" | "manual";
+
+export type McpConfigResult = {
+  client: McpClientKey;
+  configLabel: string;
+  status: McpConfigStatus;
+  detail?: string;
+};
+
+export const TACK_MCP_SERVER_NAME = "tack";
+
+/**
+ * Raised when a config file cannot be rewritten safely. Callers downgrade to the
+ * `manual` status and print the snippet instead of touching the file.
+ */
+class McpManualMergeError extends Error {}
+
+const MCP_CLIENT_DEFINITIONS: McpClientDefinition[] = [
+  {
+    key: "claude-code",
+    aliases: ["claude", "claude-code"],
+    label: "Claude Code",
+    agentName: "claude",
+    format: "json",
+    configPath: (repoRoot) => path.join(repoRoot, ".mcp.json"),
+    configPaths: (repoRoot) => [path.join(repoRoot, ".mcp.json")],
+    description: "checked-in project scope in .mcp.json",
+  },
+  {
+    key: "cursor",
+    aliases: ["cursor"],
+    label: "Cursor",
+    agentName: "cursor",
+    format: "json",
+    configPath: (repoRoot) => path.join(repoRoot, ".cursor", "mcp.json"),
+    configPaths: (repoRoot) => [path.join(repoRoot, ".cursor", "mcp.json")],
+    description: "project scope in .cursor/mcp.json",
+  },
+  {
+    key: "vscode",
+    aliases: ["vscode", "code", "copilot", "github-copilot"],
+    label: "VS Code / Copilot",
+    agentName: "copilot",
+    format: "json",
+    configPath: (repoRoot) => path.join(repoRoot, ".vscode", "mcp.json"),
+    configPaths: (repoRoot) => [path.join(repoRoot, ".vscode", "mcp.json")],
+    description: "workspace scope in .vscode/mcp.json",
+  },
+  {
+    key: "gemini",
+    aliases: ["gemini", "gemini-cli"],
+    label: "Gemini CLI",
+    agentName: "gemini",
+    format: "json",
+    configPath: (repoRoot) => path.join(repoRoot, ".gemini", "settings.json"),
+    configPaths: (repoRoot) => [path.join(repoRoot, ".gemini", "settings.json")],
+    description: "project scope in .gemini/settings.json",
+  },
+  {
+    key: "codex",
+    aliases: ["codex", "codex-cli"],
+    label: "Codex CLI",
+    agentName: "codex",
+    format: "toml",
+    configPath: (repoRoot) => path.join(repoRoot, ".codex", "config.toml"),
+    configPaths: (repoRoot) => [path.join(repoRoot, ".codex", "config.toml")],
+    description: "project scope in .codex/config.toml (trusted projects only)",
+  },
+  {
+    key: "opencode",
+    aliases: ["opencode"],
+    label: "opencode",
+    agentName: "opencode",
+    format: "json",
+    configPath: (repoRoot) => path.join(repoRoot, "opencode.json"),
+    configPaths: (repoRoot) => [path.join(repoRoot, "opencode.json"), path.join(repoRoot, "opencode.jsonc")],
+    description: "project scope in opencode.json (opencode.jsonc is never rewritten)",
+  },
+];
+
+export function listMcpClients(): McpClientDefinition[] {
+  return MCP_CLIENT_DEFINITIONS.map((client) => ({ ...client, aliases: [...client.aliases] }));
+}
+
+export function getAvailableMcpClients(): McpClientKey[] {
+  return MCP_CLIENT_DEFINITIONS.map((client) => client.key);
+}
+
+export function getAvailableMcpClientAliases(): string[] {
+  return MCP_CLIENT_DEFINITIONS.flatMap((client) => client.aliases);
+}
+
+export function resolveMcpClient(value: string): McpClientKey | null {
+  const normalized = value.trim().toLowerCase();
+  const match = MCP_CLIENT_DEFINITIONS.find((client) => client.aliases.includes(normalized));
+  return match?.key ?? null;
+}
+
+export function getMcpClientDefinition(client: McpClientKey): McpClientDefinition {
+  const match = MCP_CLIENT_DEFINITIONS.find((entry) => entry.key === client);
+  if (!match) {
+    throw new Error(`Unknown MCP client: ${client}`);
+  }
+  return match;
+}
+
+/**
+ * Resolves the config file this client is actually using: the first candidate that
+ * exists, otherwise the canonical path the writer would create.
+ */
+export function getMcpConfigPath(client: McpClientKey, repoRoot: string): string {
+  const definition = getMcpClientDefinition(client);
+  const existing = definition.configPaths(repoRoot).find((candidate) => fs.existsSync(candidate));
+  return existing ?? definition.configPath(repoRoot);
+}
+
+/**
+ * Detects clients by the presence of an actual MCP config file. Bare `.vscode/` or
+ * `.cursor/` directories are not a signal: nearly every repo has one.
+ */
+export function detectMcpClients(repoRoot: string): McpClientKey[] {
+  return MCP_CLIENT_DEFINITIONS.filter((client) =>
+    client.configPaths(repoRoot).some((candidate) => fs.existsSync(candidate))
+  ).map((client) => client.key);
+}
+
+function resolvePlatform(options: McpConfigOptions): NodeJS.Platform {
+  return options.platform ?? process.platform;
+}
+
+/**
+ * On win32 `npx` and `tack` are `.cmd` shims. MCP clients spawn stdio servers without a
+ * shell, and `child_process.spawn` only resolves `.cmd` through PATHEXT when a shell is
+ * used, so a bare `npx` fails with `spawn npx ENOENT`. `cmd /c` works for every client.
+ */
+export function buildServerCommand(options: McpConfigOptions = {}): { command: string; args: string[] } {
+  const base =
+    options.runner === "tack" ? { command: "tack", args: ["mcp"] } : { command: "npx", args: ["-y", "tack-cli", "mcp"] };
+
+  if (resolvePlatform(options) !== "win32") {
+    return base;
+  }
+
+  return { command: "cmd", args: ["/c", base.command, ...base.args] };
+}
+
+function getServerName(options: McpConfigOptions): string {
+  const requested = options.serverName?.trim();
+  return requested && requested.length > 0 ? requested : TACK_MCP_SERVER_NAME;
+}
+
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+export type JsonObject = { [key: string]: JsonValue };
+
+export function getMcpContainerKey(client: McpClientKey): string {
+  if (client === "vscode") {
+    return "servers";
+  }
+  if (client === "opencode") {
+    return "mcp";
+  }
+  return "mcpServers";
+}
+
+export function buildServerEntry(client: McpClientKey, options: McpConfigOptions = {}): JsonObject {
+  const definition = getMcpClientDefinition(client);
+  const { command, args } = buildServerCommand(options);
+  const env: JsonObject = { TACK_AGENT_NAME: definition.agentName };
+
+  if (client === "opencode") {
+    return {
+      type: "local",
+      command: [command, ...args],
+      enabled: true,
+      environment: env,
+    };
+  }
+
+  if (client === "vscode" || client === "claude-code" || client === "cursor") {
+    return { type: "stdio", command, args, env };
+  }
+
+  return { command, args, env };
+}
+
+function isPlainObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isDeepEqual(a: JsonValue | undefined, b: JsonValue | undefined): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((item, index) => isDeepEqual(item, b[index]));
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    return aKeys.length === bKeys.length && aKeys.every((key) => isDeepEqual(a[key], b[key]));
+  }
+  return false;
+}
+
+function detectJsonIndent(content: string): string | number {
+  const match = content.match(/\n([ \t]+)\S/);
+  const indent = match?.[1];
+  if (indent) {
+    return indent.startsWith("\t") ? "\t" : indent.length;
+  }
+  // No indented line at all: a config minified on purpose stays minified instead of
+  // being reflowed into a whole-file diff. An empty `{}` has no style to preserve.
+  // Known limitations, accepted as intentional: a single-line file with deliberate
+  // interior spacing is minified, and a zero-indent multi-line file is reflowed to
+  // two-space indent (JSON.stringify has no "newlines but no indent" mode).
+  const trimmed = content.trim();
+  return !trimmed.includes("\n") && trimmed.length > 2 ? 0 : 2;
+}
+
+/**
+ * Decided by majority rather than by presence: a file with one stray CRLF among many LF
+ * lines must not come back fully CRLF-converted (a whole-file diff for a one-line change).
+ */
+function usesCrlf(content: string): boolean {
+  const crlfCount = content.match(/\r\n/g)?.length ?? 0;
+  const lfOnlyCount = (content.match(/\n/g)?.length ?? 0) - crlfCount;
+  return crlfCount > lfOnlyCount;
+}
+
+function applyLineEndings(content: string, crlf: boolean): string {
+  return crlf ? content.replace(/\n/g, "\r\n") : content;
+}
+
+export function isMcpParseError(error: unknown): boolean {
+  return error instanceof McpManualMergeError;
+}
+
+export function mergeJsonMcpConfig(
+  client: McpClientKey,
+  existingContent: string | null,
+  options: McpConfigOptions = {},
+  configLabel = "the MCP config file"
+): McpMergeResult {
+  const containerKey = getMcpContainerKey(client);
+  const serverName = getServerName(options);
+  const entry = buildServerEntry(client, options);
+
+  if (existingContent === null || existingContent.trim().length === 0) {
+    const root: JsonObject = {};
+    if (client === "opencode") {
+      root["$schema"] = "https://opencode.ai/config.json";
+    }
+    root[containerKey] = { [serverName]: entry };
+    return { content: `${JSON.stringify(root, null, 2)}\n`, changed: true };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(existingContent) as unknown;
+  } catch {
+    throw new McpManualMergeError(
+      `Could not parse ${configLabel} as JSON. Add the Tack server entry manually, then rerun.`
+    );
+  }
+
+  if (!isPlainObject(parsed)) {
+    throw new McpManualMergeError(
+      `Could not parse ${configLabel} as a JSON object. Add the Tack server entry manually, then rerun.`
+    );
+  }
+
+  const container = parsed[containerKey];
+  if (container !== undefined && !isPlainObject(container)) {
+    throw new McpManualMergeError(
+      `Could not update ${configLabel}: "${containerKey}" is not an object. Fix it manually, then rerun.`
+    );
+  }
+
+  const currentServers: JsonObject = isPlainObject(container) ? container : {};
+  if (isDeepEqual(currentServers[serverName], entry)) {
+    return { content: existingContent, changed: false };
+  }
+
+  const nextServers: JsonObject = { ...currentServers, [serverName]: entry };
+  const next: JsonObject = { ...parsed, [containerKey]: nextServers };
+  const trailingNewline = existingContent.endsWith("\n") ? "\n" : "";
+  const serialized = `${JSON.stringify(next, null, detectJsonIndent(existingContent))}${trailingNewline}`;
+
+  // The parse/stringify round trip can silently rewrite values outside the container
+  // (Infinity -> null, -0 -> 0). Never hand back a document whose untouched keys differ
+  // from what was parsed; duplicate keys and float-precision loss are invisible to a
+  // post-parse comparison and remain accepted limitations of the JSON path.
+  let reparsed: unknown;
+  try {
+    reparsed = JSON.parse(serialized) as unknown;
+  } catch {
+    reparsed = undefined;
+  }
+  if (!isPlainObject(reparsed) || !jsonValuesIdentical(omitKey(parsed, containerKey), omitKey(reparsed, containerKey))) {
+    throw new McpManualMergeError(
+      `Could not rewrite ${configLabel} without altering unrelated values. Add the Tack server entry manually, then rerun.`
+    );
+  }
+
+  return { content: applyLineEndings(serialized, usesCrlf(existingContent)), changed: true };
+}
+
+function omitKey(value: JsonObject, key: string): JsonObject {
+  const { [key]: _omitted, ...rest } = value;
+  return rest;
+}
+
+/** Deep equality with `Object.is` on leaves, so `-0` vs `0` and `NaN` drift is caught. */
+function jsonValuesIdentical(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((item, index) => jsonValuesIdentical(item, b[index]));
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    return aKeys.length === bKeys.length && aKeys.every((key) => jsonValuesIdentical(a[key], b[key]));
+  }
+  return Object.is(a, b);
+}
+
+function escapeTomlString(value: string): string {
+  let out = "";
+
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    if (char === "\\") {
+      out += "\\\\";
+    } else if (char === '"') {
+      out += '\\"';
+    } else if (char === "\n") {
+      out += "\\n";
+    } else if (char === "\r") {
+      out += "\\r";
+    } else if (char === "\t") {
+      out += "\\t";
+    } else if (char === "\b") {
+      out += "\\b";
+    } else if (char === "\f") {
+      out += "\\f";
+    } else if (code <= 0x1f || code === 0x7f) {
+      out += `\\u${code.toString(16).toUpperCase().padStart(4, "0")}`;
+    } else {
+      out += char;
+    }
+  }
+
+  return out;
+}
+
+function formatTomlString(value: string): string {
+  return `"${escapeTomlString(value)}"`;
+}
+
+const TOML_BARE_KEY = /^[A-Za-z0-9_-]+$/;
+
+function formatTomlKey(key: string): string {
+  return TOML_BARE_KEY.test(key) ? key : formatTomlString(key);
+}
+
+function formatTomlStringArray(values: string[]): string {
+  return `[${values.map((value) => formatTomlString(value)).join(", ")}]`;
+}
+
+function formatTomlInlineTable(entries: Array<[string, string]>): string {
+  return `{ ${entries.map(([key, value]) => `${formatTomlKey(key)} = ${formatTomlString(value)}`).join(", ")} }`;
+}
+
+export function buildTomlServerBlock(serverName: string, options: McpConfigOptions = {}): string {
+  const definition = getMcpClientDefinition("codex");
+  const { command, args } = buildServerCommand(options);
+
+  return [
+    `[mcp_servers.${formatTomlKey(serverName)}]`,
+    `command = ${formatTomlString(command)}`,
+    `args = ${formatTomlStringArray(args)}`,
+    `env = ${formatTomlInlineTable([["TACK_AGENT_NAME", definition.agentName]])}`,
+  ].join("\n");
+}
+
+type TomlNode = {
+  kind: "comment" | "table" | "keyval";
+  /** Offset of the first character of the construct, in the LF-normalized document. */
+  start: number;
+  /** Offset just past its last character, excluding the terminating newline. */
+  end: number;
+  /** Table path for `table`; absolute dotted key path for `keyval`. */
+  path: string[];
+  /** Table the node was declared in. Empty for root-level keys. */
+  table: string[];
+  /** True for `[[x]]` array-of-tables headers, which may legitimately repeat. */
+  arrayOfTables?: boolean;
+};
+
+class TomlScanError extends Error {}
+
+/**
+ * Bare (unquoted) TOML values can only be booleans, integers, floats, or
+ * date-times. Accepting arbitrary bare words here would make the scanner
+ * "recognize" documents real TOML parsers reject (`model = nope`), and
+ * setup-mcp would then append the Tack table to an already-broken config and
+ * report success while Codex still cannot parse the file.
+ */
+const TOML_BARE_VALUE_FORMS: RegExp[] = [
+  /^(?:true|false)$/,
+  // Hex / octal / binary integers with optional underscores. TOML permits leading
+  // signs only on decimal integers, so none is allowed here.
+  /^(?:0x[0-9A-Fa-f](?:_?[0-9A-Fa-f])*|0o[0-7](?:_?[0-7])*|0b[01](?:_?[01])*)$/,
+  // Decimal integers and floats (fraction and/or exponent), no leading zeros.
+  /^[+-]?(?:0|[1-9](?:_?\d)*)(?:\.\d(?:_?\d)*)?(?:[eE][+-]?\d(?:_?\d)*)?$/,
+  /^[+-]?(?:inf|nan)$/,
+];
+
+// Offset/local date-times, local dates, and local times, with capture groups so the
+// calendar and clock ranges can be validated: shape alone would bless 2026-99-99.
+const TOML_DATE_TIME =
+  /^(\d{4})-(\d{2})-(\d{2})(?:[Tt ](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:[Zz]|[+-](\d{2}):(\d{2}))?)?$/;
+const TOML_LOCAL_TIME = /^(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?$/;
+
+function isValidCalendarDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function isValidClockTime(hours: number, minutes: number, seconds: number): boolean {
+  // Seconds up to 60 for RFC 3339 leap seconds, which TOML defers to.
+  return hours <= 23 && minutes <= 59 && seconds <= 60;
+}
+
+function isTomlBareValue(raw: string): boolean {
+  if (TOML_BARE_VALUE_FORMS.some((form) => form.test(raw))) return true;
+
+  const dateTime = raw.match(TOML_DATE_TIME);
+  if (dateTime) {
+    const [, year, month, day, hours, minutes, seconds, offsetHours, offsetMinutes] = dateTime;
+    if (!isValidCalendarDate(Number(year), Number(month), Number(day))) return false;
+    if (hours !== undefined && !isValidClockTime(Number(hours), Number(minutes), Number(seconds))) return false;
+    if (offsetHours !== undefined && (Number(offsetHours) > 23 || Number(offsetMinutes) > 59)) return false;
+    return true;
+  }
+
+  const localTime = raw.match(TOML_LOCAL_TIME);
+  if (localTime) {
+    return isValidClockTime(Number(localTime[1]), Number(localTime[2]), Number(localTime[3]));
+  }
+
+  return false;
+}
+
+/**
+ * A deliberately strict TOML recognizer. It understands table headers, array-of-tables,
+ * bare/quoted/dotted keys, every string form (including multi-line), arrays, and inline
+ * tables well enough to locate declarations by path. Anything it does not fully
+ * understand throws, which the caller turns into the `manual` status rather than
+ * rewriting a file it cannot read.
+ */
+function scanTomlDocument(text: string): TomlNode[] {
+  const nodes: TomlNode[] = [];
+  const length = text.length;
+  let pos = 0;
+  let currentTable: string[] = [];
+
+  const fail = (message: string): never => {
+    throw new TomlScanError(`${message} at offset ${pos}`);
+  };
+
+  const isSpace = (char: string | undefined): boolean => char === " " || char === "\t";
+
+  const skipSpace = (): void => {
+    while (pos < length && isSpace(text[pos])) {
+      pos += 1;
+    }
+  };
+
+  const skipCommentBody = (): void => {
+    while (pos < length && text[pos] !== "\n") {
+      // TOML forbids control characters (other than tab) in comments too.
+      if (isForbiddenStringChar(text[pos]!, false)) {
+        fail("control character in comment");
+      }
+      pos += 1;
+    }
+  };
+
+  const skipSpaceNewlinesAndComments = (): void => {
+    for (;;) {
+      if (pos < length && (isSpace(text[pos]) || text[pos] === "\n")) {
+        pos += 1;
+        continue;
+      }
+      if (pos < length && text[pos] === "#") {
+        skipCommentBody();
+        continue;
+      }
+      return;
+    }
+  };
+
+  const expect = (char: string): void => {
+    if (text[pos] !== char) {
+      fail(`expected "${char}"`);
+    }
+    pos += 1;
+  };
+
+  const finishLine = (): void => {
+    skipSpace();
+    if (pos < length && text[pos] === "#") {
+      skipCommentBody();
+      return;
+    }
+    if (pos < length && text[pos] !== "\n") {
+      fail("unexpected trailing content");
+    }
+  };
+
+  /** Consumes a `'''`/`"""` body, honouring the "up to two extra quotes" closing rule. */
+  // TOML forbids unescaped control characters in every string form: only tab is
+  // legal in single-line strings, tab and newline in multi-line ones.
+  const isForbiddenStringChar = (char: string, allowNewline: boolean): boolean => {
+    const code = char.codePointAt(0) ?? 0;
+    if (char === "\t") return false;
+    if (allowNewline && char === "\n") return false;
+    return code < 0x20 || code === 0x7f;
+  };
+
+  const readMultilineString = (delimiter: string, escapes: boolean): string => {
+    pos += 3;
+    const start = pos;
+
+    for (;;) {
+      if (pos >= length) {
+        fail("unterminated multi-line string");
+      }
+      if (escapes && text[pos] === "\\") {
+        // TOML's line-ending backslash: when the backslash is the last
+        // non-whitespace character on the line, it and all whitespace up to the
+        // next non-whitespace character are trimmed. Anything else must be a
+        // valid escape — `\q` makes the whole document unparseable for Codex.
+        let lookahead = pos + 1;
+        while (lookahead < length && (text[lookahead] === " " || text[lookahead] === "\t")) {
+          lookahead += 1;
+        }
+        if (lookahead < length && text[lookahead] === "\n") {
+          pos = lookahead + 1;
+          while (pos < length && (text[pos] === " " || text[pos] === "\t" || text[pos] === "\n")) {
+            pos += 1;
+          }
+          continue;
+        }
+        decodeEscape();
+        continue;
+      }
+      if (text.startsWith(delimiter, pos)) {
+        let close = pos;
+        let extraQuotes = 0;
+        while (text[close + 3] === delimiter[0]) {
+          close += 1;
+          extraQuotes += 1;
+        }
+        // TOML permits at most two extra delimiter characters as content before
+        // the closing run ("""a""""" is `a""`); longer runs are unparseable.
+        if (extraQuotes > 2) {
+          fail("too many closing quotes in multi-line string");
+        }
+        const body = text.slice(start, close);
+        pos = close + 3;
+        return body;
+      }
+      if (isForbiddenStringChar(text[pos]!, true)) {
+        fail("control character in multi-line string");
+      }
+      pos += 1;
+    }
+  };
+
+  const decodeEscape = (): string => {
+    const char = text[pos + 1];
+    switch (char) {
+      case '"':
+        pos += 2;
+        return '"';
+      case "\\":
+        pos += 2;
+        return "\\";
+      case "b":
+        pos += 2;
+        return "\b";
+      case "f":
+        pos += 2;
+        return "\f";
+      case "n":
+        pos += 2;
+        return "\n";
+      case "r":
+        pos += 2;
+        return "\r";
+      case "t":
+        pos += 2;
+        return "\t";
+      case "u":
+      case "U": {
+        const width = char === "u" ? 4 : 8;
+        const hex = text.slice(pos + 2, pos + 2 + width);
+        if (!new RegExp(`^[0-9A-Fa-f]{${width}}$`).test(hex)) {
+          fail("invalid unicode escape");
+        }
+        const code = Number.parseInt(hex, 16);
+        // TOML requires Unicode scalar values: surrogates (U+D800-U+DFFF) and
+        // anything past U+10FFFF are invalid even when the hex digits parse.
+        if ((code >= 0xd800 && code <= 0xdfff) || code > 0x10ffff) {
+          fail("invalid unicode escape");
+        }
+        pos += 2 + width;
+        return String.fromCodePoint(code);
+      }
+      default:
+        return fail("invalid string escape");
+    }
+  };
+
+  const readBasicString = (): string => {
+    if (text.startsWith('"""', pos)) {
+      return readMultilineString('"""', true);
+    }
+
+    pos += 1;
+    let out = "";
+    for (;;) {
+      if (pos >= length || text[pos] === "\n") {
+        fail("unterminated string");
+      }
+      if (text[pos] === "\\") {
+        out += decodeEscape();
+        continue;
+      }
+      if (text[pos] === '"') {
+        pos += 1;
+        return out;
+      }
+      if (isForbiddenStringChar(text[pos]!, false)) {
+        fail("control character in string");
+      }
+      out += text[pos];
+      pos += 1;
+    }
+  };
+
+  const readLiteralString = (): string => {
+    if (text.startsWith("'''", pos)) {
+      return readMultilineString("'''", false);
+    }
+
+    pos += 1;
+    const start = pos;
+    for (;;) {
+      if (pos >= length || text[pos] === "\n") {
+        fail("unterminated literal string");
+      }
+      if (text[pos] === "'") {
+        const body = text.slice(start, pos);
+        pos += 1;
+        return body;
+      }
+      if (isForbiddenStringChar(text[pos]!, false)) {
+        fail("control character in literal string");
+      }
+      pos += 1;
+    }
+  };
+
+  const readKey = (): string[] => {
+    const parts: string[] = [];
+
+    for (;;) {
+      skipSpace();
+      const char = text[pos];
+      if (char === '"') {
+        // Quoted keys may only be single-line strings; """multi""" is not a key.
+        if (text.startsWith('"""', pos)) {
+          fail("multi-line strings cannot be keys");
+        }
+        parts.push(readBasicString());
+      } else if (char === "'") {
+        if (text.startsWith("'''", pos)) {
+          fail("multi-line strings cannot be keys");
+        }
+        parts.push(readLiteralString());
+      } else {
+        const start = pos;
+        while (pos < length && TOML_BARE_KEY.test(text[pos]!)) {
+          pos += 1;
+        }
+        if (pos === start) {
+          fail("expected a key");
+        }
+        parts.push(text.slice(start, pos));
+      }
+
+      skipSpace();
+      if (text[pos] === ".") {
+        pos += 1;
+        continue;
+      }
+      return parts;
+    }
+  };
+
+  const readValue = (): void => {
+    const char = text[pos];
+    if (char === undefined) {
+      fail("expected a value");
+    }
+    if (char === '"') {
+      readBasicString();
+      return;
+    }
+    if (char === "'") {
+      readLiteralString();
+      return;
+    }
+    if (char === "[") {
+      pos += 1;
+      for (;;) {
+        skipSpaceNewlinesAndComments();
+        if (pos >= length) {
+          fail("unterminated array");
+        }
+        if (text[pos] === "]") {
+          pos += 1;
+          return;
+        }
+        readValue();
+        skipSpaceNewlinesAndComments();
+        if (text[pos] === ",") {
+          pos += 1;
+          continue;
+        }
+        if (text[pos] === "]") {
+          pos += 1;
+          return;
+        }
+        fail("expected \",\" or \"]\"");
+      }
+    }
+    if (char === "{") {
+      pos += 1;
+      skipSpace();
+      if (text[pos] === "}") {
+        pos += 1;
+        return;
+      }
+      // Inline tables enforce their own duplicate-key rule per nesting level:
+      // `{ mode = 1, mode = 2 }` is invalid TOML, and so is assigning through a
+      // key that already holds a value (`{ a = 1, a.b = 2 }` in either order).
+      const assignedKeys = new Set<string>();
+      const dottedParents = new Set<string>();
+      for (;;) {
+        skipSpace();
+        const inlineKeyPath = readKey();
+        const inlineJoined = inlineKeyPath.join(".");
+        if (assignedKeys.has(inlineJoined) || dottedParents.has(inlineJoined)) {
+          fail(`duplicate key "${inlineJoined}" in inline table`);
+        }
+        for (let depth = 1; depth < inlineKeyPath.length; depth += 1) {
+          const prefix = inlineKeyPath.slice(0, depth).join(".");
+          if (assignedKeys.has(prefix)) {
+            fail(`duplicate key "${prefix}" in inline table`);
+          }
+          dottedParents.add(prefix);
+        }
+        assignedKeys.add(inlineJoined);
+        skipSpace();
+        expect("=");
+        skipSpace();
+        readValue();
+        skipSpace();
+        if (text[pos] === ",") {
+          pos += 1;
+          continue;
+        }
+        if (text[pos] === "}") {
+          pos += 1;
+          return;
+        }
+        fail("expected \",\" or \"}\"");
+      }
+    }
+
+    const start = pos;
+    while (pos < length && !"\n,]}#".includes(text[pos]!)) {
+      pos += 1;
+    }
+    const raw = text.slice(start, pos).trim();
+    if (raw.length === 0 || !isTomlBareValue(raw)) {
+      pos = start;
+      fail("unrecognized value");
+    }
+  };
+
+  while (pos < length) {
+    while (pos < length && (isSpace(text[pos]) || text[pos] === "\n")) {
+      pos += 1;
+    }
+    if (pos >= length) {
+      break;
+    }
+
+    const start = pos;
+
+    if (text[pos] === "#") {
+      skipCommentBody();
+      nodes.push({ kind: "comment", start, end: pos, path: [], table: currentTable });
+      continue;
+    }
+
+    if (text[pos] === "[") {
+      const arrayOfTables = text[pos + 1] === "[";
+      pos += arrayOfTables ? 2 : 1;
+      const tablePath = readKey();
+      skipSpace();
+      expect("]");
+      if (arrayOfTables) {
+        expect("]");
+      }
+      finishLine();
+      currentTable = tablePath;
+      nodes.push({ kind: "table", start, end: pos, path: tablePath, table: tablePath, arrayOfTables });
+      continue;
+    }
+
+    const keyPath = readKey();
+    skipSpace();
+    expect("=");
+    skipSpace();
+    readValue();
+    finishLine();
+    nodes.push({ kind: "keyval", start, end: pos, path: [...currentTable, ...keyPath], table: currentTable });
+  }
+
+  assertNoDuplicateTomlDefinitions(nodes);
+  return nodes;
+}
+
+/**
+ * Rejects documents that define the same key or table twice — invalid TOML the
+ * line-level scanner otherwise accepts, because each assignment lands as an
+ * independent node. Without this, `mergeTomlMcpConfig` would append the Tack table
+ * to an already-broken config (`model = 1` twice) and report success while Codex
+ * still cannot parse the file. Array-of-tables headers legitimately repeat, and
+ * keys inside successive `[[x]]` elements share a path, so keyvals are deduplicated
+ * per array-table *instance*. Deliberately stricter than the TOML spec in rare
+ * corners (e.g. defining `[a]` after `[a.b]`): over-strictness downgrades to the
+ * `manual` snippet, which is the safe failure mode for a recognizer.
+ */
+function assertNoDuplicateTomlDefinitions(nodes: TomlNode[]): void {
+  /** Highest instance number seen per array-of-tables path. */
+  const arrayInstances = new Map<string, number>();
+  /** Non-array table headers, scoped by their nearest array-element instance. */
+  const headers = new Set<string>();
+  /** Key paths assigned a value, scoped the same way. */
+  const values = new Set<string>();
+  /** Intermediate segments of dotted keys (`a` in `a.b = 1`), scoped the same way. */
+  const dottedParents = new Set<string>();
+  let scopePrefix = "";
+
+  const fail = (label: string): never => {
+    throw new TomlScanError(`duplicate definition of "${label}"`);
+  };
+
+  /**
+   * Logical array path -> the full scope prefix of its CURRENT element (e.g.
+   * "plugins" -> "plugins#1::plugins.items#2::" is impossible — each entry maps its
+   * own path, so "plugins.items" -> "plugins#1::plugins.items#2::"). Kept separate
+   * from `arrayInstances` (whose keys are instance-qualified) so nested arrays can
+   * still be located by their logical path.
+   */
+  const activeArrayScopes = new Map<string, string>();
+
+  // Nearest enclosing [[array]] element for a path, so tables repeated once per
+  // array element ([fruit.physical] under each [[fruit]]) stay legal even when the
+  // enclosing array is itself nested.
+  const arrayScopeFor = (joined: string): string => {
+    let best: string | null = null;
+    for (const logicalPath of activeArrayScopes.keys()) {
+      if (joined.length > logicalPath.length && joined.startsWith(`${logicalPath}.`)) {
+        if (best === null || logicalPath.length > best.length) best = logicalPath;
+      }
+    }
+    return best === null ? "" : activeArrayScopes.get(best)!;
+  };
+
+  for (const node of nodes) {
+    if (node.kind === "comment") continue;
+    const joined = node.path.join(".");
+
+    if (node.kind === "table") {
+      // No table (of either kind) may live beneath a key that already holds a
+      // scalar value: `a = 1` followed by [a.b] or [[a.b]] is invalid TOML.
+      const failIfAncestorHoldsValue = (prefix: string): void => {
+        for (let depth = 1; depth < node.path.length; depth += 1) {
+          const ancestorJoined = node.path.slice(0, depth).join(".");
+          if (values.has(`${prefix}${ancestorJoined}`)) fail(ancestorJoined);
+        }
+      };
+
+      if (node.arrayOfTables === true) {
+        // An array-of-tables path may not already exist as a plain table, a valued
+        // key, or a dotted-key parent — checked within the enclosing array-element
+        // scope, so [[plugins]] name="x" [[plugins.name]] is caught even though the
+        // value was recorded under the element instance.
+        const enclosing = arrayScopeFor(joined);
+        const scopedArray = `${enclosing}${joined}`;
+        if (headers.has(scopedArray) || values.has(scopedArray) || dottedParents.has(scopedArray)) {
+          fail(joined);
+        }
+        failIfAncestorHoldsValue(enclosing);
+        const instance = (arrayInstances.get(scopedArray) ?? 0) + 1;
+        arrayInstances.set(scopedArray, instance);
+        scopePrefix = `${scopedArray}#${instance}::`;
+        activeArrayScopes.set(joined, scopePrefix);
+        // Entering a new element invalidates the active scopes of any deeper arrays
+        // that belonged to the previous element.
+        for (const key of [...activeArrayScopes.keys()]) {
+          if (key.length > joined.length && key.startsWith(`${joined}.`)) {
+            activeArrayScopes.delete(key);
+          }
+        }
+        continue;
+      }
+      scopePrefix = arrayScopeFor(joined);
+      const scoped = `${scopePrefix}${joined}`;
+      // A header may not repeat, re-open a key that already holds a value, re-open
+      // a table a dotted key already created (`server.x = 1` then [server]), or
+      // redeclare an array-of-tables path as a plain table ([[plugins]] then [plugins]).
+      if (
+        headers.has(scoped) ||
+        values.has(scoped) ||
+        dottedParents.has(scoped) ||
+        arrayInstances.has(joined) ||
+        arrayInstances.has(scoped)
+      ) {
+        fail(joined);
+      }
+      failIfAncestorHoldsValue(scopePrefix);
+      headers.add(scoped);
+      continue;
+    }
+
+    const scoped = `${scopePrefix}${joined}`;
+    if (values.has(scoped) || headers.has(scoped) || arrayInstances.has(scoped)) fail(joined);
+    // Dotted-key conflicts in both directions: `a = 1` then `a.b = 2`, and the reverse.
+    for (let depth = node.table.length + 1; depth < node.path.length; depth += 1) {
+      const prefixJoined = node.path.slice(0, depth).join(".");
+      const prefixScoped = `${scopePrefix}${prefixJoined}`;
+      if (values.has(prefixScoped)) fail(prefixJoined);
+      dottedParents.add(prefixScoped);
+    }
+    if (dottedParents.has(scoped)) fail(joined);
+    values.add(scoped);
+  }
+}
+
+function pathStartsWith(candidate: string[], prefix: string[]): boolean {
+  return candidate.length >= prefix.length && prefix.every((part, index) => candidate[index] === part);
+}
+
+function pathEquals(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((part, index) => part === b[index]);
+}
+
+/**
+ * True when the server is declared as a dotted key or an inline table
+ * (`mcp_servers.tack = { ... }`, or `tack.command = "..."` under `[mcp_servers]`)
+ * rather than as its own `[mcp_servers.tack]` table. Those forms cannot be replaced by
+ * appending a table without declaring the same key twice, which makes the whole file
+ * unparseable for Codex.
+ */
+function hasInlineTackDeclaration(nodes: TomlNode[], serverPath: string[]): boolean {
+  return nodes.some(
+    (node) => node.kind === "keyval" && pathStartsWith(node.path, serverPath) && !pathStartsWith(node.table, serverPath)
+  );
+}
+
+/** Runs the document through a conformant TOML 1.0 parser; failures become `manual`. */
+function assertParseableToml(normalized: string, configLabel: string): void {
+  try {
+    parseToml(normalized);
+  } catch {
+    throw new McpManualMergeError(
+      `Could not parse ${configLabel} as TOML. Add the Tack server entry manually, then rerun.`
+    );
+  }
+}
+
+export function mergeTomlMcpConfig(
+  existingContent: string | null,
+  options: McpConfigOptions = {},
+  configLabel = "the MCP config file"
+): McpMergeResult {
+  const serverName = getServerName(options);
+  const serverPath = ["mcp_servers", serverName];
+  const block = buildTomlServerBlock(serverName, options);
+
+  if (existingContent === null || existingContent.trim().length === 0) {
+    return { content: `${block}\n`, changed: true };
+  }
+
+  const crlf = usesCrlf(existingContent);
+  const normalized = existingContent.replace(/\r\n/g, "\n");
+
+  // A conformant TOML 1.0 parser is the authority on validity: the hand-rolled
+  // scanner below only locates spans, and every document must pass a real parse
+  // BEFORE Tack will append to it. Without this gate, any conformance corner the
+  // scanner misses (implicit-parent redefinition, and whatever else the spec hides)
+  // would let setup-mcp bless a config Codex itself cannot load.
+  assertParseableToml(normalized, configLabel);
+
+  // Normalized offset of each removed `\r` so scan positions can be mapped back to the
+  // original text. The splice happens on the ORIGINAL document: re-applying line endings
+  // to the whole normalized text would rewrite every line the merge never touched, and
+  // would even change bytes inside multi-line literal strings, which TOML preserves
+  // verbatim. Only the inserted block gets the file's dominant line ending.
+  const crlfNormalizedPositions: number[] = [];
+  {
+    let searchFrom = 0;
+    let removed = 0;
+    let found = existingContent.indexOf("\r\n", searchFrom);
+    while (found !== -1) {
+      crlfNormalizedPositions.push(found - removed);
+      removed += 1;
+      searchFrom = found + 2;
+      found = existingContent.indexOf("\r\n", searchFrom);
+    }
+  }
+  const toOriginalOffset = (normalizedOffset: number): number => {
+    let shift = 0;
+    for (const position of crlfNormalizedPositions) {
+      if (position >= normalizedOffset) break;
+      shift += 1;
+    }
+    return normalizedOffset + shift;
+  };
+
+  let nodes: TomlNode[];
+  try {
+    nodes = scanTomlDocument(normalized);
+  } catch {
+    throw new McpManualMergeError(
+      `Could not parse ${configLabel} as TOML. Add the Tack server entry manually, then rerun.`
+    );
+  }
+
+  if (hasInlineTackDeclaration(nodes, serverPath)) {
+    throw new McpManualMergeError(
+      `Could not update ${configLabel}: "${serverPath.join(".")}" is declared as a dotted or inline key. Replace it manually, then rerun.`
+    );
+  }
+
+  // Locate the contiguous span owned by [mcp_servers.<name>] and its subtables.
+  let regionStart: number | null = null;
+  let regionEnd: number | null = null;
+  let inServerTable = false;
+  let leftServerTable = false;
+  let splitByForeignTable = false;
+
+  for (const node of nodes) {
+    if (node.kind === "table") {
+      inServerTable = pathStartsWith(node.path, serverPath);
+      if (!inServerTable) {
+        leftServerTable = regionStart !== null;
+        continue;
+      }
+      if (leftServerTable) {
+        splitByForeignTable = true;
+      }
+      if (regionStart === null) {
+        regionStart = node.start;
+      }
+      regionEnd = node.end;
+      continue;
+    }
+    // Comments never extend the region, so a comment block introducing the *next*
+    // table survives the rewrite.
+    if (node.kind === "keyval" && inServerTable) {
+      regionEnd = node.end;
+    }
+  }
+
+  if (splitByForeignTable) {
+    throw new McpManualMergeError(
+      `Could not update ${configLabel}: "${serverPath.join(".")}" is declared in more than one place. Consolidate it manually, then rerun.`
+    );
+  }
+
+  const blockWithEndings = applyLineEndings(block, crlf);
+
+  let merged: string;
+  if (regionStart === null) {
+    const trimmed = existingContent.replace(/(?:\r?\n)+$/, "");
+    const separator = applyLineEndings("\n\n", crlf);
+    const terminator = applyLineEndings("\n", crlf);
+    merged =
+      trimmed.length > 0
+        ? `${trimmed}${separator}${blockWithEndings}${terminator}`
+        : `${blockWithEndings}${terminator}`;
+  } else {
+    merged = `${existingContent.slice(0, toOriginalOffset(regionStart))}${blockWithEndings}${existingContent.slice(
+      toOriginalOffset(regionEnd!)
+    )}`;
+  }
+
+  // Never hand back TOML we cannot read back — or that a conformant parser rejects.
+  assertParseableToml(merged.replace(/\r\n/g, "\n"), configLabel);
+  let mergedNodes: TomlNode[];
+  try {
+    mergedNodes = scanTomlDocument(merged.replace(/\r\n/g, "\n"));
+  } catch {
+    throw new McpManualMergeError(
+      `Could not rewrite ${configLabel} safely. Add the Tack server entry manually, then rerun.`
+    );
+  }
+
+  const declarations = mergedNodes.filter((node) => node.kind === "table" && pathEquals(node.path, serverPath));
+  if (declarations.length !== 1 || hasInlineTackDeclaration(mergedNodes, serverPath)) {
+    throw new McpManualMergeError(
+      `Could not rewrite ${configLabel} safely. Add the Tack server entry manually, then rerun.`
+    );
+  }
+
+  return { content: merged, changed: merged !== existingContent };
+}
+
+/**
+ * The fragment to paste into an existing config: the `"tack": { ... }` member for JSON
+ * clients, the `[mcp_servers.tack]` table for Codex. Never a whole root document -
+ * pasting one of those on top of an existing file destroys the other servers.
+ */
+export function renderMcpEntrySnippet(client: McpClientKey, options: McpConfigOptions = {}): string {
+  const serverName = getServerName(options);
+
+  if (getMcpClientDefinition(client).format === "toml") {
+    return buildTomlServerBlock(serverName, options);
+  }
+
+  const document = JSON.stringify({ [serverName]: buildServerEntry(client, options) }, null, 2);
+  return document
+    .split("\n")
+    .slice(1, -1)
+    .map((line) => line.slice(2))
+    .join("\n");
+}
+
+/**
+ * True when the config file still holds exactly the bytes (or the absence) the merge
+ * was computed from. Exported so the compare-and-swap that guards `applyMcpConfig`
+ * against lost updates is directly testable.
+ */
+export function isConfigUnchanged(configPath: string, expected: string | null): boolean {
+  const current = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf-8") : null;
+  return current === expected;
+}
+
+export function applyMcpConfig(
+  client: McpClientKey,
+  repoRoot: string,
+  options: McpConfigOptions = {}
+): McpConfigResult {
+  const configPath = getMcpConfigPath(client, repoRoot);
+  const configLabel = path.relative(repoRoot, configPath) || path.basename(configPath);
+
+  // MCP config files live at the repository root, outside the `.tack/` boundary that
+  // lib/files.ts guards, so a checked-in `.mcp.json` or `.cursor/` symlink could pull
+  // external contents into the merge or place the write outside the checkout.
+  const symlinkComponent = findSymlinkComponentBeneath(repoRoot, configPath);
+  if (symlinkComponent !== null) {
+    return {
+      client,
+      configLabel,
+      status: "manual",
+      detail:
+        `${configLabel} is (or sits behind) a symlink at "${symlinkComponent}", so Tack will not read or ` +
+        "write it. Replace the symlink with a real file or directory, or add the Tack server entry manually.",
+    };
+  }
+
+  if (configPath.endsWith(".jsonc")) {
+    return {
+      client,
+      configLabel,
+      status: "manual",
+      detail: `${configLabel} may contain comments, so Tack will not rewrite it.`,
+    };
+  }
+
+  // A dry run only reads, so it needs no lock and must not create the parent directory.
+  if (options.dryRun === true) {
+    return mergeMcpConfigInPlace(client, configPath, configLabel, options);
+  }
+
+  // Serialize the whole read-merge-write against other Tack processes. The
+  // compare-and-swap below can only *detect* a concurrent change; holding a lock means
+  // two `tack setup-mcp` runs never reach that detection in the first place, so the
+  // second one merges against the first one's result instead of being told to rerun.
+  // (Editors and MCP clients take no such lock — that residual is handled by the CAS.)
+  try {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  } catch (error) {
+    return {
+      client,
+      configLabel,
+      status: "manual",
+      detail: `Could not create the directory for ${configLabel} (${describeFsError(error)}). Add the Tack server entry manually, then rerun.`,
+    };
+  }
+
+  try {
+    return withFileLock(`${configPath}.tack-lock`, configLabel, () =>
+      mergeMcpConfigInPlace(client, configPath, configLabel, options)
+    );
+  } catch (error) {
+    return {
+      client,
+      configLabel,
+      status: "manual",
+      detail: `Could not lock ${configLabel} (${describeFsError(error)}). Add the Tack server entry manually, then rerun.`,
+    };
+  }
+}
+
+/**
+ * Reads, merges and (unless this is a dry run) writes one client config. Callers hold the
+ * file lock; every failure downgrades to `manual` so one broken client never aborts a
+ * `--all` run.
+ */
+function mergeMcpConfigInPlace(
+  client: McpClientKey,
+  configPath: string,
+  configLabel: string,
+  options: McpConfigOptions
+): McpConfigResult {
+  const definition = getMcpClientDefinition(client);
+  const exists = fs.existsSync(configPath);
+
+  // Filesystem failures (EISDIR, EACCES, EROFS, ...) downgrade to `manual` exactly like
+  // parse failures: the caller still prints the pasteable snippet for this client, and
+  // one broken path never aborts the remaining clients in a `--all` run.
+  let rawContent: string | null;
+  try {
+    rawContent = exists ? fs.readFileSync(configPath, "utf-8") : null;
+  } catch (error) {
+    return {
+      client,
+      configLabel,
+      status: "manual",
+      detail: `Could not read ${configLabel} (${describeFsError(error)}). Add the Tack server entry manually, then rerun.`,
+    };
+  }
+
+  // A leading UTF-8 BOM (routine on Windows: PowerShell redirection, some editors) is
+  // stripped before parsing and restored on write, so BOM-prefixed configs stay writable
+  // instead of being misreported as unparseable.
+  const hadBom = rawContent !== null && rawContent.startsWith(UTF8_BOM);
+  const existingContent = hadBom ? rawContent!.slice(1) : rawContent;
+
+  let merged: McpMergeResult;
+  try {
+    merged =
+      definition.format === "toml"
+        ? mergeTomlMcpConfig(existingContent, options, configLabel)
+        : mergeJsonMcpConfig(client, existingContent, options, configLabel);
+  } catch (error) {
+    if (isMcpParseError(error)) {
+      return {
+        client,
+        configLabel,
+        status: "manual",
+        detail: error instanceof Error ? error.message : String(error),
+      };
+    }
+    throw error;
+  }
+
+  if (!merged.changed) {
+    return { client, configLabel, status: "unchanged" };
+  }
+
+  if (options.dryRun === true) {
+    return { client, configLabel, status: exists ? "updated" : "installed", detail: "dry run" };
+  }
+
+  const content = `${hadBom ? UTF8_BOM : ""}${merged.content}`;
+
+  try {
+    if (rawContent === null) {
+      // Nothing was there when we read: publish with an atomic create-if-absent, which
+      // the kernel — not a prior check — fails if a file appeared meanwhile. No lock is
+      // required for this half, so even a foreign writer cannot be clobbered.
+      if (!writeFileIfAbsent(configPath, content)) {
+        return { client, configLabel, status: "manual", detail: concurrentChangeDetail(configLabel) };
+      }
+      return { client, configLabel, status: "installed" };
+    }
+
+    // Replacing an existing file has no conditional-rename primitive, so this stays a
+    // compare-and-swap on the bytes the merge was computed from: an atomic rename
+    // prevents a torn file, but not a LOST UPDATE if an editor or an MCP client wrote
+    // the config after we read it. Concurrent Tack processes are excluded by the lock
+    // the caller holds; for anyone else, re-read immediately before replacing and refuse
+    // on a mismatch, so an intervening change is reported rather than silently discarded.
+    let unchanged: boolean;
+    try {
+      unchanged = isConfigUnchanged(configPath, rawContent);
+    } catch (error) {
+      return {
+        client,
+        configLabel,
+        status: "manual",
+        detail: `Could not re-read ${configLabel} before writing (${describeFsError(error)}). Add the Tack server entry manually, then rerun.`,
+      };
+    }
+    if (!unchanged) {
+      return { client, configLabel, status: "manual", detail: concurrentChangeDetail(configLabel) };
+    }
+    // Atomic so an interrupted write can never leave a pre-existing user config truncated.
+    writeFileAtomic(configPath, content);
+  } catch (error) {
+    return {
+      client,
+      configLabel,
+      status: "manual",
+      detail: `Could not write ${configLabel} (${describeFsError(error)}). Add the Tack server entry manually, then rerun.`,
+    };
+  }
+
+  return { client, configLabel, status: exists ? "updated" : "installed" };
+}
+
+function concurrentChangeDetail(configLabel: string): string {
+  return (
+    `${configLabel} changed while Tack was merging it, so the merge was discarded rather than ` +
+    "overwriting that change. Rerun to merge against the current file."
+  );
+}
+
+function describeFsError(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code) return code;
+  return error instanceof Error ? error.message : String(error);
+}

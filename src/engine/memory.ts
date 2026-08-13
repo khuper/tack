@@ -5,6 +5,24 @@ import { TACK_MCP_TOOLS } from "../lib/mcpCatalog.js";
 import type { AgentNote, ContextPack, LogEvent, RecentWorkItem, SourceRef } from "../lib/signals.js";
 import { parseContextPack, contextRefToString } from "./contextPack.js";
 import { readAudit, readDrift, readSpec } from "../lib/files.js";
+import { sanitizeUntrustedLine } from "../lib/promptSafety.js";
+
+/**
+ * Everything below is composed from attacker-editable `.tack/` files, so each rendered
+ * line is sanitized at read time (control characters stripped, wrapper tags defanged)
+ * before it reaches an agent. Write-time sanitizing is not enough: `.tack/` files can be
+ * edited or committed by anyone.
+ */
+const MAX_UNTRUSTED_BULLET = 2000;
+
+function safeLine(value: string): string {
+  return sanitizeUntrustedLine(value, MAX_UNTRUSTED_BULLET);
+}
+
+function safeProjectName(project: string | undefined): string {
+  const name = safeLine(project ?? "");
+  return name.length > 0 ? name : "unknown";
+}
 
 const RECENT_WRITE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const STALE_UNFINISHED_MS = 48 * 60 * 60 * 1000;
@@ -78,7 +96,7 @@ function pushBullets(lines: string[], title: string, items: string[], limit = 5)
     lines.push("- none tracked");
   } else {
     for (const item of items.slice(0, limit)) {
-      lines.push(`- ${item}`);
+      lines.push(`- ${safeLine(item)}`);
     }
     if (items.length > limit) {
       lines.push(`- ...and ${items.length - limit} more`);
@@ -176,7 +194,7 @@ function compactList(items: string[], max = 3): string {
     return "none";
   }
 
-  const visible = items.slice(0, max);
+  const visible = items.slice(0, max).map((item) => sanitizeUntrustedLine(item, MAX_UNTRUSTED_BULLET));
   const suffix = items.length > max ? ` (+${items.length - max} more)` : "";
   return `${visible.join("; ")}${suffix}`;
 }
@@ -356,7 +374,7 @@ export function buildRecentWorkItems(options: {
     const verb = changedFiles.length === 1 ? "differs" : "differ";
     items.push({
       kind: "changed_files",
-      summary: `${changedFiles.length} ${noun} currently ${verb} from git: ${summarizePaths(changedFiles)}`,
+      summary: safeLine(`${changedFiles.length} ${noun} currently ${verb} from git: ${summarizePaths(changedFiles)}`),
       source: { derived_from: ["git diff", "filesystem"] },
       related_files: changedFiles,
     });
@@ -366,7 +384,7 @@ export function buildRecentWorkItems(options: {
     items.push({
       kind: "note",
       note_type: note.type,
-      summary: truncateText(stripCheckpointPrefix(note.message), 96),
+      summary: safeLine(truncateText(stripCheckpointPrefix(note.message), 96)),
       source: { file: ".tack/_notes.ndjson" },
       ts: note.ts,
       actor: note.actor,
@@ -377,7 +395,7 @@ export function buildRecentWorkItems(options: {
   for (const decision of [...pack.decisions].slice(-2).reverse().slice(0, 1)) {
     items.push({
       kind: "decision",
-      summary: `${decision.decision} - ${truncateText(decision.reasoning, 80)}`,
+      summary: safeLine(`${decision.decision} - ${truncateText(decision.reasoning, 80)}`),
       source: decision.source,
       date: decision.date,
     });
@@ -396,10 +414,10 @@ function formatRecentWorkLine(item: RecentWorkItem): string {
   }
 
   const age = item.ts ? formatRelativeTime(item.ts) : "unknown time";
-  const actor = item.actor ?? "unknown actor";
+  const actor = safeLine(item.actor ?? "unknown actor");
   const files =
     item.related_files && item.related_files.length > 0
-      ? `, files: ${summarizePaths(item.related_files, 2)}`
+      ? `, files: ${safeLine(summarizePaths(item.related_files, 2))}`
       : "";
   return `[${item.note_type ?? "note"}][${age}] ${item.summary} (${actor}${files}; ${sourceRefToString(item.source)})`;
 }
@@ -592,12 +610,14 @@ function describeRuleCheck(
   reason: string,
   evidence: string[]
 ): RuleCheckResult {
-  const payload = JSON.stringify({ status, reason, evidence });
+  const safeReason = safeLine(reason);
+  const safeEvidence = evidence.map((item) => safeLine(item));
+  const payload = JSON.stringify({ status, reason: safeReason, evidence: safeEvidence });
   return {
     question,
     status,
-    reason,
-    evidence,
+    reason: safeReason,
+    evidence: safeEvidence,
     estimated_tokens: estimateTokens(payload),
   };
 }
@@ -658,7 +678,7 @@ export function buildSessionLines(): string[] {
   const patterns = analyzeSessionPatterns();
   const lines: string[] = ["# Session Start", ""];
 
-  lines.push(`Project: ${(spec?.project && spec.project.trim()) || "unknown"}`);
+  lines.push(`Project: ${safeProjectName(spec?.project)}`);
   lines.push("");
 
   lines.push("## Read Order");
@@ -697,7 +717,7 @@ export function buildSessionLines(): string[] {
   if (patternLines.length > 0) {
     lines.push("## Session Patterns");
     for (const item of patternLines) {
-      lines.push(`- ${item}`);
+      lines.push(`- ${safeLine(item)}`);
     }
     lines.push("");
   }
@@ -707,7 +727,7 @@ export function buildSessionLines(): string[] {
     lines.push("- memory loop looks healthy");
   } else {
     for (const warning of warnings) {
-      lines.push(`- ${warning}`);
+      lines.push(`- ${safeLine(warning)}`);
     }
   }
   lines.push("");
@@ -730,7 +750,7 @@ export function buildWorkspaceSnapshotLines(changedFiles = getChangedFiles()): s
   const spec = readSpec();
   const lines: string[] = ["# Workspace Snapshot", ""];
 
-  lines.push(`Project: ${(spec?.project && spec.project.trim()) || "unknown"}`);
+  lines.push(`Project: ${safeProjectName(spec?.project)}`);
   lines.push("");
 
   pushBullets(lines, "Guardrails", summarizeGuardrails(), 6);
@@ -761,13 +781,13 @@ export function buildBriefingResult(): BriefingResult {
   const constraints = Object.entries(spec?.constraints ?? {}).map(([key, value]) => `${key}=${value}`);
 
   if (allowed.length > 0) {
-    ruleParts.push(`allowed ${allowed.join(", ")}`);
+    ruleParts.push(safeLine(`allowed ${allowed.join(", ")}`));
   }
   if (forbidden.length > 0) {
-    ruleParts.push(`forbidden ${forbidden.join(", ")}`);
+    ruleParts.push(safeLine(`forbidden ${forbidden.join(", ")}`));
   }
   if (constraints.length > 0) {
-    ruleParts.push(`constraints ${constraints.join(", ")}`);
+    ruleParts.push(safeLine(`constraints ${constraints.join(", ")}`));
   }
 
   const focus = compactList(pack.current_focus.map((item) => item.text), 2);
@@ -791,7 +811,7 @@ export function buildBriefingResult(): BriefingResult {
   const rulesCount = allowed.length + forbidden.length + constraints.length;
 
   return {
-    project: (spec?.project && spec.project.trim()) || "unknown",
+    project: safeProjectName(spec?.project),
     summary,
     rules_count: rulesCount,
     recent_decisions_count: pack.decisions.length,

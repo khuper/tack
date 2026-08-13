@@ -872,3 +872,26 @@ test("a journal left after a completed spec write keeps the verdict", () => {
     assert.ok(!fs.existsSync(path.join(tmpDir, ".tack", "_drift.claim.json")), "the journal is cleared");
   });
 });
+
+test("an unrecoverable journal blocks a new resolution instead of being overwritten", () => {
+  withTempProject((tmpDir) => {
+    seedHealthyDrift(tmpDir);
+    // spec.yaml unreadable: reconciliation cannot verify or repair the earlier claim,
+    // so its journal must survive and the new resolution must refuse.
+    fs.writeFileSync(path.join(tmpDir, ".tack", "spec.yaml"), "<<<<<<< broken:\n  - {", "utf-8");
+    const journalPath = path.join(tmpDir, ".tack", "_drift.claim.json");
+    const earlier = JSON.stringify({ itemId: "earlier-item", action: "accepted", system: "kafka" });
+    fs.writeFileSync(journalPath, earlier, "utf-8");
+
+    const outcome = resolveDriftItemWithSpec(ITEM, "accepted");
+
+    assert.strictEqual(outcome.persisted, false);
+    assert.strictEqual(outcome.error, "recovery_pending");
+    assert.strictEqual(fs.readFileSync(journalPath, "utf-8"), earlier, "the earlier record must survive");
+    assert.match(
+      fs.readFileSync(path.join(tmpDir, ".tack", "_drift.yaml"), "utf-8"),
+      /status: unresolved/,
+      "no new verdict may be claimed while recovery is pending"
+    );
+  });
+});

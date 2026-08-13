@@ -20,6 +20,12 @@ function failureMessageFor(outcome: DriftResolutionOutcome): string {
       (outcome.error === "spec_unreadable" ? "read" : "written") +
       "; nothing was changed. Fix spec.yaml, then retry.";
   }
+  if (outcome.error === "recovery_pending") {
+    return (
+      "NOT saved — an earlier resolution did not finish and could not be repaired " +
+      "(.tack/_drift.claim.json still present). Fix .tack/spec.yaml and rerun a scan, then retry."
+    );
+  }
   const driftProblem =
     outcome.error === "drift_write_failed"
       ? ".tack/_drift.yaml could not be written (disk, permissions, or a rejected symlink)"

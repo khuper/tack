@@ -324,6 +324,7 @@ export type DriftResolutionOutcome = {
     | "drift_unreadable"
     | "drift_write_failed"
     | "item_stale"
+    | "recovery_pending"
     | null;
 };
 
@@ -362,6 +363,15 @@ function resolveDriftItemWithSpecLocked(
   // racing process cannot write the opposite architecture rule after we have committed
   // ours. If the spec step then fails, the claim is rolled back to `unresolved` so the
   // item stays actionable and the two files never contradict each other.
+  // There is one journal slot, so an unfinished claim from an earlier transaction must
+  // be settled before this one can use it. Reconcile first; if the marker survives
+  // (its repair could not be completed), refuse rather than overwriting the only
+  // record that can recover that earlier item.
+  reconcileInterruptedClaim();
+  if (readDriftClaimJournal() !== null) {
+    return { persisted: false, specUpdated: false, error: "recovery_pending" };
+  }
+
   // Record the intent BEFORE the claim: if this process dies between persisting the
   // verdict and writing the spec rule, the next scan finds this marker and resets the
   // item so it alerts again instead of being suppressed with no rule to show for it.

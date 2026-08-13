@@ -1,7 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { findSymlinkComponentBeneath, writeFileAtomic } from "./files.js";
+import {
+  findSymlinkComponentBeneath,
+  withFileLock,
+  writeFileAtomic,
+  writeFileIfAbsent,
+} from "./files.js";
 
 const UTF8_BOM = "\ufeff";
 
@@ -1209,10 +1214,8 @@ export function applyMcpConfig(
   repoRoot: string,
   options: McpConfigOptions = {}
 ): McpConfigResult {
-  const definition = getMcpClientDefinition(client);
   const configPath = getMcpConfigPath(client, repoRoot);
   const configLabel = path.relative(repoRoot, configPath) || path.basename(configPath);
-  const exists = fs.existsSync(configPath);
 
   // MCP config files live at the repository root, outside the `.tack/` boundary that
   // lib/files.ts guards, so a checked-in `.mcp.json` or `.cursor/` symlink could pull
@@ -1237,6 +1240,55 @@ export function applyMcpConfig(
       detail: `${configLabel} may contain comments, so Tack will not rewrite it.`,
     };
   }
+
+  // A dry run only reads, so it needs no lock and must not create the parent directory.
+  if (options.dryRun === true) {
+    return mergeMcpConfigInPlace(client, configPath, configLabel, options);
+  }
+
+  // Serialize the whole read-merge-write against other Tack processes. The
+  // compare-and-swap below can only *detect* a concurrent change; holding a lock means
+  // two `tack setup-mcp` runs never reach that detection in the first place, so the
+  // second one merges against the first one's result instead of being told to rerun.
+  // (Editors and MCP clients take no such lock — that residual is handled by the CAS.)
+  try {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  } catch (error) {
+    return {
+      client,
+      configLabel,
+      status: "manual",
+      detail: `Could not create the directory for ${configLabel} (${describeFsError(error)}). Add the Tack server entry manually, then rerun.`,
+    };
+  }
+
+  try {
+    return withFileLock(`${configPath}.tack-lock`, configLabel, () =>
+      mergeMcpConfigInPlace(client, configPath, configLabel, options)
+    );
+  } catch (error) {
+    return {
+      client,
+      configLabel,
+      status: "manual",
+      detail: `Could not lock ${configLabel} (${describeFsError(error)}). Add the Tack server entry manually, then rerun.`,
+    };
+  }
+}
+
+/**
+ * Reads, merges and (unless this is a dry run) writes one client config. Callers hold the
+ * file lock; every failure downgrades to `manual` so one broken client never aborts a
+ * `--all` run.
+ */
+function mergeMcpConfigInPlace(
+  client: McpClientKey,
+  configPath: string,
+  configLabel: string,
+  options: McpConfigOptions
+): McpConfigResult {
+  const definition = getMcpClientDefinition(client);
+  const exists = fs.existsSync(configPath);
 
   // Filesystem failures (EISDIR, EACCES, EROFS, ...) downgrade to `manual` exactly like
   // parse failures: the caller still prints the pasteable snippet for this client, and
@@ -1285,13 +1337,25 @@ export function applyMcpConfig(
     return { client, configLabel, status: exists ? "updated" : "installed", detail: "dry run" };
   }
 
+  const content = `${hadBom ? UTF8_BOM : ""}${merged.content}`;
+
   try {
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    // Compare-and-swap on the bytes this merge was computed from: an atomic rename
-    // prevents a torn file, but not a LOST UPDATE if an editor, an MCP client, or a
-    // concurrent setup-mcp wrote the config after we read it. Re-read immediately
-    // before replacing and refuse when it no longer matches (including "was absent,
-    // now exists"), so the user's intervening change is never silently discarded.
+    if (rawContent === null) {
+      // Nothing was there when we read: publish with an atomic create-if-absent, which
+      // the kernel — not a prior check — fails if a file appeared meanwhile. No lock is
+      // required for this half, so even a foreign writer cannot be clobbered.
+      if (!writeFileIfAbsent(configPath, content)) {
+        return { client, configLabel, status: "manual", detail: concurrentChangeDetail(configLabel) };
+      }
+      return { client, configLabel, status: "installed" };
+    }
+
+    // Replacing an existing file has no conditional-rename primitive, so this stays a
+    // compare-and-swap on the bytes the merge was computed from: an atomic rename
+    // prevents a torn file, but not a LOST UPDATE if an editor or an MCP client wrote
+    // the config after we read it. Concurrent Tack processes are excluded by the lock
+    // the caller holds; for anyone else, re-read immediately before replacing and refuse
+    // on a mismatch, so an intervening change is reported rather than silently discarded.
     let unchanged: boolean;
     try {
       unchanged = isConfigUnchanged(configPath, rawContent);
@@ -1304,17 +1368,10 @@ export function applyMcpConfig(
       };
     }
     if (!unchanged) {
-      return {
-        client,
-        configLabel,
-        status: "manual",
-        detail:
-          `${configLabel} changed while Tack was merging it, so the merge was discarded rather than ` +
-          "overwriting that change. Rerun to merge against the current file.",
-      };
+      return { client, configLabel, status: "manual", detail: concurrentChangeDetail(configLabel) };
     }
     // Atomic so an interrupted write can never leave a pre-existing user config truncated.
-    writeFileAtomic(configPath, `${hadBom ? UTF8_BOM : ""}${merged.content}`);
+    writeFileAtomic(configPath, content);
   } catch (error) {
     return {
       client,
@@ -1325,6 +1382,13 @@ export function applyMcpConfig(
   }
 
   return { client, configLabel, status: exists ? "updated" : "installed" };
+}
+
+function concurrentChangeDetail(configLabel: string): string {
+  return (
+    `${configLabel} changed while Tack was merging it, so the merge was discarded rather than ` +
+    "overwriting that change. Rerun to merge against the current file."
+  );
 }
 
 function describeFsError(error: unknown): string {

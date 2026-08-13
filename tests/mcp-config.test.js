@@ -724,3 +724,71 @@ test("the config compare-and-swap detects any change made during the merge", () 
     assert.strictEqual(isConfigUnchanged(fresh, null), false);
   });
 });
+
+// --- concurrent writers: serialization plus an atomic create ---
+
+import { writeFileIfAbsent } from "../dist/lib/files.js";
+
+test("writeFileIfAbsent publishes atomically and never overwrites an existing file", () => {
+  withTempRepo((repoRoot) => {
+    const target = path.join(repoRoot, "config.json");
+
+    assert.strictEqual(writeFileIfAbsent(target, "first\n"), true);
+    assert.strictEqual(fs.readFileSync(target, "utf-8"), "first\n");
+
+    // The kernel — not a prior existence check — refuses the second publish, so a file
+    // that appeared after the merge was computed cannot be clobbered.
+    assert.strictEqual(writeFileIfAbsent(target, "second\n"), false);
+    assert.strictEqual(fs.readFileSync(target, "utf-8"), "first\n", "the first content survives");
+    assert.deepStrictEqual(
+      fs.readdirSync(repoRoot).filter((f) => f.endsWith(".tmp")),
+      [],
+      "no temp file may be left behind"
+    );
+  });
+});
+
+test("applyMcpConfig takes and releases a lock around the whole merge", () => {
+  withTempRepo((repoRoot) => {
+    const configPath = path.join(repoRoot, ".mcp.json");
+    const lockPath = `${configPath}.tack-lock`;
+
+    const result = applyMcpConfig("claude-code", repoRoot, POSIX);
+
+    assert.strictEqual(result.status, "installed");
+    assert.ok(!fs.existsSync(lockPath), "the lock must be released when the merge ends");
+    assert.ok(JSON.parse(fs.readFileSync(configPath, "utf-8")).mcpServers.tack);
+  });
+});
+
+test("applyMcpConfig degrades to manual while another Tack process holds the config lock", () => {
+  withTempRepo((repoRoot) => {
+    const configPath = path.join(repoRoot, ".mcp.json");
+    const lockPath = `${configPath}.tack-lock`;
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: process.pid, host: os.hostname(), token: "held-by-other" }),
+      "utf-8"
+    );
+
+    try {
+      const result = applyMcpConfig("claude-code", repoRoot, POSIX);
+
+      assert.strictEqual(result.status, "manual", "a held lock must not be bypassed");
+      assert.match(result.detail, /Could not lock/);
+      assert.ok(!fs.existsSync(configPath), "no write may land while another process holds the lock");
+    } finally {
+      fs.rmSync(lockPath, { force: true });
+    }
+  });
+});
+
+test("a dry run neither locks nor creates the config directory", () => {
+  withTempRepo((repoRoot) => {
+    const result = applyMcpConfig("cursor", repoRoot, { ...POSIX, dryRun: true });
+
+    assert.strictEqual(result.status, "installed");
+    assert.strictEqual(result.detail, "dry run");
+    assert.deepStrictEqual(fs.readdirSync(repoRoot), [], "a dry run leaves the repo untouched");
+  });
+});

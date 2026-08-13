@@ -941,3 +941,56 @@ test("recovery requires both halves of the spec change, not just the destination
     );
   });
 });
+
+// --- one .tack/ state file may never alias another ---
+
+import { writeDriftClaimJournal } from "../dist/lib/files.js";
+
+test("a state file symlinked onto another state file is refused, not written through", () => {
+  withTempProject((tmpDir) => {
+    const specFile = path.join(tmpDir, ".tack", "spec.yaml");
+    const original = "project: t\nallowed_systems: []\nforbidden_systems: []\nconstraints: {}\n";
+    fs.writeFileSync(specFile, original, "utf-8");
+
+    // A checked-in link that passes every containment check: it stays inside .tack/,
+    // yet writing the ephemeral claim journal would land on the durable spec.
+    fs.symlinkSync("spec.yaml", path.join(tmpDir, ".tack", "_drift.claim.json"));
+
+    assert.throws(
+      () => writeDriftClaimJournal({ itemId: "x", action: "accepted", system: "redis" }),
+      /Refusing to write|another file Tack manages/
+    );
+    assert.strictEqual(fs.readFileSync(specFile, "utf-8"), original, "spec.yaml must be untouched");
+  });
+});
+
+test("a resolution over an aliased claim journal fails cleanly and changes nothing", () => {
+  withTempProject((tmpDir) => {
+    seedHealthyDrift(tmpDir);
+    const specFile = path.join(tmpDir, ".tack", "spec.yaml");
+    const original = "project: t\nallowed_systems: []\nforbidden_systems: []\nconstraints: {}\n";
+    fs.writeFileSync(specFile, original, "utf-8");
+    fs.symlinkSync("spec.yaml", path.join(tmpDir, ".tack", "_drift.claim.json"));
+
+    const outcome = resolveDriftItemWithSpec(ITEM, "accepted");
+
+    assert.strictEqual(outcome.persisted, false);
+    assert.strictEqual(outcome.error, "drift_write_failed");
+    assert.strictEqual(fs.readFileSync(specFile, "utf-8"), original, "spec.yaml must be untouched");
+  });
+});
+
+test("a link to a file Tack does not manage still writes through", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack", "shared"), { recursive: true });
+    const realFile = path.join(tmpDir, ".tack", "shared", "claim.json");
+    fs.writeFileSync(realFile, "{}\n", "utf-8");
+    const linkPath = path.join(tmpDir, ".tack", "_drift.claim.json");
+    fs.symlinkSync(path.join("shared", "claim.json"), linkPath);
+
+    writeDriftClaimJournal({ itemId: "x", action: "accepted", system: "redis" });
+
+    assert.ok(fs.lstatSync(linkPath).isSymbolicLink(), "the link must survive the write");
+    assert.match(fs.readFileSync(realFile, "utf-8"), /"itemId":"x"/);
+  });
+});

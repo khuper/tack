@@ -400,6 +400,56 @@ function realPathForWrite(target: string): string {
   return remainder.length > 0 ? path.join(realExisting, remainder) : realExisting;
 }
 
+/**
+ * Every file Tack itself writes directly inside `.tack/`. A link that makes one of these
+ * names resolve onto ANOTHER of them is never a legitimate layout — it is an alias that
+ * turns a write to one state file into a write to a different one.
+ */
+const MANAGED_STATE_BASENAMES = new Set([
+  "spec.yaml",
+  "_audit.yaml",
+  "_drift.yaml",
+  "_drift.claim.json",
+  "_logs.ndjson",
+  "_notes.ndjson",
+  "_config.json",
+  "_stats.json",
+  "context.md",
+  "goals.md",
+  "assumptions.md",
+  "open_questions.md",
+  "decisions.md",
+  "implementation_status.md",
+  "context_index.md",
+  "verification.md",
+]);
+
+/**
+ * Rejects a write whose real destination is a *different* managed state file.
+ *
+ * Symlinks that stay inside the project are deliberately allowed (`.tack/spec.yaml ->
+ * .tack/shared/spec.yaml` is a supported shared-memory arrangement, and `writeFileAtomic`
+ * writes *through* such a link). That allowance is safe only while the link's destination
+ * is a file Tack does not otherwise manage. A checked-in `.tack/_drift.claim.json ->
+ * .tack/spec.yaml` passes every containment check yet makes the ephemeral claim journal
+ * overwrite the durable spec — so aliasing between managed names is refused outright,
+ * which ends the class rather than one instance of it.
+ */
+function assertNotManagedStateAlias(resolved: string, realTarget: string, realTackDir: string): void {
+  if (path.dirname(realTarget) !== realTackDir) return; // Not a managed slot at all.
+
+  const destination = path.basename(realTarget);
+  const requested = path.basename(resolved);
+  if (destination === requested) return; // The write lands where its name says.
+  if (!MANAGED_STATE_BASENAMES.has(destination)) return;
+
+  throw new Error(
+    `${WRITE_BLOCKED_PREFIX}: writing "${resolved}" would really write ".tack/${destination}", ` +
+      "another file Tack manages. A link between two .tack/ state files silently redirects one " +
+      `onto the other. Delete "${resolved}" and let Tack recreate a real file.`
+  );
+}
+
 function assertInsideTackDir(filepath: string): void {
   const resolved = path.resolve(filepath);
   const tackDir = getTackDir();
@@ -423,6 +473,8 @@ function assertInsideTackDir(filepath: string): void {
         "Inspect .tack/ for symlinks, remove them, and retry."
     );
   }
+
+  assertNotManagedStateAlias(resolved, realTarget, realTackDir);
 }
 
 /** True for errors raised by the `.tack/` write boundary rather than by the filesystem. */
@@ -529,6 +581,43 @@ export function writeFileAtomic(filepath: string, content: string): void {
       // Best-effort cleanup only.
     }
     throw err;
+  }
+}
+
+/**
+ * Creates `filepath` holding `content`, and returns false — writing nothing — when the
+ * path already exists.
+ *
+ * Unlike a read-then-write, this is a genuine atomic conditional: the content lands in a
+ * temp file first and `link(2)` publishes it under the real name, which the kernel fails
+ * with EEXIST if anything appeared there meanwhile. That closes the create half of a
+ * lost-update race even against writers that take no lock. Filesystems without hard
+ * links fall back to an exclusive create, which is still atomic on the name.
+ */
+export function writeFileIfAbsent(filepath: string, content: string): boolean {
+  const dir = path.dirname(filepath);
+  const suffix = `${process.pid}-${crypto.randomBytes(4).toString("hex")}`;
+  const tempPath = path.join(dir, `.${path.basename(filepath)}.${suffix}.tmp`);
+
+  try {
+    fs.writeFileSync(tempPath, content, "utf-8");
+    try {
+      fs.linkSync(tempPath, filepath);
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === "EEXIST") return false;
+      fs.writeFileSync(filepath, content, { encoding: "utf-8", flag: "wx" });
+      return true;
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "EEXIST") return false;
+    throw err;
+  } finally {
+    try {
+      fs.rmSync(tempPath, { force: true });
+    } catch {
+      // Best-effort cleanup; the temp file is never read back.
+    }
   }
 }
 
@@ -960,6 +1049,22 @@ export function withDriftLock<T>(fn: () => T): T {
 
   const lockPath = `${driftPath()}.lock`;
   assertInsideTackDir(lockPath);
+  driftLockDepth = 1;
+  try {
+    return withFileLock(lockPath, ".tack/ state", fn);
+  } finally {
+    driftLockDepth = 0;
+  }
+}
+
+/**
+ * Runs `fn` while holding an exclusive lock at `lockPath`, creating it with
+ * `O_CREAT|O_EXCL` (an atomic compare-and-set on the filesystem) and removing it
+ * afterwards. `guarded` names the resource in the timeout message.
+ *
+ * Not re-entrant: a caller that may nest must track that itself (see `withDriftLock`).
+ */
+export function withFileLock<T>(lockPath: string, guarded: string, fn: () => T): T {
   const deadline = Date.now() + DRIFT_LOCK_WAIT_MS;
   const token = crypto.randomBytes(12).toString("hex");
   const record: DriftLockRecord = { pid: process.pid, host: os.hostname(), token };
@@ -980,7 +1085,7 @@ export function withDriftLock<T>(fn: () => T): T {
         const owner = holder ? ` (held by pid ${holder.pid} on ${holder.host})` : "";
         throw new Error(
           `Timed out waiting for ${lockPath}${owner}. Another Tack process is updating ` +
-            ".tack/ state. Retry; if that process is gone (or ran on another machine), " +
+            `${guarded}. Retry; if that process is gone (or ran on another machine), ` +
             "delete the lock file to release it."
         );
       }
@@ -990,10 +1095,8 @@ export function withDriftLock<T>(fn: () => T): T {
 
   try {
     fs.writeSync(fd, JSON.stringify(record));
-    driftLockDepth = 1;
     return fn();
   } finally {
-    driftLockDepth = 0;
     try {
       fs.closeSync(fd);
     } catch {

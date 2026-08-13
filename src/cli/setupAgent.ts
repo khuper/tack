@@ -373,6 +373,19 @@ function detectDefaultClients(repoRoot: string, targetArg?: string, writtenTarge
   return clients;
 }
 
+/**
+ * Shown whenever the named target has no MCP config file Tack manages. Rerunning cannot
+ * change that, so this is guidance rather than a failure — but it is always printed, even
+ * when an unrelated detected client was updated in the same run.
+ */
+function unmanagedTargetMessage(targetArg: string): string {
+  return (
+    `Tack does not manage a project MCP config file for target "${targetArg}". ` +
+    "Point your client at the server manually (command: npx -y tack-cli mcp), " +
+    "or run `tack setup-mcp --client <name>` for a supported client."
+  );
+}
+
 function printMcpSummary(results: McpConfigResult[], options: McpConfigOptions): void {
   const sorted = [...results].sort((a, b) => a.configLabel.localeCompare(b.configLabel));
   console.log("");
@@ -464,14 +477,21 @@ export function runSetupAgent(args: SetupAgentArgs, version: string): number {
     if (args.mcp !== false) {
       const options: McpConfigOptions = { runner, platform };
       const clients = detectDefaultClients(repoRoot, targetArg, targets);
+      // The client the user actually named, if Tack manages a config file for it.
+      const requestedClient = targetArg
+        ? (resolveMcpClient(targetArg) ??
+          (resolvedTarget ? (CLIENT_BY_AGENT_TARGET[resolvedTarget] ?? null) : null))
+        : null;
+      // An explicit target Tack has no MCP config file for is reported on its own terms.
+      // Repo-wide detection can still turn up an unrelated client (a committed
+      // `.mcp.json` next to a `--target cline` run), and updating that file must not
+      // stand in for connecting the agent the user actually asked about.
+      const targetIsUnmanaged = targetArg !== undefined && requestedClient === null;
+
       if (clients.length === 0) {
         // Explicit target with no managed MCP config file and none detected in the repo.
         console.log("");
-        console.log(
-          `Tack does not manage a project MCP config file for target "${targetArg}". ` +
-            "Point your client at the server manually (command: npx -y tack-cli mcp), " +
-            "or run `tack setup-mcp --client <name>` for a supported client."
-        );
+        console.log(unmanagedTargetMessage(targetArg!));
       } else {
         const mcpResults = applyMcpClients(clients, repoRoot, options);
         printMcpSummary(mcpResults, options);
@@ -482,7 +502,6 @@ export function runSetupAgent(args: SetupAgentArgs, version: string): number {
         // to manual, the run failed for what the user asked for, even when another
         // detected client succeeded — the instructions we just wrote tell the agent it
         // has MCP access, so exiting 0 would make a bootstrap script believe it.
-        const requestedClient = targetArg ? resolveMcpClient(targetArg) : null;
         const requestedManual =
           requestedClient !== null &&
           mcpResults.some((result) => result.client === requestedClient && result.status === "manual");
@@ -496,6 +515,10 @@ export function runSetupAgent(args: SetupAgentArgs, version: string): number {
               "Paste the entry above, then rerun."
           );
           mcpAllManual = true;
+        }
+        if (targetIsUnmanaged) {
+          console.log("");
+          console.log(unmanagedTargetMessage(targetArg!));
         }
       }
     }

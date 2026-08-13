@@ -484,3 +484,20 @@ test("setup-agent fails when the explicitly targeted client's MCP config stays m
     assert.match(result.stdout, /could not be written automatically/);
   });
 });
+
+test("an unmanaged explicit target is reported even when another client is detected", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    // A committed .mcp.json makes repo-wide detection non-empty. Updating it must not
+    // stand in for connecting the agent the user actually named.
+    fs.writeFileSync(path.join(tmpDir, ".mcp.json"), "{}\n", "utf-8");
+
+    const result = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "cline" }, pkg.version));
+
+    assert.match(result.stdout, /does not manage a project MCP config file for target "cline"/);
+    assert.ok(
+      JSON.parse(fs.readFileSync(path.join(tmpDir, ".mcp.json"), "utf-8")).mcpServers.tack,
+      "the detected client is still kept current"
+    );
+  });
+});

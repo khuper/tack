@@ -994,3 +994,40 @@ test("a link to a file Tack does not manage still writes through", () => {
     assert.match(fs.readFileSync(realFile, "utf-8"), /"itemId":"x"/);
   });
 });
+
+test("eviction of a stale lock is serialized, so a replacement lock is never deleted", () => {
+  withTempProject((tmpDir) => {
+    const lockPath = path.join(tmpDir, ".tack", "_drift.yaml.lock");
+    seedHealthyDrift(tmpDir);
+
+    // A stale lock owned by a dead pid — evictable on its own terms.
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: 2147483646, host: os.hostname(), token: "dead-holder" }),
+      "utf-8"
+    );
+    const old = new Date(Date.now() - 120_000);
+    fs.utimesSync(lockPath, old, old);
+
+    // Another contender is inside the check-and-unlink. Standing in for it: whoever
+    // holds this marker is the only process allowed to break the lock, so this run must
+    // wait instead of unlinking a file the other contender may already have replaced.
+    fs.writeFileSync(`${lockPath}.evict`, "", "utf-8");
+    const blocked = resolveDriftItem("item-spec", "skipped");
+    assert.strictEqual(blocked.persisted, false, "eviction must not proceed concurrently");
+    assert.match(blocked.error ?? "", /Timed out waiting/);
+    assert.strictEqual(
+      JSON.parse(fs.readFileSync(lockPath, "utf-8")).token,
+      "dead-holder",
+      "the lock under eviction is left for its evictor to remove"
+    );
+
+    // With the other contender finished, the stale lock is broken as before.
+    fs.rmSync(`${lockPath}.evict`, { force: true });
+    fs.utimesSync(lockPath, old, old);
+    const acquired = resolveDriftItem("item-spec", "skipped");
+    assert.strictEqual(acquired.persisted, true, "a provably dead owner's lock is still broken");
+    assert.ok(!fs.existsSync(lockPath), "and released afterwards");
+    assert.ok(!fs.existsSync(`${lockPath}.evict`), "no eviction marker is left behind");
+  });
+});

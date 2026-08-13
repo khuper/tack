@@ -1007,6 +1007,51 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Breaks a stale lock, and returns whether it did.
+ *
+ * Checking evictability and unlinking are two operations, so on their own they race with
+ * each other: two contenders can both judge the same dead lock evictable, the first can
+ * unlink it and acquire a replacement, and the second — resuming from a pause — would
+ * then delete that live replacement and acquire a *second* lock on the same resource,
+ * running both "serialized" transactions at once.
+ *
+ * Eviction therefore happens under its own marker, created with `O_CREAT|O_EXCL` so only
+ * one contender is ever inside the check-and-unlink at a time, and the check is repeated
+ * there: by then the replacement lock is live and owned by a running process, so it is no
+ * longer evictable and survives. A contender that cannot take the marker simply waits.
+ * The marker is never itself force-broken — it is held for a few syscalls, and a leftover
+ * one degrades to the ordinary timeout, which names both files.
+ */
+function evictStaleLock(lockPath: string): boolean {
+  const evictPath = `${lockPath}.evict`;
+  let fd: number;
+  try {
+    fd = fs.openSync(evictPath, "wx");
+  } catch {
+    return false; // Another contender is evicting (or a marker was left behind): wait.
+  }
+
+  try {
+    if (!isEvictableLock(lockPath)) return false;
+    fs.rmSync(lockPath, { force: true });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      // Ignore close failures; removing the marker is what matters.
+    }
+    try {
+      fs.rmSync(evictPath, { force: true });
+    } catch {
+      // A leftover marker only costs the next contender its eviction attempt.
+    }
+  }
+}
+
 /** True when the lock may be broken: old enough AND its owner is provably gone. */
 function isEvictableLock(lockPath: string): boolean {
   let ageMs: number;
@@ -1076,8 +1121,9 @@ export function withFileLock<T>(lockPath: string, guarded: string, fn: () => T):
       break;
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") throw err;
-      if (isEvictableLock(lockPath)) {
-        fs.rmSync(lockPath, { force: true });
+      // The fast path avoids creating an eviction marker on every poll; the decision
+      // that actually breaks the lock is re-taken inside evictStaleLock().
+      if (isEvictableLock(lockPath) && evictStaleLock(lockPath)) {
         continue;
       }
       if (Date.now() >= deadline) {
@@ -1086,7 +1132,7 @@ export function withFileLock<T>(lockPath: string, guarded: string, fn: () => T):
         throw new Error(
           `Timed out waiting for ${lockPath}${owner}. Another Tack process is updating ` +
             `${guarded}. Retry; if that process is gone (or ran on another machine), ` +
-            "delete the lock file to release it."
+            `delete the lock file (and any ${path.basename(lockPath)}.evict marker) to release it.`
         );
       }
       sleepSyncMs(DRIFT_LOCK_POLL_MS);

@@ -1090,12 +1090,18 @@ function isEvictableLock(lockPath: string): boolean {
   }
 
   const record = readLockRecord(lockPath);
-  // Only a lock this host can prove is dead may be broken automatically. A lock owned
-  // by another host (a shared filesystem), or one whose owner cannot be identified, is
-  // NEVER auto-evicted: liveness is unknowable there, and a merely slow holder would be
-  // evicted into a concurrent-write corruption. This mirrors git's index.lock, which
-  // also never breaks itself — the operator is told exactly which file to remove.
-  if (!record || record.host !== os.hostname()) return false;
+  // A lock this code publishes always arrives with its owner record already inside it
+  // (see publishLock), so one with no readable record never belonged to a live holder:
+  // it is debris — a kill during the link-less fallback create, a truncated file, or a
+  // hand-made placeholder. Refusing to break it forever would wedge every later run
+  // behind a lock nobody holds, so it is recoverable once past the stale window.
+  if (!record) return ageMs > DRIFT_LOCK_STALE_MS;
+  // Otherwise only a lock this host can prove is dead may be broken automatically. A
+  // lock owned by another host (a shared filesystem) is NEVER auto-evicted: liveness is
+  // unknowable there, and a merely slow holder would be evicted into a concurrent-write
+  // corruption. This mirrors git's index.lock, which also never breaks itself — the
+  // operator is told exactly which file to remove.
+  if (record.host !== os.hostname()) return false;
   return ageMs > DRIFT_LOCK_STALE_MS && !isProcessAlive(record.pid);
 }
 
@@ -1131,9 +1137,22 @@ export function withDriftLock<T>(fn: () => T): T {
 }
 
 /**
- * Runs `fn` while holding an exclusive lock at `lockPath`, creating it with
- * `O_CREAT|O_EXCL` (an atomic compare-and-set on the filesystem) and removing it
- * afterwards. `guarded` names the resource in the timeout message.
+ * Claims `lockPath` for `record`, and reports whether the claim succeeded.
+ *
+ * The name and the owner record are published together: the record is written to a temp
+ * file first and `link(2)` puts it under the lock name, which the kernel fails with
+ * EEXIST if the lock already exists. Creating the file and then filling it would leave a
+ * window where a kill produces an ownerless lock — one no future run could attribute,
+ * evict, or release, wedging every later scan behind a lock nobody holds.
+ */
+function publishLock(lockPath: string, record: DriftLockRecord): boolean {
+  return writeFileIfAbsent(lockPath, JSON.stringify(record));
+}
+
+/**
+ * Runs `fn` while holding an exclusive lock at `lockPath`, publishing it atomically with
+ * its owner record and removing it afterwards. `guarded` names the resource in the
+ * timeout message.
  *
  * Not re-entrant: a caller that may nest must track that itself (see `withDriftLock`).
  */
@@ -1141,41 +1160,28 @@ export function withFileLock<T>(lockPath: string, guarded: string, fn: () => T):
   const deadline = Date.now() + DRIFT_LOCK_WAIT_MS;
   const token = crypto.randomBytes(12).toString("hex");
   const record: DriftLockRecord = { pid: process.pid, host: os.hostname(), token };
-  let fd: number | null = null;
 
-  for (;;) {
-    try {
-      fd = fs.openSync(lockPath, "wx");
-      break;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") throw err;
-      // The fast path avoids creating an eviction marker on every poll; the decision
-      // that actually breaks the lock is re-taken inside evictStaleLock().
-      if (isEvictableLock(lockPath) && evictStaleLock(lockPath)) {
-        continue;
-      }
-      if (Date.now() >= deadline) {
-        const holder = readLockRecord(lockPath);
-        const owner = holder ? ` (held by pid ${holder.pid} on ${holder.host})` : "";
-        throw new Error(
-          `Timed out waiting for ${lockPath}${owner}. Another Tack process is updating ` +
-            `${guarded}. Retry; if that process is gone (or ran on another machine), ` +
-            `delete the lock file (and any ${path.basename(lockPath)}.evict marker) to release it.`
-        );
-      }
-      sleepSyncMs(DRIFT_LOCK_POLL_MS);
+  while (!publishLock(lockPath, record)) {
+    // The fast path avoids creating an eviction marker on every poll; the decision
+    // that actually breaks the lock is re-taken inside evictStaleLock().
+    if (isEvictableLock(lockPath) && evictStaleLock(lockPath)) {
+      continue;
     }
+    if (Date.now() >= deadline) {
+      const holder = readLockRecord(lockPath);
+      const owner = holder ? ` (held by pid ${holder.pid} on ${holder.host})` : "";
+      throw new Error(
+        `Timed out waiting for ${lockPath}${owner}. Another Tack process is updating ` +
+          `${guarded}. Retry; if that process is gone (or ran on another machine), ` +
+          `delete the lock file (and any ${path.basename(lockPath)}.evict marker) to release it.`
+      );
+    }
+    sleepSyncMs(DRIFT_LOCK_POLL_MS);
   }
 
   try {
-    fs.writeSync(fd, JSON.stringify(record));
     return fn();
   } finally {
-    try {
-      fs.closeSync(fd);
-    } catch {
-      // Ignore close failures; the release below is what matters.
-    }
     // Release only if we still own it: a holder that was evicted (or whose lock was
     // deleted by hand) must never unlink a successor's lock.
     try {

@@ -1068,3 +1068,48 @@ test("writeQuarantineCopy writes the captured buffer and never clobbers an exist
     assert.strictEqual(fs.readFileSync(target, "utf-8"), "corrupt snapshot\n");
   });
 });
+
+// --- a lock is published together with its owner record ---
+
+import { withFileLock } from "../dist/lib/files.js";
+
+test("the lock file already contains its owner record while it is held", () => {
+  withTempProject((tmpDir) => {
+    const lockPath = path.join(tmpDir, ".tack", "probe.lock");
+
+    const seen = withFileLock(lockPath, "a test resource", () =>
+      JSON.parse(fs.readFileSync(lockPath, "utf-8"))
+    );
+
+    // Published by link(2) with the record already inside, so no window exists in which
+    // a kill could leave an ownerless lock behind.
+    assert.strictEqual(seen.pid, process.pid);
+    assert.strictEqual(seen.host, os.hostname());
+    assert.strictEqual(typeof seen.token, "string");
+    assert.ok(!fs.existsSync(lockPath), "and it is released afterwards");
+    assert.deepStrictEqual(
+      fs.readdirSync(path.join(tmpDir, ".tack")).filter((f) => f.endsWith(".tmp")),
+      [],
+      "no temp file may be left behind"
+    );
+  });
+});
+
+test("an ownerless lock left by a kill is recovered instead of wedging every later run", () => {
+  withTempProject((tmpDir) => {
+    const lockPath = path.join(tmpDir, ".tack", "_drift.yaml.lock");
+    seedHealthyDrift(tmpDir);
+
+    // The debris an interrupted create leaves behind: a lock with no owner record. It
+    // can be attributed to nobody, so before this it was never evicted and never
+    // released — every later scan and resolution timed out until a human deleted it.
+    fs.writeFileSync(lockPath, "", "utf-8");
+    const old = new Date(Date.now() - 120_000);
+    fs.utimesSync(lockPath, old, old);
+
+    const result = resolveDriftItem("item-spec", "skipped");
+
+    assert.strictEqual(result.persisted, true, "an ownerless stale lock must be recoverable");
+    assert.ok(!fs.existsSync(lockPath), "and is not left behind");
+  });
+});

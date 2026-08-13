@@ -895,3 +895,49 @@ test("an unrecoverable journal blocks a new resolution instead of being overwrit
     );
   });
 });
+
+test("recovery requires both halves of the spec change, not just the destination entry", () => {
+  withTempProject((tmpDir) => {
+    // A hand-edited spec listing redis on BOTH sides: the destination entry alone must
+    // not be read as proof that the interrupted transaction completed.
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "spec.yaml"),
+      "project: t\nallowed_systems:\n  - redis\nforbidden_systems:\n  - redis\nconstraints: {}\n",
+      "utf-8"
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "_drift.yaml"),
+      [
+        "schema_version: 2",
+        "items:",
+        "  - id: half-applied",
+        "    type: undeclared_system",
+        "    system: redis",
+        "    signal: 'redis: src/cache.ts'",
+        "    detected: '2026-01-01T00:00:00Z'",
+        "    status: accepted",
+        "    note: Accepted via tack watch",
+        "",
+      ].join("\n"),
+      "utf-8"
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "_drift.claim.json"),
+      JSON.stringify({ itemId: "half-applied", action: "accepted", system: "redis" }),
+      "utf-8"
+    );
+
+    const { state } = computeDrift({
+      aligned: [],
+      violations: [],
+      risks: [],
+      undeclared: [{ id: "redis", source: "src/cache.ts", detail: "redis", category: "system", confidence: 1 }],
+    });
+
+    assert.strictEqual(
+      state.items.find((i) => i.id === "half-applied").status,
+      "unresolved",
+      "an incomplete spec change must reopen the item"
+    );
+  });
+});

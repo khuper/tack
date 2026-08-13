@@ -68,10 +68,14 @@ function reconcileInterruptedClaim(): void {
   // must be kept.
   const spec = readSpec();
   if (!spec) return; // Cannot verify; leave the journal for a later scan.
+  // A completed transaction does BOTH halves: it adds the system to the destination
+  // list and removes it from the opposite one. Checking only the destination would let
+  // a hand-edited spec that already listed the system on both sides look "complete",
+  // leaving the contradictory entry in place forever.
   const ruleLanded =
     journal.action === "accepted"
-      ? spec.allowed_systems.includes(journal.system)
-      : spec.forbidden_systems.includes(journal.system);
+      ? spec.allowed_systems.includes(journal.system) && !spec.forbidden_systems.includes(journal.system)
+      : spec.forbidden_systems.includes(journal.system) && !spec.allowed_systems.includes(journal.system);
   if (ruleLanded) {
     clearDriftClaimJournal();
     return;

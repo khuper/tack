@@ -11,6 +11,7 @@ import {
   getAvailableMcpClients,
   getMcpConfigPath,
   getMcpContainerKey,
+  isConfigUnchanged,
   isMcpParseError,
   mergeJsonMcpConfig,
   mergeTomlMcpConfig,
@@ -700,4 +701,26 @@ test("TOML nested array-of-tables scopes resolve recursively", () => {
 test("a conformant TOML parser gates every merge (implicit-parent redefinition and beyond)", () => {
   const error = captureManualError(() => mergeToml("[profiles.settings]\nx = 1\n[[profiles]]\ny = 2\n"));
   assert.ok(isMcpParseError(error), "implicit parent tables cannot be redefined as arrays");
+});
+
+test("the config compare-and-swap detects any change made during the merge", () => {
+  withTempRepo((repoRoot) => {
+    const configPath = path.join(repoRoot, ".mcp.json");
+    const original = '{\n  "mcpServers": {}\n}\n';
+    fs.writeFileSync(configPath, original, "utf-8");
+
+    // Unchanged since the merge input was captured: safe to replace.
+    assert.strictEqual(isConfigUnchanged(configPath, original), true);
+
+    // A concurrent editor/client/setup-mcp write must block the replace.
+    fs.writeFileSync(configPath, '{\n  "mcpServers": {"other": {}}\n}\n', "utf-8");
+    assert.strictEqual(isConfigUnchanged(configPath, original), false);
+
+    // "Was absent, now exists" is a change too: a newly created config is never
+    // replaced wholesale by a merge computed against nothing.
+    const fresh = path.join(repoRoot, ".cursor-mcp.json");
+    assert.strictEqual(isConfigUnchanged(fresh, null), true);
+    fs.writeFileSync(fresh, "{}\n", "utf-8");
+    assert.strictEqual(isConfigUnchanged(fresh, null), false);
+  });
 });

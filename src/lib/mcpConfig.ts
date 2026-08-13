@@ -1194,6 +1194,16 @@ export function renderMcpEntrySnippet(client: McpClientKey, options: McpConfigOp
     .join("\n");
 }
 
+/**
+ * True when the config file still holds exactly the bytes (or the absence) the merge
+ * was computed from. Exported so the compare-and-swap that guards `applyMcpConfig`
+ * against lost updates is directly testable.
+ */
+export function isConfigUnchanged(configPath: string, expected: string | null): boolean {
+  const current = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf-8") : null;
+  return current === expected;
+}
+
 export function applyMcpConfig(
   client: McpClientKey,
   repoRoot: string,
@@ -1277,6 +1287,32 @@ export function applyMcpConfig(
 
   try {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    // Compare-and-swap on the bytes this merge was computed from: an atomic rename
+    // prevents a torn file, but not a LOST UPDATE if an editor, an MCP client, or a
+    // concurrent setup-mcp wrote the config after we read it. Re-read immediately
+    // before replacing and refuse when it no longer matches (including "was absent,
+    // now exists"), so the user's intervening change is never silently discarded.
+    let unchanged: boolean;
+    try {
+      unchanged = isConfigUnchanged(configPath, rawContent);
+    } catch (error) {
+      return {
+        client,
+        configLabel,
+        status: "manual",
+        detail: `Could not re-read ${configLabel} before writing (${describeFsError(error)}). Add the Tack server entry manually, then rerun.`,
+      };
+    }
+    if (!unchanged) {
+      return {
+        client,
+        configLabel,
+        status: "manual",
+        detail:
+          `${configLabel} changed while Tack was merging it, so the merge was discarded rather than ` +
+          "overwriting that change. Rerun to merge against the current file.",
+      };
+    }
     // Atomic so an interrupted write can never leave a pre-existing user config truncated.
     writeFileAtomic(configPath, `${hadBom ? UTF8_BOM : ""}${merged.content}`);
   } catch (error) {

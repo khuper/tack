@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { getChangedFiles, readFileAtRef } from "../dist/lib/git.js";
+import { changeScanIncomplete, filterChangedPaths, getChangedFiles, readFileAtRef } from "../dist/lib/git.js";
 
 function git(tmpDir, ...args) {
   return execFileSync("git", args, {
@@ -116,29 +116,38 @@ test("getChangedFiles decodes quoted paths when diffing against a base ref", () 
 test("getChangedFiles reports every path when the listing exceeds 1MB", () => {
   const originalCwd = process.cwd();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tack-git-bigdiff-"));
-  // Long paths rather than many files: the 1MB budget is about total bytes, and writing
-  // a few thousand files is what makes this test slow.
-  const dir = `${"n".repeat(200)}/${"e".repeat(200)}`;
   const stem = "d".repeat(180);
 
   try {
     git(tmpDir, "init");
     git(tmpDir, "config", "user.email", "test@example.com");
     git(tmpDir, "config", "user.name", "Tack Test");
-    fs.mkdirSync(path.join(tmpDir, dir), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "seed.txt"), "seed\n", "utf-8");
+    git(tmpDir, "add", "-A");
+    git(tmpDir, "commit", "-m", "first");
 
+    // Staged straight into the index rather than written to disk: the bug is about how
+    // much output git produces, and thousands of real files would only make the test slow.
+    const blob = git(tmpDir, "hash-object", "-w", "--stdin").trim();
+    const entries = [];
     let pathBytes = 0;
-    let expected = 0;
     while (pathBytes <= 1024 * 1024) {
-      const name = `${dir}/${stem}-${expected}.ts`;
-      fs.writeFileSync(path.join(tmpDir, name), "x", "utf-8");
+      const name = `${stem}-${entries.length}.ts`;
+      entries.push(`100644 ${blob}\t${name}`);
       pathBytes += name.length + 1;
-      expected += 1;
     }
     assert.ok(pathBytes > 1024 * 1024, "test must actually cross the 1MB default");
+    execFileSync("git", ["update-index", "--add", "--index-info"], {
+      cwd: tmpDir,
+      input: `${entries.join("\n")}\n`,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
 
     process.chdir(tmpDir);
-    assert.strictEqual(getChangedFiles().length, expected);
+    // seed.txt is committed and unmodified, so only the staged entries are changed.
+    assert.strictEqual(getChangedFiles().length, entries.length);
+    assert.strictEqual(changeScanIncomplete(), false, "the listing fit, so the scan was complete");
   } finally {
     process.chdir(originalCwd);
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -163,7 +172,86 @@ test("readFileAtRef returns tracked files larger than 1MB", () => {
     process.chdir(tmpDir);
     const read = readFileAtRef("HEAD", ".tack/decisions.md");
     assert.ok(read !== null, "a >1MB tracked file must not read back as missing");
-    assert.strictEqual(read, body.trim());
+    assert.strictEqual(read, body, "content must come back byte-for-byte, trailing newline included");
+  } finally {
+    process.chdir(originalCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("changeScanIncomplete distinguishes a truncated listing from a quiet repo", () => {
+  const originalCwd = process.cwd();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tack-git-incomplete-"));
+
+  try {
+    git(tmpDir, "init");
+    git(tmpDir, "config", "user.email", "test@example.com");
+    git(tmpDir, "config", "user.name", "Tack Test");
+    fs.writeFileSync(path.join(tmpDir, "seed.txt"), "seed\n", "utf-8");
+    git(tmpDir, "add", "-A");
+    git(tmpDir, "commit", "-m", "first");
+
+    process.chdir(tmpDir);
+    assert.deepStrictEqual(getChangedFiles(), []);
+    assert.strictEqual(changeScanIncomplete(), false, "a genuinely clean repo is not incomplete");
+
+    // A scan that succeeds after one that did not must clear the flag, or watch would
+    // stay stuck reporting a partial worktree forever.
+    fs.writeFileSync(path.join(tmpDir, "seed.txt"), "changed\n", "utf-8");
+    assert.deepStrictEqual(getChangedFiles(), ["seed.txt"]);
+    assert.strictEqual(changeScanIncomplete(), false);
+  } finally {
+    process.chdir(originalCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("readFileAtRef preserves exact bytes and distinguishes empty from missing", () => {
+  const originalCwd = process.cwd();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tack-git-exactbytes-"));
+  const padded = "\n\nkeep the blank lines\n\n";
+
+  try {
+    git(tmpDir, "init");
+    git(tmpDir, "config", "user.email", "test@example.com");
+    git(tmpDir, "config", "user.name", "Tack Test");
+
+    fs.writeFileSync(path.join(tmpDir, "padded.md"), padded, "utf-8");
+    fs.writeFileSync(path.join(tmpDir, "empty.md"), "", "utf-8");
+    git(tmpDir, "add", "-A");
+    git(tmpDir, "commit", "-m", "first");
+
+    process.chdir(tmpDir);
+    assert.strictEqual(readFileAtRef("HEAD", "padded.md"), padded);
+    assert.strictEqual(readFileAtRef("HEAD", "empty.md"), "", "an empty tracked file is not missing");
+    assert.strictEqual(readFileAtRef("HEAD", "absent.md"), null, "an absent path is missing");
+  } finally {
+    process.chdir(originalCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("filterChangedPaths keeps significant whitespace but drops split artifacts", () => {
+  const originalCwd = process.cwd();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tack-git-whitespace-"));
+
+  try {
+    process.chdir(tmpDir);
+    const filtered = filterChangedPaths([
+      "trailing space .ts",
+      " leading-space.ts",
+      "crlf-artifact.ts\r",
+      "",
+      "   ",
+      "plain.ts",
+      "plain.ts",
+    ]);
+    assert.deepStrictEqual(filtered, [
+      "trailing space .ts",
+      " leading-space.ts",
+      "crlf-artifact.ts",
+      "plain.ts",
+    ]);
   } finally {
     process.chdir(originalCwd);
     fs.rmSync(tmpDir, { recursive: true, force: true });

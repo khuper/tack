@@ -16,6 +16,21 @@ const GIT_TIMEOUT_MS = 10_000;
 const GIT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 
 let warnedGitOutputDiscarded = false;
+/** Set by any ENOBUFS inside the current `getChangedFiles` call. */
+let sawDiscardedOutput = false;
+let lastChangeScanIncomplete = false;
+
+/**
+ * True when the most recent `getChangedFiles` call had output discarded, so its result is
+ * a subset of the real answer rather than the whole of it.
+ *
+ * A short list and a truncated list are the same value to a caller, so watch would show a
+ * quiet repo either way. Callers that report on the repo's state are expected to consult
+ * this and say the scan is partial instead of implying it was clean.
+ */
+export function changeScanIncomplete(): boolean {
+  return lastChangeScanIncomplete;
+}
 
 /**
  * ENOBUFS means git answered and we threw the answer away; every other error means git
@@ -25,6 +40,7 @@ let warnedGitOutputDiscarded = false;
  */
 function reportDiscardedOutput(args: string[], err: unknown): void {
   if ((err as NodeJS.ErrnoException | undefined)?.code !== "ENOBUFS") return;
+  sawDiscardedOutput = true;
   if (warnedGitOutputDiscarded) return;
   warnedGitOutputDiscarded = true;
   // eslint-disable-next-line no-console
@@ -114,8 +130,12 @@ export function getMergeBase(refA: string, refB = "HEAD"): string | null {
 
 export function readFileAtRef(ref: string, filepath: string): string | null {
   const normalizedPath = filepath.replace(/\\/g, "/");
-  const result = gitExec(["show", `${ref}:${normalizedPath}`]);
-  return result.ok && result.value ? result.value : null;
+  // Untrimmed: this is file content, not a scalar. Trimming it silently rewrites the blob
+  // the caller asked for, which matters for any consumer that compares bytes or cares
+  // about a trailing newline. `null` still means "not present at this ref"; an empty file
+  // reads back as "".
+  const result = gitExec(["show", `${ref}:${normalizedPath}`], false);
+  return result.ok ? result.value : null;
 }
 
 function dedupeAndFilter(lines: string[]): string[] {
@@ -123,9 +143,13 @@ function dedupeAndFilter(lines: string[]): string[] {
   const root = projectRoot();
 
   return lines
-    .map((line) => line.trim())
+    // Paths arrive verbatim from `-z`, so a leading or trailing space is part of the
+    // filename and must survive. Only a trailing CR is stripped: that is the artifact of
+    // a caller splitting CRLF output on "\n" before handing the lines to
+    // `filterChangedPaths`, and no path listing produces one otherwise.
+    .map((line) => line.replace(/\r$/, ""))
     .filter((line) => {
-      if (!line) return false;
+      if (!line.trim()) return false;
       if (line.startsWith(".tack/") || line.startsWith(".tack\\")) return false;
       if (seen.has(line)) return false;
 
@@ -148,6 +172,15 @@ export function filterChangedPaths(lines: string[]): string[] {
 }
 
 export function getChangedFiles(base?: string): string[] {
+  sawDiscardedOutput = false;
+  try {
+    return collectChangedFiles(base);
+  } finally {
+    lastChangeScanIncomplete = sawDiscardedOutput;
+  }
+}
+
+function collectChangedFiles(base?: string): string[] {
   if (!isGitRepo()) return [];
 
   if (!hasCommits()) return dedupeAndFilter(worktreePaths());

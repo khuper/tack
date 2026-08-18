@@ -9,7 +9,7 @@ import {
   type McpActivityNotice,
   type McpSessionState,
 } from "./logger.js";
-import { getChangedFiles } from "./git.js";
+import { changeScanIncomplete, getChangedFiles } from "./git.js";
 import {
   attachMcpLogWatcher,
   createMcpLogsWatcher,
@@ -36,6 +36,7 @@ type WatchControllerOptions = {
   createMcpActivityMonitor?: () => () => McpActivityNotice[];
   createRepoWatcher?: () => WatchLike;
   getChangedFiles?: () => string[];
+  isChangeScanIncomplete?: () => boolean;
   getRecentMcpSessionStates?: () => McpSessionState[];
   onActivityNotice?: (notice: McpActivityNotice, sessionStates: McpSessionState[]) => void;
   onError?: (message: string) => void;
@@ -65,6 +66,10 @@ function toSessionSnapshot(states: McpSessionState[]): McpSessionState[] {
   return [...states];
 }
 
+export const INCOMPLETE_CHANGE_SCAN_WARNING =
+  "change detection is incomplete: git produced more output than Tack can read, so this scan " +
+  "covers only part of the worktree";
+
 export function formatRepoWriteBackWarning(states: McpSessionState[]): string | null {
   const awaiting = states.filter((state) => state.disconnectedAt == null && state.awaitingWriteBack && state.repoChangedAfterRead);
   if (awaiting.length === 0) {
@@ -85,6 +90,7 @@ export function createWatchController(options: WatchControllerOptions = {}): Wat
     createMcpActivityMonitor: createMcpActivityMonitorOption = createMcpActivityMonitor,
     createRepoWatcher: createRepoWatcherOption = createRepoWatcher,
     getChangedFiles: getChangedFilesOption = getChangedFiles,
+    isChangeScanIncomplete: isChangeScanIncompleteOption = changeScanIncomplete,
     getRecentMcpSessionStates: getRecentMcpSessionStatesOption = getRecentMcpSessionStates,
     onActivityNotice,
     onError,
@@ -130,6 +136,7 @@ export function createWatchController(options: WatchControllerOptions = {}): Wat
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let inactivityTimer: ReturnType<typeof setInterval> | null = null;
   let missingWriteBackWarningActive = false;
+  let incompleteScanWarningActive = false;
   let started = false;
   let stopPromise: Promise<void> | null = null;
   let resolveStopped: (() => void) | null = null;
@@ -179,6 +186,18 @@ export function createWatchController(options: WatchControllerOptions = {}): Wat
       const changedFiles = getChangedFilesOption();
       if (changedFiles.length > 0) {
         updateSessionStates(markMcpSessionsRepoChanged(sessionStates));
+      }
+
+      // A truncated listing looks exactly like a quiet repo from here, so say so rather
+      // than letting the scan below imply the worktree was fully examined. Latched like
+      // the write-back warning: announced on the way into the state, not once per scan.
+      if (isChangeScanIncompleteOption()) {
+        if (!incompleteScanWarningActive) {
+          onRepoWarning?.(INCOMPLETE_CHANGE_SCAN_WARNING, toSessionSnapshot(sessionStates));
+        }
+        incompleteScanWarningActive = true;
+      } else {
+        incompleteScanWarningActive = false;
       }
 
       const repoWarning = formatRepoWriteBackWarning(sessionStates);

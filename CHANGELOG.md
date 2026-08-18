@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Stopped change detection from reporting a partial result as a clean one: `tack watch` now says so when a listing is too large to read instead of showing a quiet repo, `readFileAtRef` returns tracked files byte-for-byte rather than trimmed (an empty file no longer reads as missing), and changed paths keep leading and trailing spaces that are part of the filename.
 - Fixed silent change-detection failure on busy repos: Node caps `execFileSync` output at 1MB and throws ENOBUFS past it, which the git helper swallowed as "no output", so a worktree with more than a few thousand pending paths reported zero changed files and any tracked file over 1MB read back as missing at a ref. The budget is now 64MB, and an over-budget listing warns once instead of passing off an incomplete scan as a clean one.
 - Fixed changed-file detection for non-ASCII paths: git's default `core.quotePath` returned `café.ts` as the literal `"caf\303\251.ts"`, so the file that actually changed dropped out of drift detection, handoff `related files`, and status while an unresolvable path was reported in its place. All path listings now use `-z` and split on NUL, which also disambiguates paths containing a newline.
 - Hardened the `.tack/` write boundary: the `.tack/` and `.tack/handoffs/` roots must now be real directories (a checked-in `.tack -> .git` symlink can no longer redirect writes), NDJSON rotation refuses any symlink, and all state files are written atomically (temp file + rename) so a crash or concurrent reader never sees a torn file.

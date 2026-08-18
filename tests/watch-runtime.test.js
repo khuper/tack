@@ -6,7 +6,7 @@ import {
   getWatchScanSummary,
   shouldIgnoreRepoWatchPath,
 } from "../dist/lib/watch.js";
-import { formatRepoWriteBackWarning } from "../dist/lib/watchController.js";
+import { formatRepoWriteBackWarning, INCOMPLETE_CHANGE_SCAN_WARNING } from "../dist/lib/watchController.js";
 import { createWatchController } from "../dist/lib/watchController.js";
 
 class FakeWatcher extends EventEmitter {
@@ -402,4 +402,57 @@ test("shared watch controller keeps hydrated session state and labels same-agent
   assert.deepStrictEqual(sessionSnapshots.at(-1), ["codex:session-b", "codex:session-a"]);
 
   await controller.stop();
+});
+
+test("watch controller announces an incomplete change scan once, and re-announces after it recovers", () => {
+  const repoWatcher = new FakeWatcher();
+  const logsWatcher = new FakeWatcher();
+  let debounceFn = null;
+  const repoWarnings = [];
+  let incomplete = true;
+
+  const controller = createWatchController({
+    createLogsWatcher: () => logsWatcher,
+    createMcpActivityMonitor: () => () => [],
+    createRepoWatcher: () => repoWatcher,
+    // A truncated listing is indistinguishable from a quiet repo by its value alone,
+    // which is exactly why the flag has to be consulted separately.
+    getChangedFiles: () => [],
+    isChangeScanIncomplete: () => incomplete,
+    getRecentMcpSessionStates: () => [],
+    onRepoWarning: (warning) => {
+      repoWarnings.push(warning);
+    },
+    setIntervalFn: () => 1,
+    clearIntervalFn: () => {},
+    setTimeoutFn: (fn) => {
+      debounceFn = fn;
+      return 1;
+    },
+    clearTimeoutFn: () => {},
+  });
+
+  controller.start();
+
+  const scan = () => {
+    repoWatcher.emit("all", "change", "src/index.ts");
+    assert.ok(debounceFn);
+    debounceFn();
+  };
+
+  scan();
+  assert.deepStrictEqual(repoWarnings, [INCOMPLETE_CHANGE_SCAN_WARNING]);
+
+  // Latched: still incomplete, but the operator was already told.
+  scan();
+  assert.strictEqual(repoWarnings.length, 1, "the warning must not repeat every scan");
+
+  incomplete = false;
+  scan();
+  assert.strictEqual(repoWarnings.length, 1);
+
+  // Recovered and regressed: the operator needs to hear about the new occurrence.
+  incomplete = true;
+  scan();
+  assert.deepStrictEqual(repoWarnings, [INCOMPLETE_CHANGE_SCAN_WARNING, INCOMPLETE_CHANGE_SCAN_WARNING]);
 });

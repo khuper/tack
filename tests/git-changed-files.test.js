@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { getChangedFiles } from "../dist/lib/git.js";
+import { getChangedFiles, readFileAtRef } from "../dist/lib/git.js";
 
 function git(tmpDir, ...args) {
   return execFileSync("git", args, {
@@ -104,6 +104,66 @@ test("getChangedFiles decodes quoted paths when diffing against a base ref", () 
 
     process.chdir(tmpDir);
     assert.deepStrictEqual(getChangedFiles(base), [accented]);
+  } finally {
+    process.chdir(originalCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// Node caps execFileSync output at 1MB by default, which is only a few thousand paths.
+// Past that git succeeds and Node throws ENOBUFS, so an over-budget listing used to be
+// indistinguishable from an empty one: the busiest repos reported no changes at all.
+test("getChangedFiles reports every path when the listing exceeds 1MB", () => {
+  const originalCwd = process.cwd();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tack-git-bigdiff-"));
+  // Long paths rather than many files: the 1MB budget is about total bytes, and writing
+  // a few thousand files is what makes this test slow.
+  const dir = `${"n".repeat(200)}/${"e".repeat(200)}`;
+  const stem = "d".repeat(180);
+
+  try {
+    git(tmpDir, "init");
+    git(tmpDir, "config", "user.email", "test@example.com");
+    git(tmpDir, "config", "user.name", "Tack Test");
+    fs.mkdirSync(path.join(tmpDir, dir), { recursive: true });
+
+    let pathBytes = 0;
+    let expected = 0;
+    while (pathBytes <= 1024 * 1024) {
+      const name = `${dir}/${stem}-${expected}.ts`;
+      fs.writeFileSync(path.join(tmpDir, name), "x", "utf-8");
+      pathBytes += name.length + 1;
+      expected += 1;
+    }
+    assert.ok(pathBytes > 1024 * 1024, "test must actually cross the 1MB default");
+
+    process.chdir(tmpDir);
+    assert.strictEqual(getChangedFiles().length, expected);
+  } finally {
+    process.chdir(originalCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("readFileAtRef returns tracked files larger than 1MB", () => {
+  const originalCwd = process.cwd();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tack-git-bigfile-"));
+  const body = "spec-line\n".repeat(200_000); // ~2MB
+
+  try {
+    git(tmpDir, "init");
+    git(tmpDir, "config", "user.email", "test@example.com");
+    git(tmpDir, "config", "user.name", "Tack Test");
+
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".tack", "decisions.md"), body, "utf-8");
+    git(tmpDir, "add", "-Af");
+    git(tmpDir, "commit", "-m", "big");
+
+    process.chdir(tmpDir);
+    const read = readFileAtRef("HEAD", ".tack/decisions.md");
+    assert.ok(read !== null, "a >1MB tracked file must not read back as missing");
+    assert.strictEqual(read, body.trim());
   } finally {
     process.chdir(originalCwd);
     fs.rmSync(tmpDir, { recursive: true, force: true });

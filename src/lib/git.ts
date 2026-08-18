@@ -5,6 +5,35 @@ import { projectRoot } from "./files.js";
 
 const GIT_TIMEOUT_MS = 10_000;
 
+/**
+ * Node's `execFileSync` caps child output at 1MB by default and throws ENOBUFS past it.
+ * A megabyte of NUL-separated paths is only a few thousand files, which a fresh clone,
+ * a generated-output directory, or a `--name-only` diff against an old base reaches
+ * easily, and `git show` passes it on any large tracked file. Those throws are
+ * indistinguishable from "git failed" at the catch site, so the repos with the most
+ * change were the ones Tack reported as having none.
+ */
+const GIT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+
+let warnedGitOutputDiscarded = false;
+
+/**
+ * ENOBUFS means git answered and we threw the answer away; every other error means git
+ * did not answer. Both still yield an empty result, but only the first one is Tack's
+ * fault to report, and staying silent about it is what let an incomplete scan look like
+ * a clean one.
+ */
+function reportDiscardedOutput(args: string[], err: unknown): void {
+  if ((err as NodeJS.ErrnoException | undefined)?.code !== "ENOBUFS") return;
+  if (warnedGitOutputDiscarded) return;
+  warnedGitOutputDiscarded = true;
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[tack] \`git ${args[0]}\` produced more than ${GIT_MAX_OUTPUT_BYTES / (1024 * 1024)}MB of output ` +
+      "and the result was discarded. Change detection is incomplete until the repo has fewer pending changes."
+  );
+}
+
 type GitResult = {
   ok: boolean;
   value: string;
@@ -16,10 +45,12 @@ function gitExec(args: string[], trim = true): GitResult {
       cwd: projectRoot(),
       encoding: "utf-8",
       timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_OUTPUT_BYTES,
       stdio: ["ignore", "pipe", "ignore"],
     });
     return { ok: true, value: trim ? output.trim() : output };
-  } catch {
+  } catch (err) {
+    reportDiscardedOutput(args, err);
     return { ok: false, value: "" };
   }
 }

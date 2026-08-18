@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed changed-file detection for non-ASCII paths: git's default `core.quotePath` returned `café.ts` as the literal `"caf\303\251.ts"`, so the file that actually changed dropped out of drift detection, handoff `related files`, and status while an unresolvable path was reported in its place. All path listings now use `-z` and split on NUL, which also disambiguates paths containing a newline.
 - Hardened the `.tack/` write boundary: the `.tack/` and `.tack/handoffs/` roots must now be real directories (a checked-in `.tack -> .git` symlink can no longer redirect writes), NDJSON rotation refuses any symlink, and all state files are written atomically (temp file + rename) so a crash or concurrent reader never sees a torn file.
 - Hardened the untrusted-content sanitizer: lone CR / CRLF can no longer forge line structure inside the `<untrusted_project_context>` wrapper, and the invisible-character strip now also covers U+061C, variation selectors (U+FE00-FE0F, U+E0100-E01EF), and the Hangul fillers.
 - Made drift state loss-proof: a `_drift.yaml` that fails to parse or contains entries a given Tack version cannot represent is quarantined and never rewritten (accepted/rejected resolutions survive), the corrupt-file warning fires once per process instead of per scan, watch mode stops looping notifications while the file is unreadable, and drift auto-dismissals from older versions migrate to the reopenable `disappeared` status.

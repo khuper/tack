@@ -10,7 +10,7 @@ type GitResult = {
   value: string;
 };
 
-function gitExec(args: string[]): GitResult {
+function gitExec(args: string[], trim = true): GitResult {
   try {
     const output = execFileSync("git", args, {
       cwd: projectRoot(),
@@ -18,10 +18,39 @@ function gitExec(args: string[]): GitResult {
       timeout: GIT_TIMEOUT_MS,
       stdio: ["ignore", "pipe", "ignore"],
     });
-    return { ok: true, value: output.trim() };
+    return { ok: true, value: trim ? output.trim() : output };
   } catch {
     return { ok: false, value: "" };
   }
+}
+
+/**
+ * Runs a git command that lists paths and returns them already decoded.
+ *
+ * `-z` is not optional here. Without it git applies `core.quotePath`, which is on by
+ * default: any path containing a non-ASCII byte comes back wrapped in double quotes and
+ * octal-escaped, so `café.ts` arrives as the literal `"caf\303\251.ts"`. That string
+ * matches nothing on disk, so the file that actually changed drops out of drift detection
+ * while a path that cannot exist is reported as changed in its place. `-z` emits raw
+ * NUL-terminated paths with no quoting or escaping, which also disambiguates the paths
+ * that embed a newline.
+ */
+function splitNulPaths(output: string): string[] {
+  return output.split("\0").filter((entry) => entry !== "");
+}
+
+function gitExecPaths(args: string[]): string[] {
+  const result = gitExec([...args, "-z"], false);
+  return result.ok ? splitNulPaths(result.value) : [];
+}
+
+/** The worktree's staged, unstaged and untracked paths, in that order. */
+function worktreePaths(): string[] {
+  return [
+    ...gitExecPaths(["diff", "--cached", "--name-only"]),
+    ...gitExecPaths(["diff", "--name-only"]),
+    ...gitExecPaths(["ls-files", "--others", "--exclude-standard"]),
+  ];
 }
 
 export function isGitRepo(): boolean {
@@ -90,32 +119,12 @@ export function filterChangedPaths(lines: string[]): string[] {
 export function getChangedFiles(base?: string): string[] {
   if (!isGitRepo()) return [];
 
-  if (!hasCommits()) {
-    const staged = gitExec(["diff", "--cached", "--name-only"]);
-    const unstaged = gitExec(["diff", "--name-only"]);
-    const untracked = gitExec(["ls-files", "--others", "--exclude-standard"]);
-    const all = [
-      ...(staged.ok ? staged.value.split("\n") : []),
-      ...(unstaged.ok ? unstaged.value.split("\n") : []),
-      ...(untracked.ok ? untracked.value.split("\n") : []),
-    ];
-    return dedupeAndFilter(all);
-  }
+  if (!hasCommits()) return dedupeAndFilter(worktreePaths());
 
   if (base) {
-    const diffResult = gitExec(["diff", "--name-only", base]);
-    if (diffResult.ok) {
-      return dedupeAndFilter(diffResult.value.split("\n"));
-    }
+    const diff = gitExec(["diff", "--name-only", base, "-z"], false);
+    if (diff.ok) return dedupeAndFilter(splitNulPaths(diff.value));
   }
 
-  const staged = gitExec(["diff", "--cached", "--name-only"]);
-  const unstaged = gitExec(["diff", "--name-only"]);
-  const untracked = gitExec(["ls-files", "--others", "--exclude-standard"]);
-  const all = [
-    ...(staged.ok ? staged.value.split("\n") : []),
-    ...(unstaged.ok ? unstaged.value.split("\n") : []),
-    ...(untracked.ok ? untracked.value.split("\n") : []),
-  ];
-  return dedupeAndFilter(all);
+  return dedupeAndFilter(worktreePaths());
 }

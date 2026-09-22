@@ -26,6 +26,7 @@ import { runDiffPlain } from "./plain/diff.js";
 import { formatMissingTackContextMessage, tackDirExists } from "./lib/files.js";
 import { readPackageMeta } from "./lib/packageMeta.js";
 import { runSetupAgent, runSetupMcp } from "./cli/setupAgent.js";
+import { resolveAnimationsEnabled } from "./lib/animation.js";
 
 const ASCII_LOGO_LINES = [
   "████████╗ █████╗  ██████╗██╗  ██╗",
@@ -397,5 +398,6 @@ render(
   <App
     command={normalizedCommand as "init" | "status" | "watch" | "handoff"}
     handoffTo={normalizedCommand === "handoff" ? normalizeHandoffTargetArg(args.to) : undefined}
+    animate={resolveAnimationsEnabled(args)}
   />
 );

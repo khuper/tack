@@ -7,16 +7,18 @@ import { Handoff } from "./ui/Handoff.js";
 type AppProps = {
   command: "init" | "status" | "watch" | "handoff";
   handoffTo?: string;
+  /** Whether `tack watch` animates its deckhand scene. */
+  animate?: boolean;
 };
 
-export function App({ command, handoffTo }: AppProps) {
+export function App({ command, handoffTo, animate = true }: AppProps) {
   switch (command) {
     case "init":
       return <Init />;
     case "status":
       return <Status />;
     case "watch":
-      return <Watch />;
+      return <Watch animate={animate} />;
     case "handoff":
       return <Handoff to={handoffTo} />;
   }

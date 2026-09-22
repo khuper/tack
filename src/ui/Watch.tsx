@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Text, Box, Static, useApp, useInput } from "ink";
 import { DriftAlert } from "./DriftAlert.js";
 import { Logo } from "./Logo.js";
+import { MascotLane } from "./MascotLane.js";
 import { readSpec, readDrift, writeAudit } from "../lib/files.js";
 import type { DriftItem } from "../lib/signals.js";
 import { createAudit } from "../lib/signals.js";
@@ -190,8 +191,17 @@ function renderVerificationStatus(status: "pending" | "done", text: string, deta
   );
 }
 
-export function Watch() {
+type WatchProps = {
+  /** Initial animation preference; `a` toggles it while watching. */
+  animate?: boolean;
+};
+
+export function Watch({ animate = true }: WatchProps = {}) {
   const { exit } = useApp();
+  const [animated, setAnimated] = useState(animate);
+  const [cratesDocked, setCratesDocked] = useState(0);
+  const [lastAgentEventAt, setLastAgentEventAt] = useState<number | null>(null);
+  const [lastScanAt, setLastScanAt] = useState<number | null>(null);
   const [systemCount, setSystemCount] = useState(0);
   const [driftCount, setDriftCount] = useState(0);
   const [lastScan, setLastScan] = useState<string>("never");
@@ -230,6 +240,10 @@ export function Watch() {
     syncSessionStates(nextStates);
     const display = getMcpSessionDisplayLabel(nextStates.find((state) => state.sessionKey === notice.sessionKey) ?? nextStates[0]!, nextStates);
     pushHistory(noticeToHistoryLevel(notice.category), `[${display}] ${notice.message}`);
+    setLastAgentEventAt(Date.now());
+    if (notice.category === "write") {
+      setCratesDocked((previous) => previous + 1);
+    }
   }
 
   function runScan(reason = "scan", changedFiles = getChangedFiles(), nextSessions = sessionStatesRef.current) {
@@ -250,6 +264,7 @@ export function Watch() {
     setSystemCount(diff.aligned.filter((signal) => signal.category === "system").length);
     setDriftCount(unresolvedCount);
     setLastScan(new Date().toLocaleTimeString());
+    setLastScanAt(Date.now());
     setMemoryWarnings(getMemoryWarnings(changedFiles));
     syncSessionStates(nextSessions);
 
@@ -345,6 +360,9 @@ export function Watch() {
       exit();
       return;
     }
+    if (input === "a") {
+      setAnimated((previous) => !previous);
+    }
   });
 
   return (
@@ -364,6 +382,14 @@ export function Watch() {
         <Text dimColor>Last scan: {lastScan}</Text>
       </Box>
 
+      <MascotLane
+        animate={animated && !fatalError}
+        crates={cratesDocked}
+        drift={driftCount > 0}
+        lastAgentEventAt={lastAgentEventAt}
+        lastScanAt={lastScanAt}
+      />
+
       {fatalError ? (
         <Box marginTop={1} flexDirection="column">
           <Text bold color="red">
@@ -381,7 +407,7 @@ export function Watch() {
               <Text bold color={headline.color}>
                 {headline.text}
               </Text>
-              <Text dimColor>Canonical proof loop: keep watch open, start a labeled MCP session, then look for READY, READ, and WRITE. Press q to quit.</Text>
+              <Text dimColor>Canonical proof loop: keep watch open, start a labeled MCP session, then look for READY, READ, and WRITE. Press q to quit, a to {animated ? "pause" : "resume"} the deckhand.</Text>
             </Box>
           )}
         </>

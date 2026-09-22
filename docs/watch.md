@@ -35,6 +35,17 @@ TACK_AGENT_NAME=codex tack mcp
 - per-session state for active agent sessions
 - warnings when work may not be getting written back
 
+## The Deckhand
+
+Under the status bar, watch shows a small animated scene that mirrors what the watcher is doing, so you can read the state of the loop from across the room:
+
+- a repo scan sends the deckhand walking the deck with a sweep beam ahead
+- an agent event (a read, a rule check, a write-back) has the deckhand hauling a crate to the hold, with a signal ripple
+- every write-back docks a crate on the right, and the count is labelled
+- unresolved drift flags the front crate red
+
+The scene calms down by itself a few seconds after the last event. Press `a` to pause or resume it, pass `--no-animations` (or set `TACK_ANIMATIONS=off`) to render a still frame, and it never runs in plain mode, in CI, or when output is not a terminal.
+
 ## Why This Matters
 
 The trust loop is:

@@ -1,117 +1,70 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text } from "ink";
-
-type MascotMode = "idle" | "scan" | "mcp";
+import React, { useEffect, useMemo, useState } from "react";
+import { Box, Text, useStdout } from "ink";
+import {
+  clampDeckhandWidth,
+  DECKHAND_FRAME_MS,
+  deckhandModeAt,
+  renderDeckhandFrame,
+  type DeckhandMode,
+  type DeckhandRun,
+} from "../lib/deckhand.js";
 
 type Props = {
+  /** Whether the scene moves at all. A still frame is rendered when false. */
   animate: boolean;
-  mode: MascotMode;
-  cargoCount: number;
-  hasDrift: boolean;
+  /** Agent write-backs seen this session: crates docked on the right. */
+  crates: number;
+  /** Unresolved drift exists: one crate is flagged. */
+  drift: boolean;
+  /** Timestamp of the most recent MCP event, or null before any. */
+  lastAgentEventAt: number | null;
+  /** Timestamp of the most recent repo scan, or null before any. */
+  lastScanAt: number | null;
 };
 
-const MIN_TRACK_WIDTH = 30;
-const MAX_TRACK_WIDTH = 58;
-const LEFT_MARGIN = 4;
-type CellColor = string;
-
-type TrackCell = {
-  text: string;
-  color?: CellColor;
-  backgroundColor?: CellColor;
-  dim?: boolean;
-  bold?: boolean;
-};
-
-type StyleOptions = {
-  color?: CellColor;
-  backgroundColor?: CellColor;
-  dim?: boolean;
-  bold?: boolean;
-};
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
-function place(buffer: TrackCell[], start: number, token: string, style?: StyleOptions): void {
-  for (let index = 0; index < token.length; index += 1) {
-    const target = start + index;
-    if (target < 0 || target >= buffer.length) continue;
-    buffer[target] = { text: token[index]!, ...(style ?? {}) };
-  }
-}
-
-function buildCargoDock(cargoCount: number): string {
-  if (cargoCount <= 0) {
-    return "[ ]";
-  }
-
-  const stack = Math.min(cargoCount, 3);
-  return Array.from({ length: stack }, () => "[#]").join("");
-}
-
-function buildSprite(mode: MascotMode, direction: -1 | 1, frame: number): { sprite: string; style: StyleOptions } {
-  if (mode === "mcp") {
-    return {
-      sprite: direction === 1 ? "o>[#]" : "[#]<o",
-      style: { color: "cyan", bold: true },
-    };
-  }
-
-  if (mode === "scan") {
-    if (direction === 1) {
-      return {
-        sprite: frame % 2 === 0 ? "o/-" : "o\\-",
-        style: { color: "green", bold: true },
-      };
-    }
-    return {
-      sprite: frame % 2 === 0 ? "-\\o" : "-/o",
-      style: { color: "green", bold: true },
-    };
-  }
-
-  return {
-    sprite: frame % 12 === 0 ? "o_o" : "o|_",
-    style: { color: "white", dim: true },
-  };
-}
-
-function buildCaption(mode: MascotMode, cargoCount: number, hasDrift: boolean, animate: boolean): string {
-  if (!animate) {
-    return hasDrift ? "deckhand on standby, flagged cargo waiting" : "deckhand on standby";
-  }
-
-  if (mode === "mcp") {
-    return cargoCount > 1 ? "deckhand sorting agent packages" : "deckhand talking to agents";
-  }
-
-  if (mode === "scan") {
-    return hasDrift ? "deckhand inspecting suspicious cargo" : "deckhand walking the cargo deck";
-  }
-
-  return hasDrift ? "deckhand watching flagged cargo" : "deck clear";
-}
-
-export function MascotLane({ animate, mode, cargoCount, hasDrift }: Props) {
-  const trackWidth = useMemo(() => {
-    const columns = process.stdout.columns ?? 80;
-    return clamp(columns - 20, MIN_TRACK_WIDTH, MAX_TRACK_WIDTH);
-  }, []);
-  const cargoDock = useMemo(() => buildCargoDock(cargoCount), [cargoCount]);
-  const maxPosition = Math.max(LEFT_MARGIN, trackWidth - cargoDock.length - 8);
-  const [position, setPosition] = useState(LEFT_MARGIN);
-  const [direction, setDirection] = useState<1 | -1>(1);
-  const [frame, setFrame] = useState(0);
-  const directionRef = useRef<1 | -1>(1);
-  const tickRef = useRef(0);
+function useTerminalColumns(): number | undefined {
+  const { stdout } = useStdout();
+  const [columns, setColumns] = useState<number | undefined>(stdout.columns);
 
   useEffect(() => {
-    if (position > maxPosition) {
-      setPosition(maxPosition);
-    }
-  }, [maxPosition, position]);
+    const onResize = () => setColumns(stdout.columns);
+    stdout.on("resize", onResize);
+    return () => {
+      stdout.off("resize", onResize);
+    };
+  }, [stdout]);
+
+  return columns;
+}
+
+function Row({ runs }: { runs: DeckhandRun[] }) {
+  return (
+    <Text>
+      {runs.map((run, index) => (
+        <Text key={index} color={run.color} dimColor={run.dim ?? false} bold={run.bold ?? false}>
+          {run.text}
+        </Text>
+      ))}
+    </Text>
+  );
+}
+
+/**
+ * The animated deckhand shown in `tack watch`. The scene reacts to what the watcher
+ * sees: a repo scan sends the deckhand walking the deck, an agent event has them
+ * hauling memory to the hold, and each write-back docks a crate.
+ */
+export function MascotLane({ animate, crates, drift, lastAgentEventAt, lastScanAt }: Props) {
+  const columns = useTerminalColumns();
+  const width = useMemo(() => clampDeckhandWidth(columns), [columns]);
+  const [frame, setFrame] = useState(0);
+  const [mode, setMode] = useState<DeckhandMode>(() => deckhandModeAt(Date.now(), lastAgentEventAt, lastScanAt));
+
+  // Mode is re-evaluated on the frame clock so the scene calms down by itself a few
+  // seconds after the last event, without the parent having to re-render for it.
+  useEffect(() => {
+    setMode(deckhandModeAt(Date.now(), lastAgentEventAt, lastScanAt));
+  }, [lastAgentEventAt, lastScanAt]);
 
   useEffect(() => {
     if (!animate) {
@@ -119,91 +72,23 @@ export function MascotLane({ animate, mode, cargoCount, hasDrift }: Props) {
       return;
     }
 
-    const intervalMs = mode === "mcp" ? 140 : mode === "scan" ? 180 : 420;
     const timer = setInterval(() => {
       setFrame((previous) => previous + 1);
-      tickRef.current += 1;
-      const shouldStep = mode === "idle" ? tickRef.current % 2 === 0 : true;
-      if (!shouldStep) return;
-
-      setPosition((previous) => {
-        let next = previous + directionRef.current;
-        if (next < LEFT_MARGIN || next > maxPosition) {
-          const reversed = directionRef.current === 1 ? -1 : 1;
-          directionRef.current = reversed;
-          setDirection(reversed);
-          next = previous + reversed;
-        }
-        return clamp(next, LEFT_MARGIN, maxPosition);
-      });
-    }, intervalMs);
+      setMode(deckhandModeAt(Date.now(), lastAgentEventAt, lastScanAt));
+    }, DECKHAND_FRAME_MS[mode]);
 
     return () => {
       clearInterval(timer);
     };
-  }, [animate, maxPosition, mode]);
+  }, [animate, mode, lastAgentEventAt, lastScanAt]);
 
-  useEffect(() => {
-    if (mode === "idle") {
-      return;
-    }
-
-    directionRef.current = 1;
-    setDirection(1);
-  }, [mode]);
-
-  const visibleMode = animate ? mode : "idle";
-  const { sprite, style: spriteStyle } = buildSprite(visibleMode, direction, frame);
-  const bubble = visibleMode === "mcp" ? (frame % 6 < 4 ? "..." : " ..") : "";
-  const bubbleBuffer = Array.from({ length: trackWidth }, () => ({ text: " " } as TrackCell));
-  const deckBuffer = Array.from({ length: trackWidth }, () => ({ text: "_", color: "gray" } as TrackCell));
-  const dockStart = trackWidth - cargoDock.length - 2;
-
-  place(deckBuffer, 0, "\\__/", { color: "blue" });
-  place(deckBuffer, dockStart, cargoDock, { color: "yellow", bold: true });
-  place(deckBuffer, trackWidth - 1, hasDrift ? "!" : "*", { color: hasDrift ? "red" : "gray" });
-  if (bubble) {
-    place(
-      bubbleBuffer,
-      position + (direction === 1 ? 1 : 0),
-      bubble,
-      direction === 1 ? { color: "green", bold: true } : { color: "magenta", bold: true }
-    );
-  }
-
-  place(deckBuffer, position, sprite, spriteStyle);
-  if (animate && cargoCount > 0 && visibleMode === "mcp") {
-    place(deckBuffer, clamp(position - 1, 0, trackWidth - 1), "#", { color: "magenta", bold: true });
-  }
-
-  const caption = buildCaption(mode, cargoCount, hasDrift, animate);
-  const statusColor =
-    hasDrift ? "yellow" : visibleMode === "mcp" ? "cyan" : visibleMode === "scan" ? "green" : "gray";
-
-  function renderRow(buffer: TrackCell[]) {
-    return (
-      <Text>
-        {buffer.map((cell, index) => (
-          <Text
-            key={index}
-            color={cell.color ?? undefined}
-            backgroundColor={cell.backgroundColor ?? undefined}
-            dimColor={cell.dim ?? false}
-            bold={cell.bold ?? false}
-          >
-            {cell.text}
-          </Text>
-        ))}
-      </Text>
-    );
-  }
+  const scene = renderDeckhandFrame({ mode, crates, drift, animate }, frame, width);
 
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Text dimColor>cargo deck</Text>
-      {renderRow(bubbleBuffer)}
-      {renderRow(deckBuffer)}
-      <Text color={statusColor}>{caption}</Text>
+      {scene.rows.map((runs, index) => (
+        <Row key={index} runs={runs} />
+      ))}
     </Box>
   );
 }

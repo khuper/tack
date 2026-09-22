@@ -20,7 +20,13 @@ import {
 } from "./engine/memory.js";
 import { normalizeHandoffReport } from "./engine/handoff.js";
 import { wrapUntrustedContext } from "./lib/promptSafety.js";
-import { appendDecision, normalizeDecisionActor } from "./engine/decisions.js";
+import {
+  appendDecision,
+  MAX_DECISION_LENGTH,
+  MAX_REASONING_LENGTH,
+  normalizeDecisionActor,
+  sanitizeDecisionText,
+} from "./engine/decisions.js";
 import { log } from "./lib/logger.js";
 import { registerMcpAgentIdentity, resolveMcpAgentIdentity } from "./lib/mcpAgent.js";
 import { addNote } from "./lib/notes.js";
@@ -156,17 +162,33 @@ const registerAgentIdentityOutputSchema = z.object({
     ),
 });
 
+/**
+ * Argument caps. Notes are clipped to 500 characters at the write path already; the
+ * caps here reject oversized input up front so one multi-megabyte argument cannot land
+ * in `decisions.md` or `_logs.ndjson` (where a single line over the rotation budget
+ * would make every later log call rewrite the whole file).
+ */
+const MAX_NOTE_LENGTH = 500;
+const MAX_QUESTION_LENGTH = 2000;
+const MAX_ACTOR_LENGTH = 64;
+const MAX_PATH_LENGTH = 1024;
+const MAX_LIST_ITEMS = 50;
+
 const checkpointWorkOutputSchema = z.object({
   ok: z.boolean().describe("False when nothing was persisted, for example when every write failed."),
   status: z.enum(["completed", "partial", "blocked"]).describe("The status that was recorded."),
   saved: z.object({
     summary: z.string().describe("The summary text that was recorded."),
-    discoveries: z.number().int().describe("Number of discoveries supplied in the call."),
-    decisions: z.number().int().describe("Number of decisions supplied in the call."),
+    discoveries: z.number().int().describe("Number of discoveries that were written."),
+    decisions: z.number().int().describe("Number of decisions that were written."),
   }),
   writes: z
     .array(z.enum(["summary_note", "discovery_note", "decision"]))
     .describe("One entry per successful write, in the order it happened."),
+  errors: z
+    .array(z.string())
+    .optional()
+    .describe("Present when some writes failed; each entry says which write and why. The other writes still landed."),
 });
 
 const logDecisionOutputSchema = z.object({
@@ -631,7 +653,8 @@ async function main(): Promise<void> {
     {
       title: getBriefingTool.title,
       description: getBriefingTool.description,
-      inputSchema: z.object({}),
+      // No inputSchema: the SDK then advertises a bare object schema and skips argument
+      // validation, so a spec-valid tools/call that omits `arguments` is accepted.
       outputSchema: briefingOutputSchema,
       annotations: getBriefingTool.annotations,
     },
@@ -666,6 +689,7 @@ async function main(): Promise<void> {
         question: z
           .string()
           .min(1)
+          .max(MAX_QUESTION_LENGTH)
           .describe(
             'Short natural-language rule check. Example: "Can I use SQLite here?" or "Is it OK to add a second auth provider?"'
           ),
@@ -699,6 +723,7 @@ async function main(): Promise<void> {
         name: z
           .string()
           .min(1)
+          .max(MAX_ACTOR_LENGTH)
           .describe(
             'Short session label to use when the MCP client did not provide one. Example: "codex", "claude", or "cursor".'
           ),
@@ -757,6 +782,7 @@ async function main(): Promise<void> {
         summary: z
           .string()
           .min(1)
+          .max(MAX_NOTE_LENGTH)
           .describe(
             'One- or two-sentence summary of the work outcome. This is the default write-back path before ending meaningful work. Example: "Added MCP workspace snapshot resource and updated handoff guidance."'
           ),
@@ -765,10 +791,12 @@ async function main(): Promise<void> {
             z
               .string()
               .min(1)
+              .max(MAX_NOTE_LENGTH)
               .describe(
                 'A specific fact learned during work. Example: "Agents were reading raw machine state before facts."'
               )
           )
+          .max(MAX_LIST_ITEMS)
           .optional()
           .describe("Optional list of concrete discoveries worth preserving for the next session. Prefer adding them here instead of using log_agent_note separately."),
         decisions: z
@@ -777,29 +805,35 @@ async function main(): Promise<void> {
               decision: z
                 .string()
                 .min(1)
+                .max(MAX_DECISION_LENGTH)
                 .describe(
                   'Short decision statement. Example: "Use tack://session as the primary MCP entrypoint."'
                 ),
               reasoning: z
                 .string()
                 .min(1)
+                .max(MAX_REASONING_LENGTH)
                 .describe(
                   'Why the decision was made. Example: "It reduces agent prompting and gives a consistent read order."'
                 ),
             })
           )
+          .max(MAX_LIST_ITEMS)
           .optional()
           .describe("Optional decisions made during the work. Prefer adding them here so the outcome and decision are saved together."),
         related_files: z
           .array(
             z
               .string()
+              .max(MAX_PATH_LENGTH)
               .describe('Project-relative path related to the work. Example: "src/mcp.ts" or "README.md".')
           )
+          .max(MAX_LIST_ITEMS)
           .optional()
           .describe("Optional project-relative files associated with the work."),
         actor: z
           .string()
+          .max(MAX_ACTOR_LENGTH)
           .optional()
           .describe('Optional actor label. Example: "agent:codex". Defaults to "user" if omitted.'),
       }),
@@ -848,22 +882,36 @@ async function main(): Promise<void> {
         }
       }
 
+      // Each write is independent and the notes above are already on disk, so a
+      // failing decision append must not turn the whole call into a bare error: the
+      // agent would retry and duplicate the notes. Report per-write outcomes instead.
+      const errors: string[] = [];
+      let decisionWrites = 0;
       for (const entry of args.decisions ?? []) {
-        appendDecision(entry.decision, entry.reasoning);
+        try {
+          appendDecision(entry.decision, entry.reasoning);
+        } catch (err) {
+          errors.push(`decision not saved: ${err instanceof Error ? err.message : String(err)}`);
+          continue;
+        }
         log({
           event: "decision",
-          decision: entry.decision,
-          reasoning: entry.reasoning,
+          decision: sanitizeDecisionText(entry.decision, MAX_DECISION_LENGTH),
+          reasoning: sanitizeDecisionText(entry.reasoning, MAX_REASONING_LENGTH),
           actor: normalizeDecisionActor(actor),
         });
         writes.push("decision");
+        decisionWrites += 1;
+      }
+      if (!summaryOk) {
+        errors.push("summary note not saved");
       }
 
       const savedText =
         args.decisions?.[0]?.decision ?? args.discoveries?.[0] ?? args.summary;
       recordTelemetryCounts({
         notes_logged: (summaryOk ? 1 : 0) + discoveryWrites,
-        decisions_logged: args.decisions?.length ?? 0,
+        decisions_logged: decisionWrites,
       });
       logMcpTool("checkpoint_work", formatSavedSummary(savedText));
 
@@ -872,10 +920,11 @@ async function main(): Promise<void> {
         status: args.status,
         saved: {
           summary: args.summary,
-          discoveries: args.discoveries?.length ?? 0,
-          decisions: args.decisions?.length ?? 0,
+          discoveries: discoveryWrites,
+          decisions: decisionWrites,
         },
         writes,
+        ...(errors.length > 0 ? { errors } : {}),
       };
 
       return {
@@ -886,6 +935,7 @@ async function main(): Promise<void> {
           },
         ],
         structuredContent: payload,
+        ...(writes.length === 0 ? { isError: true } : {}),
       };
     }
   );
@@ -899,15 +949,18 @@ async function main(): Promise<void> {
         decision: z
           .string()
           .min(1)
+          .max(MAX_DECISION_LENGTH)
           .describe('Short decision statement. Use this only when a full checkpoint is unnecessary. Example: "Keep machine_state as a raw debug resource."'),
         reasoning: z
           .string()
           .min(1)
+          .max(MAX_REASONING_LENGTH)
           .describe(
             'Why the decision was made. Example: "Workspace summaries should stay compact while raw YAML remains available separately."'
           ),
         actor: z
           .string()
+          .max(MAX_ACTOR_LENGTH)
           .optional()
           .describe(
             'Optional actor label. Example: "agent:codex". Defaults to the standard decision actor normalization if omitted.'
@@ -930,8 +983,8 @@ async function main(): Promise<void> {
       recordTelemetryCounts({ decisions_logged: 1 });
       log({
         event: "decision",
-        decision,
-        reasoning,
+        decision: sanitizeDecisionText(decision, MAX_DECISION_LENGTH),
+        reasoning: sanitizeDecisionText(reasoning, MAX_REASONING_LENGTH),
         actor: normalizeDecisionActor(actor),
       });
       logMcpTool("log_decision", formatSavedSummary(decision));
@@ -968,19 +1021,23 @@ async function main(): Promise<void> {
         message: z
           .string()
           .min(1)
+          .max(MAX_NOTE_LENGTH)
           .describe(
             'Short note for the next session. Use this only when a full checkpoint is unnecessary. Example: "MCP workspace snapshot now summarizes unresolved drift before raw YAML."'
           ),
         actor: z
           .string()
+          .max(MAX_ACTOR_LENGTH)
           .optional()
           .describe('Optional actor label. Example: "agent:codex". Defaults to "user" if omitted.'),
         related_files: z
           .array(
             z
               .string()
+              .max(MAX_PATH_LENGTH)
               .describe('Project-relative path related to the note. Example: "src/engine/memory.ts".')
           )
+          .max(MAX_LIST_ITEMS)
           .optional()
           .describe("Optional project-relative files connected to the note."),
       }),
@@ -1049,12 +1106,25 @@ async function main(): Promise<void> {
     announceMcpReady(mcpAgentIdentity.name, mcpSessionId);
   };
   await server.connect(transport);
-  process.once("SIGINT", () => logMcpDisconnect());
-  process.once("SIGTERM", () => logMcpDisconnect());
+  // Installing a listener replaces Node's default terminate action, so the handler
+  // has to exit itself: a supervisor stopping the server with SIGTERM while keeping the
+  // pipe open otherwise leaves an orphaned process behind.
+  process.once("SIGINT", () => {
+    logMcpDisconnect("interrupted (SIGINT)");
+    process.exit(130);
+  });
+  process.once("SIGTERM", () => {
+    logMcpDisconnect("terminated (SIGTERM)");
+    process.exit(143);
+  });
   process.once("beforeExit", () => logMcpDisconnect());
   process.stdin.once("end", () => logMcpDisconnect());
   process.stdin.once("close", () => logMcpDisconnect());
 }
 
-// eslint-disable-next-line @typescript-eslint/no-floating-promises
-main();
+main().catch((err: unknown) => {
+  const message = err instanceof Error ? err.message : String(err);
+  // stderr only: stdout is the JSON-RPC transport.
+  console.error(`[tack] MCP server failed to start: ${message}`);
+  process.exit(1);
+});

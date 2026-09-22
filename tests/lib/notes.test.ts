@@ -136,6 +136,30 @@ describe("notes", () => {
     expect(triedOnly.every((n) => n.type === "tried")).toBeTrue();
   });
 
+  it("compactNotes keeps lines it cannot parse and leaves the file alone when nothing is old", () => {
+    const now = Date.now();
+    const recentTs = new Date(now - 5 * 24 * 60 * 60 * 1000).toISOString();
+    const oldTs = new Date(now - 40 * 24 * 60 * 60 * 1000).toISOString();
+    const pathToNotes = notesPath();
+    const torn = '{"ts":"' + recentTs + '","type":"discovered","message":"still being writ';
+    const original = [
+      JSON.stringify({ ts: recentTs, type: "warning", message: "recent", actor: "user" }),
+      torn,
+    ].join("\n") + "\n";
+    fs.writeFileSync(pathToNotes, original, "utf-8");
+    const before = fs.statSync(pathToNotes).mtimeMs;
+
+    expect(compactNotes(30)).toBe(0);
+    expect(fs.readFileSync(pathToNotes, "utf-8")).toBe(original);
+    expect(fs.statSync(pathToNotes).mtimeMs).toBe(before);
+
+    fs.writeFileSync(pathToNotes, original + JSON.stringify({ ts: oldTs, type: "tried", message: "old", actor: "user" }) + "\n", "utf-8");
+    expect(compactNotes(30)).toBe(1);
+    const after = fs.readFileSync(pathToNotes, "utf-8");
+    expect(after).toBe(original);
+    expect(after).toContain(torn);
+  });
+
   it("compactNotes removes old notes, preserves recent ones, and logs note:archived events", () => {
     const now = Date.now();
     const oldTs = new Date(now - 40 * 24 * 60 * 60 * 1000).toISOString(); // 40 days ago

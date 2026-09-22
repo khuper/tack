@@ -32,7 +32,15 @@ const PROJECT_MARKERS = [
   "backlog",
   "dist",
 ] as const;
-const PRIVATE_LOCAL_TACK_FILES = [".tack/_config.json", ".tack/_stats.json"] as const;
+/**
+ * Files under `.tack/` that belong to one machine, never to the repository: the local
+ * telemetry config and stats, the drift lock and its claim journal (a committed lock
+ * blocks every clone's scan until someone deletes it by hand, and a committed journal
+ * triggers crash recovery on every clone), and the atomic-write temp files.
+ */
+const PRIVATE_LOCAL_TACK_FILES = ["_config.json", "_stats.json", "_drift.yaml.lock", "_drift.claim.json", ".*.tmp"] as const;
+/** Repository-wide patterns: the per-config lock `setup-mcp` takes next to each client file. */
+const PRIVATE_LOCAL_REPO_PATTERNS = ["*.tack-lock"] as const;
 
 function looksLikeLegacyTackDir(dir: string): boolean {
   try {
@@ -200,28 +208,74 @@ function migrateMachineFilesIfNeeded(): void {
   }
 }
 
-function ensurePrivateLocalStateIgnored(): void {
-  const excludePath = path.join(projectRoot(), ".git", "info", "exclude");
-  const excludeDir = path.dirname(excludePath);
-
+/**
+ * Where git keeps `info/exclude` for the repository that contains `root`, and the
+ * directory the patterns in it are relative to.
+ *
+ * `<root>/.git` is a directory only in a primary checkout. In a linked worktree or a
+ * submodule it is a file (`gitdir: <path>`), and that gitdir may in turn name a
+ * `commondir` shared with the primary checkout, which is where `info/exclude` lives.
+ * A project root nested inside the repository has no `.git` of its own at all.
+ */
+function resolveGitExcludeLocation(root: string): { toplevel: string; excludePath: string } | null {
+  const toplevel = findGitRepoBoundary(root);
+  if (!toplevel) return null;
+  const dotGit = path.join(toplevel, ".git");
+  let gitDir: string;
   try {
+    const stat = fs.statSync(dotGit);
+    if (stat.isDirectory()) {
+      gitDir = dotGit;
+    } else if (stat.isFile()) {
+      const match = fs.readFileSync(dotGit, "utf-8").match(/^gitdir:\s*(.+?)\s*$/m);
+      if (!match) return null;
+      gitDir = path.resolve(toplevel, match[1]!);
+    } else {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  try {
+    const common = fs.readFileSync(path.join(gitDir, "commondir"), "utf-8").trim();
+    if (common) gitDir = path.resolve(gitDir, common);
+  } catch {
+    // No commondir: this is the primary checkout's git dir.
+  }
+  return { toplevel, excludePath: path.join(gitDir, "info", "exclude") };
+}
+
+function ensurePrivateLocalStateIgnored(): void {
+  try {
+    const location = resolveGitExcludeLocation(projectRoot());
+    if (!location) {
+      return;
+    }
+    const { toplevel, excludePath } = location;
+    const excludeDir = path.dirname(excludePath);
     if (!fs.existsSync(excludeDir)) {
       return;
     }
 
+    // Patterns with a slash are anchored at the exclude file's root, so a project root
+    // nested inside the repository needs its path from the toplevel in front.
+    const prefix = path.relative(toplevel, getTackDir()).split(path.sep).join("/");
+    const wanted = [
+      ...PRIVATE_LOCAL_TACK_FILES.map((name) => `${prefix}/${name}`),
+      ...PRIVATE_LOCAL_REPO_PATTERNS,
+    ];
+
     const current = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, "utf-8") : "";
     const normalized = current.replace(/\r\n/g, "\n");
-    const missingEntries = PRIVATE_LOCAL_TACK_FILES.filter(
-      (entry) => !normalized.split("\n").some((line) => line.trim() === entry)
-    );
+    const present = new Set(normalized.split("\n").map((line) => line.trim()));
+    const missingEntries = wanted.filter((entry) => !present.has(entry));
 
     if (missingEntries.length === 0) {
       return;
     }
 
-    const prefix = normalized.length > 0 && !normalized.endsWith("\n") ? "\n" : "";
-    const block = `${prefix}${missingEntries.join("\n")}\n`;
-    fs.appendFileSync(excludePath, block, "utf-8");
+    const separator = normalized.length > 0 && !normalized.endsWith("\n") ? "\n" : "";
+    fs.appendFileSync(excludePath, `${separator}${missingEntries.join("\n")}\n`, "utf-8");
   } catch {
     // Ignore exclude-file failures. Telemetry stays local even if exclude setup fails.
   }

@@ -577,6 +577,21 @@ test("setup-agent tolerates a BOM and whitespace around its markers", () => {
   });
 });
 
+test("setup-agent does not mistake an inline code span at line start for a fence", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    const target = path.join(tmpDir, "CLAUDE.md");
+    fs.writeFileSync(target, "```js const x = 1``` is inline code, not a fence.\n", "utf-8");
+
+    const first = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "claude", mcp: false }, pkg.version));
+    assert.match(first.stdout, /installed\s+CLAUDE\.md/);
+    const second = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "claude", mcp: false }, pkg.version));
+    assert.match(second.stdout, /unchanged\s+CLAUDE\.md/);
+    const content = fs.readFileSync(target, "utf-8");
+    assert.strictEqual((content.match(/<!-- BEGIN TACK AGENT INSTRUCTIONS/g) ?? []).length, 1, "the block must be found, not duplicated");
+  });
+});
+
 test("setup-agent ignores markers shown inside a fenced code block", () => {
   withTempProject((tmpDir) => {
     fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });

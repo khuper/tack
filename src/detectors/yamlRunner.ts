@@ -123,6 +123,13 @@ export function createDetectorFromYaml(yamlPath: string): {
           const foundConfigs = (system.configFiles ?? []).filter((f) => fileExists(f));
           const foundDirs = (system.directories ?? []).filter((d) => fileExists(d));
           const hasHardEvidence = foundPkgs.length > 0 || foundConfigs.length > 0 || foundDirs.length > 0;
+          // A rule that declares no package, config file or directory channel at all
+          // (a `.tack/detectors` rule for a non-Node stack, say) has only its route
+          // patterns to go on, so for it they remain sufficient on their own.
+          const routeOnlyRule =
+            (system.packages?.length ?? 0) === 0 &&
+            (system.configFiles?.length ?? 0) === 0 &&
+            (system.directories?.length ?? 0) === 0;
 
           // Route patterns are identifiers such as `useUser` or `getServerSession`. They
           // add a source location to a system the package or config already proves, but
@@ -131,7 +138,7 @@ export function createDetectorFromYaml(yamlPath: string): {
           // from NextAuth" matches too, which put every Clerk project into permanent
           // duplicate_auth drift.
           let routeMatch: string | undefined;
-          const routePatterns = hasHardEvidence ? (system.routePatterns ?? []) : [];
+          const routePatterns = hasHardEvidence || routeOnlyRule ? (system.routePatterns ?? []) : [];
           for (const patternStr of routePatterns) {
             const pattern = safeRegex(patternStr);
             if (!pattern) continue;

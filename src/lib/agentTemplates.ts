@@ -156,7 +156,17 @@ function splitBom(content: string): { bom: string; body: string } {
   return content.startsWith(BOM) ? { bom: BOM, body: content.slice(1) } : { bom: "", body: content };
 }
 
-const FENCE_OPEN = /^\s{0,3}(`{3,}|~{3,})/;
+// Up to three spaces of indentation (a tab makes an indented code block, not a fence),
+// then the fence, then the info string. A backtick fence's info string may not contain
+// a backtick, so "```js const x = 1```" is an inline code span in a paragraph.
+const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+
+function fenceOpener(text: string): string | null {
+  const match = text.match(FENCE_OPEN);
+  if (!match) return null;
+  if (match[1]![0] === "`" && match[2]!.includes("`")) return null;
+  return match[1]!;
+}
 
 /**
  * Indices of the lines that sit inside a fenced code block. A README that documents
@@ -169,13 +179,12 @@ function fencedLineIndices(lines: LineRange[]): Set<number> {
   for (let index = 0; index < lines.length; index += 1) {
     const text = lines[index]!.text;
     if (fence === null) {
-      const match = text.match(FENCE_OPEN);
-      if (match) fence = match[1]!;
+      fence = fenceOpener(text);
       continue;
     }
     fenced.add(index);
-    const match = text.match(FENCE_OPEN);
-    if (match && match[1]![0] === fence[0] && match[1]!.length >= fence.length && text.trim() === match[1]) {
+    const closer = text.match(FENCE_OPEN);
+    if (closer && closer[1]![0] === fence[0] && closer[1]!.length >= fence.length && closer[2]!.trim() === "") {
       fence = null;
     }
   }

@@ -169,6 +169,8 @@ const registerAgentIdentityOutputSchema = z.object({
  * would make every later log call rewrite the whole file).
  */
 const MAX_NOTE_LENGTH = 500;
+/** The stored summary note is `<Completed|Partial|Blocked>: <summary>`, clipped at MAX_NOTE_LENGTH. */
+const MAX_SUMMARY_LENGTH = MAX_NOTE_LENGTH - "Completed: ".length;
 const MAX_QUESTION_LENGTH = 2000;
 const MAX_ACTOR_LENGTH = 64;
 const MAX_PATH_LENGTH = 1024;
@@ -782,7 +784,7 @@ async function main(): Promise<void> {
         summary: z
           .string()
           .min(1)
-          .max(MAX_NOTE_LENGTH)
+          .max(MAX_SUMMARY_LENGTH)
           .describe(
             'One- or two-sentence summary of the work outcome. This is the default write-back path before ending meaningful work. Example: "Added MCP workspace snapshot resource and updated handoff guidance."'
           ),

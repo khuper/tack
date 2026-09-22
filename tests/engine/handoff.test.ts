@@ -52,8 +52,14 @@ describe("handoff", () => {
     expect(fs.existsSync(second.jsonPath)).toBeTrue();
     expect(JSON.parse(fs.readFileSync(first.jsonPath, "utf-8")).handoff.to).toBe("alice");
     expect(JSON.parse(fs.readFileSync(second.jsonPath, "utf-8")).handoff.to).toBe("bob");
-    // The timestamp stays the trailing segment so archiving still orders by age.
-    expect(path.basename(second.jsonPath)).toMatch(/-2_\d{8}T\d{6}Z\.json$/);
+    // The timestamp stays the trailing segment so archiving still orders by age. When
+    // the two calls land in the same second the counter disambiguates; when they
+    // straddle a second boundary the timestamps already differ.
+    const stamp = (file: string) => path.basename(file).match(/_(\d{8}T\d{6}Z)\.json$/)?.[1];
+    expect(stamp(first.jsonPath)).toBeDefined();
+    if (stamp(first.jsonPath) === stamp(second.jsonPath)) {
+      expect(path.basename(second.jsonPath)).toMatch(/-2_\d{8}T\d{6}Z\.json$/);
+    }
   });
 
   it("renders generated parentheses verbatim and defangs only repo-provided text", () => {

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Fixed decision parsing for hyphenated words: `- [date] Prefer session-first flow - reason` split at the hyphen inside `session-first`, so the decision read "Prefer session" in `tack://session`, the handoff, and the briefing. The separator now has to be a spaced hyphen or an em dash.
+- Fixed decision parsing for hyphenated words: `- [date] Prefer session-first flow - reason` split at the hyphen inside `session-first`, so the decision read "Prefer session" in `tack://session`, the handoff, and the briefing. The separator now has to be a spaced hyphen (or `--`) or an em dash; a hand-edited line with a hyphen touching one side, such as `Foo -bar`, is skipped.
 - Fixed handoff markdown mangling Tack's own text: the summary line rendered as `1 system_s_` and implementation-status anchors as `implemented_src/a.ts_` because the markdown defanger also ran over generated parentheses. Repo-provided text is still neutralized.
 - Tightened cross-session pattern grouping: two notes that cite the same file were merged on a single shared word, so unrelated discoveries were reported as agents "independently finding" the same thing. Sharing a file now requires at least two shared words.
 - Wired the Bun unit suites (`tests/engine`, `tests/lib`, `tests/detectors`) into `npm run test:unit` and a GitHub Actions workflow; they had not run in any script, and eight of them had drifted out of sync with the code.

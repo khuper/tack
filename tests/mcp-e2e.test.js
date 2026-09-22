@@ -267,3 +267,20 @@ test("e2e: SIGTERM and SIGINT terminate the server even while stdin stays open",
     }
   }
 });
+
+test("e2e: a maximal checkpoint summary is stored in full", async () => {
+  await withMcpClient(async (client, tmpDir) => {
+    const summary = "s".repeat(489);
+    const result = await client.callTool({ name: "checkpoint_work", arguments: { status: "completed", summary } });
+    assert.notStrictEqual(result.isError, true);
+    const notes = fs
+      .readFileSync(path.join(tmpDir, ".tack", "_notes.ndjson"), "utf-8")
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line));
+    assert.strictEqual(notes.at(-1).message, `Completed: ${summary}`, "the prefix must not push the summary past the note clip");
+
+    const tooLong = await client.callTool({ name: "checkpoint_work", arguments: { status: "completed", summary: "s".repeat(490) } });
+    assert.strictEqual(tooLong.isError, true, "a summary that would be clipped is rejected up front");
+  });
+});

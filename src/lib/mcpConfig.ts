@@ -285,6 +285,11 @@ export function isMcpParseError(error: unknown): boolean {
  */
 function mergeServerEntry(current: JsonValue | undefined, entry: JsonObject): JsonObject {
   if (!isPlainObject(current)) return entry;
+  // An entry of another transport shape (`url`, a different `type`) is replaced whole:
+  // merging would produce a hybrid with both `url` and `command` that clients reject.
+  if ("url" in current || ("type" in current && "type" in entry && current["type"] !== entry["type"])) {
+    return entry;
+  }
   const merged: JsonObject = { ...current };
   for (const [key, value] of Object.entries(entry)) {
     const existing = current[key];
@@ -382,20 +387,20 @@ export function mergeJsonMcpConfig(
     );
   }
 
-  const duplicateKey = findDuplicateJsonKey(existingContent);
-  if (duplicateKey !== null) {
-    // JSON.parse keeps the last duplicate and a post-parse comparison cannot see the
-    // one it dropped, so a rewrite would silently delete it.
-    throw new McpManualMergeError(
-      `Could not update ${configLabel}: the key "${duplicateKey}" appears more than once. Remove the duplicate manually, then rerun.`
-    );
-  }
-
   const currentServers: JsonObject = isPlainObject(container) ? container : {};
   const currentEntry = currentServers[serverName];
   const nextEntry = mergeServerEntry(currentEntry, entry);
   if (isDeepEqual(currentEntry, nextEntry)) {
     return { content: existingContent, changed: false };
+  }
+
+  // Only a rewrite can lose a duplicate: JSON.parse keeps the last one and a post-parse
+  // comparison cannot see the one it dropped. An unchanged file is left alone above.
+  const duplicateKey = findDuplicateJsonKey(existingContent);
+  if (duplicateKey !== null) {
+    throw new McpManualMergeError(
+      `Could not update ${configLabel}: the key "${duplicateKey}" appears more than once. Remove the duplicate manually, then rerun.`
+    );
   }
 
   const nextServers: JsonObject = { ...currentServers, [serverName]: nextEntry };

@@ -75,6 +75,8 @@ describe("contextPack", () => {
       ["- [2026-03-09] Use built-in cache—avoids a new dependency", "Use built-in cache", "avoids a new dependency"],
       // The first spaced hyphen wins; later ones belong to the reasoning.
       ["- [2026-03-09] Keep zod - it is small - and already installed", "Keep zod", "it is small - and already installed"],
+      // A hand-typed double hyphen with spaces is a dash too.
+      ["- [2026-03-09] Keep the monorepo -- splitting it costs more than it saves", "Keep the monorepo", "splitting it costs more than it saves"],
       // Hyphenated words on both sides of the separator.
       ["- [2026-03-09] Ship read-only mode - long-running sessions need it", "Ship read-only mode", "long-running sessions need it"],
       // Mojibake em dash from a file saved as latin-1 and read as UTF-8.

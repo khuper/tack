@@ -813,6 +813,27 @@ test("JSON merge keeps the user's additions to the tack entry and reports unchan
   assert.strictEqual(entry.command, "cmd");
 });
 
+test("JSON merge leaves a file with duplicate keys alone when the tack entry is already current", () => {
+  const current = JSON.parse(mergeJson("cursor", null).content).mcpServers.tack;
+  const existing =
+    '{\n  "mcpServers": {\n    "other": { "command": "a", "command": "b" },\n    "tack": ' +
+    JSON.stringify(current) +
+    "\n  }\n}\n";
+  const merged = mergeJson("cursor", existing);
+  assert.strictEqual(merged.changed, false, "nothing to rewrite, so nothing to lose");
+  assert.strictEqual(merged.content, existing);
+});
+
+test("JSON merge replaces a tack entry of another transport shape instead of building a hybrid", () => {
+  const existing = JSON.stringify({ mcpServers: { tack: { type: "sse", url: "http://localhost:3000/sse", disabled: true } } }, null, 2);
+  const merged = mergeJson("claude-code", existing);
+  const entry = JSON.parse(merged.content).mcpServers.tack;
+  assert.strictEqual(entry.url, undefined);
+  assert.strictEqual(entry.disabled, undefined);
+  assert.strictEqual(entry.type, "stdio");
+  assert.strictEqual(typeof entry.command, "string");
+});
+
 test("JSON merge refuses a file with duplicate keys instead of dropping one", () => {
   const existing = '{\n  "mcpServers": { "a": { "command": "a" } },\n  "mcpServers": { "b": { "command": "b" } }\n}\n';
   const error = captureManualError(() => mergeJson("cursor", existing));

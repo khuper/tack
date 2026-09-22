@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Text, Box, Static, useApp, useInput } from "ink";
+import { theme } from "./theme.js";
 import { DriftAlert } from "./DriftAlert.js";
 import { Logo } from "./Logo.js";
 import { MascotLane } from "./MascotLane.js";
@@ -46,7 +47,7 @@ const USEFUL_COMMANDS_LABEL_WIDTH = USEFUL_COMMANDS.reduce(
 function renderHistoryBadge(level: HistoryLevel) {
   if (level === "ready") {
     return (
-      <Text backgroundColor="blue" color="white" bold>
+      <Text backgroundColor={theme.primary} color={theme.onFill} bold>
         {" READY "}
       </Text>
     );
@@ -54,7 +55,7 @@ function renderHistoryBadge(level: HistoryLevel) {
 
   if (level === "read") {
     return (
-      <Text color="cyan" bold>
+      <Text color={theme.agent} bold>
         {" READ "}
       </Text>
     );
@@ -62,7 +63,7 @@ function renderHistoryBadge(level: HistoryLevel) {
 
   if (level === "check") {
     return (
-      <Text backgroundColor="magenta" color="white" bold>
+      <Text backgroundColor={theme.check} color={theme.onFill} bold>
         {" CHECK "}
       </Text>
     );
@@ -70,7 +71,7 @@ function renderHistoryBadge(level: HistoryLevel) {
 
   if (level === "write") {
     return (
-      <Text backgroundColor="green" color="black" bold>
+      <Text backgroundColor={theme.success} color={theme.onFill} bold>
         {" WRITE "}
       </Text>
     );
@@ -78,27 +79,26 @@ function renderHistoryBadge(level: HistoryLevel) {
 
   if (level === "warn") {
     return (
-      <Text backgroundColor="yellow" color="black" bold>
+      <Text backgroundColor={theme.warning} color={theme.onFill} bold>
         {" WARN "}
       </Text>
     );
   }
 
   return (
-    <Text backgroundColor="cyan" color="black" bold>
+    <Text backgroundColor={theme.primaryDeep} color={theme.onFill} bold>
       {" SCAN "}
     </Text>
   );
 }
 
-function historyLevelColor(level: HistoryLevel): "green" | "red" | "yellow" | "cyan" | "magenta" | "blue" {
-  if (level === "good" || level === "write") return "green";
-  if (level === "bad") return "red";
-  if (level === "read") return "cyan";
-  if (level === "check") return "magenta";
-  if (level === "ready") return "blue";
-  if (level === "update") return "blue";
-  return "yellow";
+function historyLevelColor(level: HistoryLevel): string {
+  if (level === "good" || level === "write") return theme.success;
+  if (level === "bad") return theme.danger;
+  if (level === "read") return theme.agent;
+  if (level === "check") return theme.check;
+  if (level === "ready" || level === "update") return theme.primary;
+  return theme.warning;
 }
 
 function noticeToHistoryLevel(category: McpActivityCategory): HistoryLevel {
@@ -116,35 +116,35 @@ function formatAge(ms: number, now = Date.now()): string {
   return `${Math.round(ageMs / (60 * 60_000))}h ago`;
 }
 
-function sessionSummary(state: McpSessionState): { text: string; color: "green" | "yellow" | "cyan" | "magenta" | "blue" | "red" } {
+function sessionSummary(state: McpSessionState): { text: string; color: string } {
   if (state.disconnectedAt != null || state.health === "disconnected") {
-    return { text: "disconnected", color: "red" };
+    return { text: "disconnected", color: theme.danger };
   }
   if (state.awaitingWriteBack && state.repoChangedAfterRead && state.health === "stale") {
-    return { text: "stale after repo changes", color: "red" };
+    return { text: "stale after repo changes", color: theme.danger };
   }
   if (state.awaitingWriteBack && state.repoChangedAfterRead && state.health === "idle") {
-    return { text: "idle after repo changes", color: "yellow" };
+    return { text: "idle after repo changes", color: theme.warning };
   }
   if (state.awaitingWriteBack && state.repoChangedAfterRead) {
-    return { text: "waiting for write-back", color: "yellow" };
+    return { text: "waiting for write-back", color: theme.warning };
   }
   if (state.health === "stale") {
-    return { text: "stale", color: "red" };
+    return { text: "stale", color: theme.danger };
   }
   if (state.health === "idle") {
-    return { text: "idle", color: "yellow" };
+    return { text: "idle", color: theme.warning };
   }
   if (state.lastAction === "write") {
-    return { text: "memory saved", color: "green" };
+    return { text: "memory saved", color: theme.success };
   }
   if (state.lastAction === "check") {
-    return { text: "checked a guardrail", color: "magenta" };
+    return { text: "checked a guardrail", color: theme.check };
   }
   if (state.lastAction === "read") {
-    return { text: "read context", color: "cyan" };
+    return { text: "read context", color: theme.agent };
   }
-  return { text: "connected", color: "blue" };
+  return { text: "connected", color: theme.primary };
 }
 
 function healthLabel(health: McpSessionHealth): string {
@@ -154,7 +154,7 @@ function healthLabel(health: McpSessionHealth): string {
 function trustHeadline(
   installVerification: ReturnType<typeof getMcpInstallVerification>,
   sessionStates: McpSessionState[]
-): { text: string; color: "green" | "yellow" | "cyan" | "red" } {
+): { text: string; color: string } {
   const staleOrRisky = sessionStates.filter(
     (state) =>
       state.health === "stale" ||
@@ -165,27 +165,27 @@ function trustHeadline(
   if (staleOrRisky > 0) {
     return {
       text: `${staleOrRisky} session${staleOrRisky === 1 ? "" : "s"} need attention`,
-      color: "yellow",
+      color: theme.warning,
     };
   }
 
   if (installVerification.status === "write_seen") {
-    return { text: "agent context loop verified", color: "green" };
+    return { text: "agent context loop verified", color: theme.success };
   }
 
   if (installVerification.status === "read_seen") {
-    return { text: "agent has read context; waiting for write-back", color: "cyan" };
+    return { text: "agent has read context; waiting for write-back", color: theme.agent };
   }
 
-  return { text: "waiting for first agent read", color: "yellow" };
+  return { text: "waiting for first agent read", color: theme.warning };
 }
 
 function renderVerificationStatus(status: "pending" | "done", text: string, detail?: string): React.JSX.Element {
   return (
     <Box>
-      <Text color={status === "done" ? "green" : "yellow"}>{status === "done" ? "[done]" : "[wait]"}</Text>
+      <Text color={status === "done" ? theme.success : theme.warning}>{status === "done" ? "✓" : "○"}</Text>
       <Text> </Text>
-      <Text color={status === "done" ? "green" : "yellow"}>{text}</Text>
+      <Text color={status === "done" ? theme.success : theme.warning}>{text}</Text>
       {detail ? <Text dimColor>{`  ${detail}`}</Text> : null}
     </Box>
   );
@@ -369,15 +369,15 @@ export function Watch({ animate = true }: WatchProps = {}) {
     <Box flexDirection="column">
       <Logo />
 
-      <Box borderStyle="single" borderColor="gray" paddingX={1} justifyContent="space-between">
+      <Box borderStyle="single" borderColor={theme.border} paddingX={1} justifyContent="space-between">
         <Text>
           <Text bold>{projectName}</Text>
           {"  "}
-          <Text color="green">{systemCount} systems</Text>
+          <Text color={theme.success}>{systemCount} systems</Text>
           {"  "}
-          {driftCount > 0 ? <Text color="yellow">{driftCount} drift</Text> : <Text color="green">0 drift</Text>}
+          {driftCount > 0 ? <Text color={theme.warning}>{driftCount} drift</Text> : <Text color={theme.success}>0 drift</Text>}
           {"  "}
-          <Text color="cyan">{sessionStates.length} sessions</Text>
+          <Text color={theme.agent}>{sessionStates.length} sessions</Text>
         </Text>
         <Text dimColor>Last scan: {lastScan}</Text>
       </Box>
@@ -392,10 +392,10 @@ export function Watch({ animate = true }: WatchProps = {}) {
 
       {fatalError ? (
         <Box marginTop={1} flexDirection="column">
-          <Text bold color="red">
+          <Text bold color={theme.danger}>
             watch stopped because of a runtime error
           </Text>
-          <Text color="red">{fatalError}</Text>
+          <Text color={theme.danger}>{fatalError}</Text>
           <Text dimColor>Press q to quit, then rerun `tack watch` after fixing the underlying filesystem issue.</Text>
         </Box>
       ) : (
@@ -415,7 +415,7 @@ export function Watch({ animate = true }: WatchProps = {}) {
 
       <Box marginTop={1} flexDirection="column">
         <Text bold>Trust Loop</Text>
-        <Text color={installVerification.status === "write_seen" ? "green" : installVerification.status === "read_seen" ? "cyan" : "yellow"}>
+        <Text color={installVerification.status === "write_seen" ? theme.success : installVerification.status === "read_seen" ? theme.agent : theme.warning}>
           {installVerification.summary}
         </Text>
         {renderVerificationStatus(
@@ -439,7 +439,7 @@ export function Watch({ animate = true }: WatchProps = {}) {
             return (
               <Box key={state.sessionKey} justifyContent="space-between">
                 <Box>
-                  <Text color="cyan">{display}</Text>
+                  <Text color={theme.agent}>{display}</Text>
                   <Text dimColor>  </Text>
                   <Text color={summary.color}>{summary.text}</Text>
                   <Text dimColor>  </Text>
@@ -458,9 +458,9 @@ export function Watch({ animate = true }: WatchProps = {}) {
 
       {memoryWarnings.length > 0 && (
         <Box marginTop={1} flexDirection="column">
-          <Text color="yellow">Attention</Text>
+          <Text color={theme.warning}>Attention</Text>
           {memoryWarnings.slice(0, 3).map((warning) => (
-            <Text key={warning} color="yellow">
+            <Text key={warning} color={theme.warning}>
               - {warning}
             </Text>
           ))}
@@ -488,7 +488,7 @@ export function Watch({ animate = true }: WatchProps = {}) {
       <Box flexDirection="column" paddingLeft={2}>
         {USEFUL_COMMANDS.map((item) => (
           <Text key={item.command}>
-            <Text color="green">{item.command.padEnd(USEFUL_COMMANDS_LABEL_WIDTH)}</Text>
+            <Text color={theme.success}>{item.command.padEnd(USEFUL_COMMANDS_LABEL_WIDTH)}</Text>
             <Text dimColor>  {item.description}</Text>
           </Text>
         ))}

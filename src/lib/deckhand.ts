@@ -79,7 +79,7 @@ export const DECKHAND_FRAME_MS: Record<DeckhandMode, number> = {
 };
 
 const PALETTE = {
-  brand: "#4ade80",
+  brand: "#38bdf8",
   ink: "#e2e8f0",
   mute: "#94a3b8",
   plank: "#7c5a3a",
@@ -90,7 +90,7 @@ const PALETTE = {
   crateDark: "#b45309",
   flag: "#f87171",
   flagDark: "#b91c1c",
-  scan: ["#86efac", "#4ade80", "#22c55e", "#16a34a", "#14532d"],
+  scan: ["#bae6fd", "#7dd3fc", "#38bdf8", "#0ea5e9", "#0369a1"],
   mcp: ["#a5f3fc", "#67e8f9", "#22d3ee", "#0891b2", "#155e75"],
   idle: ["#cbd5e1", "#94a3b8", "#64748b", "#475569"],
   waterCrest: "#7dd3fc",

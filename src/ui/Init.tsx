@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { Text, Box, useApp } from "ink";
+import { theme } from "./theme.js";
 import SelectInput from "ink-select-input";
 import TextInput from "ink-text-input";
 import { Logo } from "./Logo.js";
@@ -173,7 +174,7 @@ export function Init() {
           </Text>
           <Text>
             {"  "}
-            <Text color="cyan">{systemsToClassify[currentSystemIndex]!.id}</Text>
+            <Text color={theme.agent}>{systemsToClassify[currentSystemIndex]!.id}</Text>
             {systemsToClassify[currentSystemIndex]!.detail && (
               <Text dimColor> ({systemsToClassify[currentSystemIndex]!.detail})</Text>
             )}
@@ -224,7 +225,7 @@ export function Init() {
 
       {phase === "done" && (
         <Box flexDirection="column" marginTop={1}>
-          <Text color="green" bold>
+          <Text color={theme.success} bold>
             ✓ Initialized /.tack/
           </Text>
           <Text>  spec.yaml — your architecture contract</Text>

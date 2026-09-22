@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { Text, Box } from "ink";
+import { theme } from "./theme.js";
 import SelectInput from "ink-select-input";
 import type { DriftItem } from "../lib/signals.js";
 import { resolveDriftItem, resolveDriftItemWithSpec } from "../engine/computeDrift.js";
@@ -136,8 +137,8 @@ export function DriftAlert({ item, onResolved }: Props) {
   const systemId = item.system ?? item.risk ?? "unknown";
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1} marginY={1}>
-      <Text bold color="yellow">
+    <Box flexDirection="column" borderStyle="round" borderColor={theme.warning} paddingX={1} marginY={1}>
+      <Text bold color={theme.warning}>
         ⚠ Drift detected: {systemId}
       </Text>
       <Text>  Source: {item.signal}</Text>
@@ -160,13 +161,13 @@ export function DriftAlert({ item, onResolved }: Props) {
 
       {view === "resolved" && (
         <Box marginTop={1}>
-          <Text color="green">✓ {resolutionLabel}</Text>
+          <Text color={theme.success}>✓ {resolutionLabel}</Text>
         </Box>
       )}
 
       {view === "unpersisted" && (
         <Box flexDirection="column" marginTop={1}>
-          <Text color="red">✗ {failureMessage}</Text>
+          <Text color={theme.danger}>✗ {failureMessage}</Text>
           <Box marginTop={1}>
             <SelectInput
               items={[

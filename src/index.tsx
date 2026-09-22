@@ -36,7 +36,8 @@ const ASCII_LOGO_LINES = [
   "   ██║   ██║  ██║╚██████╗██║  ██╗",
   "   ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝",
 ] as const;
-const ASCII_LOGO_COLORS = [120, 114, 108, 71, 65, 22] as const;
+// Sky to deep blue, the 256-colour twin of theme.brandGradient.
+const ASCII_LOGO_COLORS = [153, 117, 81, 39, 32, 25] as const;
 const ASCII_LOGO = ASCII_LOGO_LINES.map(
   (line, index) => `\x1b[38;5;${ASCII_LOGO_COLORS[index]}m${line}\x1b[0m`
 ).join("\n");

@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { Box, Text, useApp } from "ink";
+import { theme } from "./theme.js";
 import { generateHandoff } from "../engine/handoff.js";
 import { log } from "../lib/logger.js";
 
@@ -41,7 +42,7 @@ export function Handoff({ to }: { to?: string }) {
   }, [exit, to]);
 
   if (error) {
-    return <Text color="red">✗ {error}</Text>;
+    return <Text color={theme.danger}>✗ {error}</Text>;
   }
 
   if (!result) {
@@ -50,7 +51,7 @@ export function Handoff({ to }: { to?: string }) {
 
   return (
     <Box flexDirection="column">
-      <Text color="green">✓ Handoff generated</Text>
+      <Text color={theme.success}>✓ Handoff generated</Text>
       <Text>  Time: {result.generatedAt}</Text>
       <Text>  ID: {result.handoffId}</Text>
       <Text>  Target: {result.handoffTo ?? "unassigned"}</Text>

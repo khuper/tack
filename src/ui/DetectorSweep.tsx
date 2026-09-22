@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Text, Box } from "ink";
+import { theme } from "./theme.js";
 import Spinner from "ink-spinner";
 import { PRIMARY_DETECTORS } from "../detectors/index.js";
 import type { Signal, DetectorResult } from "../lib/signals.js";
@@ -90,8 +91,8 @@ export function DetectorSweep({ onComplete }: Props) {
           <Box key={d.name}>
             <Box width={2}>
               {d.status === "running" && <Spinner type="dots" />}
-              {d.status === "done" && <Text color="green">✓</Text>}
-              {d.status === "warning" && <Text color="yellow">⚠</Text>}
+              {d.status === "done" && <Text color={theme.success}>✓</Text>}
+              {d.status === "warning" && <Text color={theme.warning}>⚠</Text>}
               {d.status === "pending" && <Text dimColor>○</Text>}
             </Box>
             <Text>

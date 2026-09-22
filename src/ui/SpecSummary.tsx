@@ -1,5 +1,6 @@
 import React from "react";
 import { Text, Box } from "ink";
+import { theme } from "./theme.js";
 import type { Spec, SpecDiff, DriftState } from "../lib/signals.js";
 
 type Props = {
@@ -24,7 +25,7 @@ export function SpecSummary({ spec, diff, drift }: Props) {
           .map((s) => (
             <Text key={`${s.id}-${s.detail}`}>
               {"  "}
-              <Text color="green">✓</Text> {s.id}: {s.detail ?? "detected"} <Text dimColor>(allowed)</Text>
+              <Text color={theme.success}>✓</Text> {s.id}: {s.detail ?? "detected"} <Text dimColor>(allowed)</Text>
             </Text>
           ))}
         {diff.violations
@@ -32,7 +33,7 @@ export function SpecSummary({ spec, diff, drift }: Props) {
           .map((v) => (
             <Text key={`${v.signal.id}-${v.signal.source}`}>
               {"  "}
-              <Text color="red">✗</Text> {v.signal.id} <Text color="red">(FORBIDDEN — {v.signal.source})</Text>
+              <Text color={theme.danger}>✗</Text> {v.signal.id} <Text color={theme.danger}>(FORBIDDEN — {v.signal.source})</Text>
             </Text>
           ))}
         {diff.undeclared
@@ -40,7 +41,7 @@ export function SpecSummary({ spec, diff, drift }: Props) {
           .map((s) => (
             <Text key={`${s.id}-${s.source}`}>
               {"  "}
-              <Text color="yellow">?</Text> {s.id}: {s.detail ?? "detected"} <Text color="yellow">(undeclared)</Text>
+              <Text color={theme.warning}>?</Text> {s.id}: {s.detail ?? "detected"} <Text color={theme.warning}>(undeclared)</Text>
             </Text>
           ))}
         {diff.missing.map((id) => (
@@ -65,11 +66,11 @@ export function SpecSummary({ spec, diff, drift }: Props) {
                 {"  "}
                 {mismatch ? (
                   <>
-                    <Text color="red">✗</Text> {key}: expected {val}, found {mismatch.signal.detail}
+                    <Text color={theme.danger}>✗</Text> {key}: expected {val}, found {mismatch.signal.detail}
                   </>
                 ) : (
                   <>
-                    <Text color="green">✓</Text> {key}: {val}
+                    <Text color={theme.success}>✓</Text> {key}: {val}
                   </>
                 )}
               </Text>
@@ -86,7 +87,7 @@ export function SpecSummary({ spec, diff, drift }: Props) {
           {diff.risks.map((r) => (
             <Text key={r.id}>
               {"  "}
-              <Text color="yellow">⚠</Text> {r.detail ?? r.id}
+              <Text color={theme.warning}>⚠</Text> {r.detail ?? r.id}
             </Text>
           ))}
         </Box>

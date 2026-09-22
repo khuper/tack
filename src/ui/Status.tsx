@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { Text, Box, useApp } from "ink";
+import { theme } from "./theme.js";
 import { DetectorSweep } from "./DetectorSweep.js";
 import { SpecSummary } from "./SpecSummary.js";
 import type { Signal } from "../lib/signals.js";
@@ -52,7 +53,7 @@ export function Status() {
 
       {phase === "summary" && summaryData && <SpecSummary spec={summaryData.spec} diff={summaryData.diff} drift={summaryData.drift} />}
 
-      {phase === "error" && <Text color="red">✗ {error}</Text>}
+      {phase === "error" && <Text color={theme.danger}>✗ {error}</Text>}
     </Box>
   );
 }

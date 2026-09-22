@@ -3,6 +3,7 @@ import assert from "node:assert";
 import {
   DECKHAND_MAX_WIDTH,
   DECKHAND_MIN_WIDTH,
+  DECKHAND_ROWS,
   clampDeckhandWidth,
   deckhandModeAt,
   renderDeckhandFrame,
@@ -26,7 +27,7 @@ test("every frame is exactly the requested width on every row, in every mode", (
           for (let frame = 0; frame < 120; frame += 7) {
             const rendered = renderDeckhandFrame({ mode, crates, drift, animate: true }, frame, width);
             assert.strictEqual(rendered.width, width);
-            assert.strictEqual(rendered.rows.length, 5);
+            assert.strictEqual(rendered.rows.length, DECKHAND_ROWS);
             for (const row of rendered.rows) {
               const text = rowText(row);
               assert.strictEqual([...text].length, width, `${mode} w=${width} f=${frame}: ${JSON.stringify(text)}`);
@@ -56,6 +57,7 @@ test("frames are deterministic and a still frame ignores the frame counter", () 
   assert.deepStrictEqual(a, b);
 
   const still0 = renderDeckhandFrame({ mode: "scan", crates: 2, drift: false, animate: false }, 0, 64);
+  assert.ok(a.rows.flat().some((run) => run.backgroundColor), "half-block cells carry a background colour");
   const still9 = renderDeckhandFrame({ mode: "scan", crates: 2, drift: false, animate: false }, 9, 64);
   assert.deepStrictEqual(still0, still9);
   assert.strictEqual(still0.caption, "on standby");
@@ -64,10 +66,7 @@ test("frames are deterministic and a still frame ignores the frame counter", () 
 test("the deckhand actually moves while scanning and delivering, and stands still when idle", () => {
   const positions = (mode) =>
     new Set(
-      Array.from({ length: 80 }, (_, frame) => {
-        const [, , body] = frameText(renderDeckhandFrame({ mode, crates: 0, drift: false, animate: true }, frame, 64));
-        return body.indexOf("●");
-      })
+      Array.from({ length: 80 }, (_, frame) => renderDeckhandFrame({ mode, crates: 0, drift: false, animate: true }, frame, 64).sailor.x)
     );
   assert.ok(positions("scan").size > 10, "scanning walks the deck");
   assert.ok(positions("mcp").size > 10, "hauling walks the deck");
@@ -78,29 +77,30 @@ test("the delivery loop carries a crate out and comes back empty-handed", () => 
   let carried = 0;
   let empty = 0;
   for (let frame = 0; frame < 80; frame += 1) {
-    const [, , body] = frameText(renderDeckhandFrame({ mode: "mcp", crates: 0, drift: false, animate: true }, frame, 64));
-    const head = body.indexOf("●");
-    const nextTo = body[head + 1] === "▣" || body[head - 1] === "▣";
-    if (nextTo) carried += 1;
+    const { sailor } = renderDeckhandFrame({ mode: "mcp", crates: 0, drift: false, animate: true }, frame, 64);
+    if (sailor.carrying) carried += 1;
     else empty += 1;
   }
   assert.ok(carried > 20 && empty > 20, `carried=${carried} empty=${empty}`);
 });
 
 test("crates stack on the dock, the count is labelled, and drift flags the front crate", () => {
+  const paintedCells = (frame, color) =>
+    frame.rows.flat().filter((run) => run.color === color || run.backgroundColor === color).reduce((n, run) => n + run.text.length, 0);
+
   const four = renderDeckhandFrame({ mode: "idle", crates: 4, drift: false, animate: true }, 0, 64);
-  const [status, , body, deck] = frameText(four);
+  const [status] = frameText(four);
   assert.ok(status.includes("▣ 4 crates docked"), status);
-  assert.strictEqual((deck.match(/▣/g) ?? []).length, 3, "three crates fit on the lower row");
-  assert.strictEqual((body.match(/▣/g) ?? []).length, 1, "the fourth stacks on top");
+  const one = renderDeckhandFrame({ mode: "idle", crates: 1, drift: false, animate: true }, 0, 64);
+  assert.ok(paintedCells(four, "#f59e0b") > paintedCells(one, "#f59e0b"), "more crates paint more amber");
   assert.ok(!status.includes("▲"));
 
   const flagged = renderDeckhandFrame({ mode: "idle", crates: 2, drift: true, animate: true }, 0, DECKHAND_MAX_WIDTH);
-  const [flaggedStatus, , flaggedBody] = frameText(flagged);
+  const [flaggedStatus] = frameText(flagged);
   assert.ok(flaggedStatus.includes("▲ drift"));
-  assert.ok(flaggedBody.includes("▲"), "a marker sits above the flagged crate");
-  const flagRun = flagged.rows[3].find((run) => run.text.includes("▣") && run.color === "#f87171");
-  assert.ok(flagRun, "the flagged crate is red");
+  assert.ok(paintedCells(flagged, "#f87171") > 0, "the flagged crate and pennant are red");
+  const unflagged = renderDeckhandFrame({ mode: "idle", crates: 2, drift: false, animate: true }, 0, DECKHAND_MAX_WIDTH);
+  assert.strictEqual(paintedCells(unflagged, "#f87171"), 0);
 
   const empty = renderDeckhandFrame({ mode: "idle", crates: 0, drift: false, animate: true }, 0, 64);
   assert.ok(frameText(empty)[0].includes("▣ hold empty"));

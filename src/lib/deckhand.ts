@@ -3,6 +3,11 @@
  * Tack is idle, scanning the repo, or talking to an agent, and how much agent memory
  * has been docked this session.
  *
+ * The scene is pixel art. Each terminal cell carries two vertically stacked pixels
+ * through the half-block glyphs (▀ ▄ █) with independent foreground and background
+ * colours, which is what lets a 7×9-pixel sailor with a cap and breton stripes fit in
+ * five rows of text with no dependency beyond the terminal's colour support.
+ *
  * Everything here is pure: a frame number and a state in, styled text runs out. The
  * Ink component only ticks a counter and paints runs, so every frame is deterministic
  * and testable, and the same frames can be rendered outside a terminal.
@@ -14,15 +19,16 @@ export type DeckhandState = {
   mode: DeckhandMode;
   /** Agent write-backs docked this session (crates on the dock). */
   crates: number;
-  /** Unresolved drift exists: one crate is flagged. */
+  /** Unresolved drift exists: the front crate is flagged. */
   drift: boolean;
-  /** False renders a still frame: no motion, no pulse, no wave. */
+  /** False renders a still frame: no motion, no pulse, no swell. */
   animate: boolean;
 };
 
 export type DeckhandRun = {
   text: string;
   color?: string;
+  backgroundColor?: string;
   dim?: boolean;
   bold?: boolean;
 };
@@ -31,11 +37,14 @@ export type DeckhandFrame = {
   width: number;
   rows: DeckhandRun[][];
   caption: string;
+  /** Where the sailor is and what they are doing, for tests and debugging. */
+  sailor: { x: number; forward: boolean; walking: boolean; carrying: boolean };
 };
 
 type Cell = {
   ch: string;
   color?: string;
+  backgroundColor?: string;
   dim?: boolean;
   bold?: boolean;
 };
@@ -44,12 +53,22 @@ type Style = Omit<Cell, "ch">;
 
 export const DECKHAND_MIN_WIDTH = 44;
 export const DECKHAND_MAX_WIDTH = 76;
+/** Text rows: status line, then the pixel canvas. */
+export const DECKHAND_ROWS = 7;
+
 const LEFT_GUTTER = 2;
-const DOCK_CRATES_WIDE = 3;
-const MAX_VISIBLE_CRATES = 5;
+/** Pixel rows in the canvas: sky and sailor (9), deck plank (1), water (2). */
+const CANVAS_PX_HEIGHT = 12;
+const SPRITE_W = 7;
+const SPRITE_H = 9;
+/** Crates are 3 pixels wide and 3 tall, stacked three across and two high on the dock. */
+const CRATE_PX = 3;
+const DOCK_COLUMNS = 3;
+const DOCK_ROWS = 2;
+const MAX_VISIBLE_CRATES = DOCK_COLUMNS * DOCK_ROWS;
 /** Frames for one crossing of the deck (one direction). */
 const TRAVEL_FRAMES = 34;
-/** Frames the deckhand pauses at either end of a delivery. */
+/** Frames the sailor pauses at either end of a delivery. */
 const PAUSE_FRAMES = 6;
 
 /** Frame intervals in milliseconds, per mode. */
@@ -63,23 +82,154 @@ const PALETTE = {
   brand: "#4ade80",
   ink: "#e2e8f0",
   mute: "#94a3b8",
-  rail: "#334155",
-  railEnd: "#475569",
-  wall: "#64748b",
+  plank: "#7c5a3a",
+  plankDark: "#5b4128",
+  post: "#475569",
   crate: "#f59e0b",
-  crateBright: "#fbbf24",
+  crateLight: "#fcd34d",
+  crateDark: "#b45309",
   flag: "#f87171",
+  flagDark: "#b91c1c",
   scan: ["#86efac", "#4ade80", "#22c55e", "#16a34a", "#14532d"],
   mcp: ["#a5f3fc", "#67e8f9", "#22d3ee", "#0891b2", "#155e75"],
   idle: ["#cbd5e1", "#94a3b8", "#64748b", "#475569"],
-  water: ["#172554", "#1e3a8a", "#1e40af", "#0369a1", "#0284c7", "#0ea5e9"],
+  waterCrest: "#7dd3fc",
+  waterLight: "#0ea5e9",
+  water: "#0369a1",
+  waterDeep: "#1e3a8a",
+  // Sailor.
+  cap: "#f8fafc",
+  capBand: "#1e3a8a",
+  skin: "#f5c9a3",
+  skinShade: "#d9a071",
+  eye: "#0f172a",
+  stripeDark: "#1e3a8a",
+  stripeLight: "#e2e8f0",
+  trousers: "#1e293b",
+  boot: "#0f172a",
 } as const;
 
-const WAVE_GLYPHS = ["▁", "▂", "▃", "▄", "▅", "▆", "▇"] as const;
+/**
+ * Sprite legend. `.` is transparent. Frames are 7 wide by 9 tall; the bottom row is the
+ * boots, which stand on the plank.
+ */
+const SPRITE_INK: Record<string, string> = {
+  W: PALETTE.cap,
+  N: PALETTE.capBand,
+  S: PALETTE.skin,
+  s: PALETTE.skinShade,
+  E: PALETTE.eye,
+  D: PALETTE.stripeDark,
+  L: PALETTE.stripeLight,
+  T: PALETTE.trousers,
+  B: PALETTE.boot,
+};
 
-export function clampDeckhandWidth(columns: number | undefined): number {
-  const available = (columns ?? 80) - 4;
-  return Math.max(DECKHAND_MIN_WIDTH, Math.min(DECKHAND_MAX_WIDTH, available));
+// Facing right. Mirrored for the walk back.
+const SAILOR_STAND = [
+  "..WWW..",
+  ".WWWWW.",
+  ".NNNNN.",
+  "..SSE..",
+  "..sSS..",
+  ".SDDDS.",
+  ".SLLLS.",
+  "..TTT..",
+  "..B.B..",
+];
+
+const SAILOR_STRIDE = [
+  "..WWW..",
+  ".WWWWW.",
+  ".NNNNN.",
+  "..SSE..",
+  "..sSS..",
+  "SDDDDS.",
+  ".LLLLS.",
+  "..T.T..",
+  ".B...B.",
+];
+
+const SAILOR_CARRY_STAND = [
+  "..WWW..",
+  ".WWWWW.",
+  ".NNNNN.",
+  "..SSE..",
+  "..sSS..",
+  "..DDDSS",
+  "..LLL..",
+  "..TTT..",
+  "..B.B..",
+];
+
+const SAILOR_CARRY_STRIDE = [
+  "..WWW..",
+  ".WWWWW.",
+  ".NNNNN.",
+  "..SSE..",
+  "..sSS..",
+  "..DDDSS",
+  ".LLLL..",
+  "..T.T..",
+  ".B...B.",
+];
+
+type Canvas = (string | null)[][];
+
+function makeCanvas(width: number, height: number): Canvas {
+  return Array.from({ length: height }, () => Array.from({ length: width }, () => null));
+}
+
+function px(canvas: Canvas, x: number, y: number, color: string): void {
+  const row = canvas[y];
+  if (!row || x < 0 || x >= row.length) return;
+  row[x] = color;
+}
+
+function blit(canvas: Canvas, sprite: string[], x0: number, y0: number, mirror: boolean): void {
+  for (let y = 0; y < sprite.length; y += 1) {
+    const line = sprite[y]!;
+    for (let x = 0; x < line.length; x += 1) {
+      const key = line[x]!;
+      if (key === ".") continue;
+      const color = SPRITE_INK[key];
+      if (!color) continue;
+      const dx = mirror ? line.length - 1 - x : x;
+      px(canvas, x0 + dx, y0 + y, color);
+    }
+  }
+}
+
+function drawCrate(canvas: Canvas, x0: number, y0: number, flagged: boolean, bright: boolean): void {
+  const fill = flagged ? PALETTE.flag : bright ? PALETTE.crateLight : PALETTE.crate;
+  const dark = flagged ? PALETTE.flagDark : PALETTE.crateDark;
+  const light = flagged ? "#fca5a5" : PALETTE.crateLight;
+  for (let y = 0; y < CRATE_PX; y += 1) {
+    for (let x = 0; x < CRATE_PX; x += 1) {
+      const edge = y === CRATE_PX - 1 || x === CRATE_PX - 1;
+      const highlight = y === 0 && x === 0;
+      px(canvas, x0 + x, y0 + y, edge ? dark : highlight ? light : fill);
+    }
+  }
+}
+
+/** Half-block encoding: two pixels per cell, top as foreground, bottom as background. */
+function canvasToCells(canvas: Canvas, width: number): Cell[][] {
+  const rows: Cell[][] = [];
+  for (let y = 0; y + 1 < canvas.length; y += 2) {
+    const cells: Cell[] = [];
+    for (let x = 0; x < width; x += 1) {
+      const top = canvas[y]![x];
+      const bottom = canvas[y + 1]![x];
+      if (!top && !bottom) cells.push({ ch: " " });
+      else if (top && bottom && top === bottom) cells.push({ ch: "█", color: top });
+      else if (top && bottom) cells.push({ ch: "▀", color: top, backgroundColor: bottom });
+      else if (top) cells.push({ ch: "▀", color: top });
+      else cells.push({ ch: "▄", color: bottom! });
+    }
+    rows.push(cells);
+  }
+  return rows;
 }
 
 function blankRow(width: number): Cell[] {
@@ -95,7 +245,12 @@ function put(row: Cell[], start: number, text: string, style: Style = {}): void 
 }
 
 function sameStyle(a: Style, b: Style): boolean {
-  return a.color === b.color && Boolean(a.dim) === Boolean(b.dim) && Boolean(a.bold) === Boolean(b.bold);
+  return (
+    a.color === b.color &&
+    a.backgroundColor === b.backgroundColor &&
+    Boolean(a.dim) === Boolean(b.dim) &&
+    Boolean(a.bold) === Boolean(b.bold)
+  );
 }
 
 function toRuns(row: Cell[]): DeckhandRun[] {
@@ -109,6 +264,7 @@ function toRuns(row: Cell[]): DeckhandRun[] {
     runs.push({
       text: cell.ch,
       ...(cell.color ? { color: cell.color } : {}),
+      ...(cell.backgroundColor ? { backgroundColor: cell.backgroundColor } : {}),
       ...(cell.dim ? { dim: true } : {}),
       ...(cell.bold ? { bold: true } : {}),
     });
@@ -116,7 +272,12 @@ function toRuns(row: Cell[]): DeckhandRun[] {
   return runs;
 }
 
-/** Smooth ping-pong across [0, 1]: eased so the deckhand slows at either end. */
+export function clampDeckhandWidth(columns: number | undefined): number {
+  const available = (columns ?? 80) - 4;
+  return Math.max(DECKHAND_MIN_WIDTH, Math.min(DECKHAND_MAX_WIDTH, available));
+}
+
+/** Smooth ping-pong across [0, 1]: eased so the sailor slows at either end. */
 function easedPingPong(frame: number, period: number): { t: number; forward: boolean } {
   const cycle = frame % (2 * period);
   const forward = cycle < period;
@@ -179,30 +340,13 @@ function captionFor(state: DeckhandState): string {
   return state.drift ? "deck quiet, flagged cargo waiting" : "deck quiet, waiting for agents";
 }
 
-export function renderDeckhandFrame(state: DeckhandState, frame: number, width: number): DeckhandFrame {
-  const w = Math.max(DECKHAND_MIN_WIDTH, Math.min(DECKHAND_MAX_WIDTH, Math.floor(width)));
-  const colors = modeColors(state.mode);
-  const animate = state.animate;
-  const tick = animate ? frame : 0;
-
+function buildStatusRow(state: DeckhandState, tick: number, w: number, colors: readonly string[]): { row: Cell[]; caption: string } {
   const status = blankRow(w);
-  const air = blankRow(w);
-  const body = blankRow(w);
-  const deck = blankRow(w);
-  const water = blankRow(w);
-
-  // Geometry: rail from the gutter to the dock wall, crates stacked against the right edge.
-  const dockStart = w - DOCK_CRATES_WIDE - 1;
-  const wallX = dockStart - 1;
-  const minX = LEFT_GUTTER;
-  const maxX = wallX - 5;
-  const motion = motionFor(state, tick, minX, maxX);
-
-  // --- status row -------------------------------------------------------------
   put(status, 0, "◆", { color: PALETTE.brand, bold: true });
   put(status, 2, "deckhand", { color: PALETTE.ink, bold: true });
-  const pulse = colors[animate ? Math.floor(tick / 3) % 4 : 1]!;
+  const pulse = colors[state.animate ? Math.floor(tick / 3) % 4 : 1]!;
   put(status, 12, "●", { color: pulse, bold: true });
+
   // Right-hand labels come in a long and a compact form; whichever fits beside the
   // caption is used, and the caption itself is clipped with an ellipsis if it must be.
   const longCrates = state.crates > 0 ? `▣ ${state.crates} ${state.crates === 1 ? "crate" : "crates"} docked` : "▣ hold empty";
@@ -239,106 +383,98 @@ export function renderDeckhandFrame(state: DeckhandState, frame: number, width: 
     put(status, rightStart, crateLabel, state.crates > 0 ? { color: PALETTE.crate } : { color: PALETTE.mute, dim: true });
     if (flagLabel) put(status, rightStart + crateLabel.length + 2, flagLabel, { color: PALETTE.flag, bold: true });
   }
+  return { row: status, caption };
+}
 
-  // --- deck rail, wall and dock ------------------------------------------------
-  put(deck, LEFT_GUTTER, "╶", { color: PALETTE.railEnd });
-  for (let x = LEFT_GUTTER + 1; x < wallX; x += 1) put(deck, x, "─", { color: PALETTE.rail });
-  put(deck, wallX, "┃", { color: PALETTE.wall });
-  put(body, wallX, "┃", { color: PALETTE.wall });
+export function renderDeckhandFrame(state: DeckhandState, frame: number, width: number): DeckhandFrame {
+  const w = Math.max(DECKHAND_MIN_WIDTH, Math.min(DECKHAND_MAX_WIDTH, Math.floor(width)));
+  const colors = modeColors(state.mode);
+  const animate = state.animate;
+  const tick = animate ? frame : 0;
+
+  // Geometry, in pixels horizontally (one pixel per cell) and vertically (two per cell).
+  const plankY = SPRITE_H; // pixel row the boots stand on
+  const dockWidth = DOCK_COLUMNS * CRATE_PX;
+  const dockX = w - dockWidth - 1;
+  const postX = dockX - 1;
+  const minX = LEFT_GUTTER;
+  const maxX = postX - SPRITE_W - CRATE_PX;
+  const motion = motionFor(state, tick, minX, maxX);
+
+  const canvas = makeCanvas(w, CANVAS_PX_HEIGHT);
+
+  // --- deck plank, dock and crates ----------------------------------------------
+  for (let x = LEFT_GUTTER; x < w; x += 1) {
+    px(canvas, x, plankY, x % 6 === 5 ? PALETTE.plankDark : PALETTE.plank);
+  }
+  for (let y = plankY - DOCK_ROWS * CRATE_PX; y < plankY; y += 1) {
+    px(canvas, postX, y, PALETTE.post);
+  }
 
   const visible = Math.min(state.crates, MAX_VISIBLE_CRATES);
-  const lower = Math.min(visible, DOCK_CRATES_WIDE);
-  const upper = visible - lower;
-  const crateColor = motion.landing ? PALETTE.crateBright : PALETTE.crate;
-  for (let index = 0; index < lower; index += 1) {
-    put(deck, dockStart + index, "▣", { color: crateColor, bold: true });
-  }
-  for (let index = 0; index < upper; index += 1) {
-    put(body, dockStart + index, "▣", { color: crateColor, bold: true });
-  }
-  for (let index = lower; index < DOCK_CRATES_WIDE; index += 1) {
-    put(deck, dockStart + index, "▢", { color: PALETTE.rail, dim: true });
+  for (let index = 0; index < visible; index += 1) {
+    const column = index % DOCK_COLUMNS;
+    const level = Math.floor(index / DOCK_COLUMNS);
+    const flagged = state.drift && index === 0;
+    drawCrate(canvas, dockX + column * CRATE_PX, plankY - (level + 1) * CRATE_PX, flagged, motion.landing && index === visible - 1);
   }
   if (state.drift) {
-    // The flagged crate sits at the front of the dock, with a marker above it.
-    const flagX = dockStart + Math.max(0, lower - 1);
-    put(deck, flagX, "▣", { color: PALETTE.flag, bold: true });
-    if (upper === 0 || flagX >= dockStart + upper) {
-      put(body, flagX, "▲", { color: PALETTE.flag, bold: true });
-    } else {
-      put(air, flagX, "▲", { color: PALETTE.flag, bold: true });
-    }
+    // A pennant above the front of the dock.
+    const flagX = dockX;
+    const top = plankY - (visible === 0 ? 0 : Math.min(DOCK_ROWS, Math.ceil(visible / DOCK_COLUMNS)) * CRATE_PX) - 3;
+    px(canvas, flagX, top, PALETTE.flag);
+    px(canvas, flagX + 1, top, PALETTE.flag);
+    px(canvas, flagX, top + 1, PALETTE.flag);
+    px(canvas, flagX, top + 2, PALETTE.flagDark);
+    if (visible === 0) drawCrate(canvas, dockX, plankY - CRATE_PX, true, false);
   }
 
-  // --- water --------------------------------------------------------------------
-  // A long, slow swell travelling under the deck: one low-frequency sine with a faint
-  // second harmonic so crests are not perfectly regular. Kept low and dim so it reads
-  // as a gradient band under the scene, not as a bar chart.
+  // --- water: a slow swell with a bright crest that travels under the deck --------
   const phase = animate ? tick * (state.mode === "idle" ? 0.12 : 0.22) : 0;
   for (let x = 0; x < w; x += 1) {
     const swell = Math.sin(x * 0.19 - phase) + 0.35 * Math.sin(x * 0.43 + phase * 0.6);
-    const level = 2 + 1.6 * swell;
-    const index = Math.max(0, Math.min(4, Math.round(level)));
-    put(water, x, WAVE_GLYPHS[index]!, { color: PALETTE.water[index + 1], dim: index < 2 });
+    px(canvas, x, plankY + 1, swell > 0.55 ? PALETTE.waterCrest : swell > -0.2 ? PALETTE.waterLight : PALETTE.water);
+    px(canvas, x, plankY + 2, swell > 0.2 ? PALETTE.water : PALETTE.waterDeep);
   }
 
-  // --- the deckhand ---------------------------------------------------------------
-  const x = motion.x;
-  const headColor = animate && state.mode === "idle" ? PALETTE.idle[Math.floor(tick / 8) % 2]! : colors[0]!;
-  const armColor = colors[2]!;
-  const legColor = colors[3]!;
-
-  if (motion.carrying) {
-    if (motion.forward) {
-      put(body, x, "╭", { color: armColor });
-      put(body, x + 1, "●", { color: headColor, bold: true });
-      put(body, x + 2, "▣", { color: PALETTE.crate, bold: true });
-    } else {
-      put(body, x, "▣", { color: PALETTE.crate, bold: true });
-      put(body, x + 1, "●", { color: headColor, bold: true });
-      put(body, x + 2, "╮", { color: armColor });
-    }
-  } else {
-    put(body, x, "╭", { color: armColor });
-    put(body, x + 1, "●", { color: headColor, bold: true });
-    put(body, x + 2, "╮", { color: armColor });
-  }
-
+  // --- the sailor ---------------------------------------------------------------
   const stride = motion.walking && Math.floor(tick / 2) % 2 === 0;
-  if (stride) {
-    put(deck, x, "╱", { color: legColor, bold: true });
-    put(deck, x + 1, " ");
-    put(deck, x + 2, "╲", { color: legColor, bold: true });
-  } else {
-    put(deck, x + 1, "┃", { color: legColor, bold: true });
+  // A one-pixel bob on the stride frames sells the walk.
+  const bob = stride ? -1 : 0;
+  const sprite = motion.carrying ? (stride ? SAILOR_CARRY_STRIDE : SAILOR_CARRY_STAND) : stride ? SAILOR_STRIDE : SAILOR_STAND;
+  const spriteY = plankY - SPRITE_H + (stride ? 1 : 0) + bob;
+  blit(canvas, sprite, motion.x, spriteY, !motion.forward);
+  if (motion.carrying) {
+    const crateX = motion.forward ? motion.x + SPRITE_W : motion.x - CRATE_PX;
+    drawCrate(canvas, crateX, spriteY + 4, false, false);
   }
 
-  // --- air row: sweep beam while scanning, signal ripple while talking to an agent ---
+  // Sweep beam while scanning, signal ripple while talking to an agent.
+  const eyeY = spriteY + 3;
   if (animate && state.mode === "scan" && motion.walking) {
-    const beam = ["━", "━", "╸"];
-    for (let index = 0; index < beam.length; index += 1) {
-      const bx = motion.forward ? x + 3 + index : x - 1 - index;
-      put(air, bx, motion.forward ? beam[index]! : beam[index] === "╸" ? "╺" : beam[index]!, {
-        color: PALETTE.scan[Math.min(index + 1, PALETTE.scan.length - 1)],
-        bold: index === 0,
-      });
+    for (let index = 0; index < 5; index += 1) {
+      const bx = motion.forward ? motion.x + SPRITE_W + 1 + index : motion.x - 2 - index;
+      px(canvas, bx, eyeY, PALETTE.scan[Math.min(index, PALETTE.scan.length - 1)]!);
     }
   }
   if (animate && state.mode === "mcp") {
-    // Dots ripple away from the deckhand toward wherever they are headed.
-    const origin = motion.forward ? x + 3 : x - 1;
+    const origin = motion.forward ? motion.x + SPRITE_W + (motion.carrying ? CRATE_PX + 1 : 1) : motion.x - 2;
     const step = motion.forward ? 1 : -1;
-    for (let distance = 0; distance < 7; distance += 1) {
+    for (let distance = 0; distance < 9; distance += 1) {
       if ((tick - distance) % 4 !== 0) continue;
       const shade = PALETTE.mcp[Math.min(Math.floor(distance / 2), PALETTE.mcp.length - 1)]!;
-      put(air, origin + distance * step, distance % 2 === 0 ? "•" : "·", { color: shade, bold: distance < 2 });
+      px(canvas, origin + distance * step, eyeY - 1 - (distance % 2), shade);
     }
   }
 
+  const { row: status, caption } = buildStatusRow(state, tick, w, colors);
+  const rows = [status, ...canvasToCells(canvas, w)].map(toRuns);
+
   return {
     width: w,
-    rows: [status, air, body, deck, water].map(toRuns),
+    rows,
     caption,
+    sailor: { x: motion.x, forward: motion.forward, walking: motion.walking, carrying: motion.carrying },
   };
 }
 

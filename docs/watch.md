@@ -37,7 +37,7 @@ TACK_AGENT_NAME=codex tack mcp
 
 ## The Deckhand
 
-Under the status bar, watch shows a small animated scene that mirrors what the watcher is doing, so you can read the state of the loop from across the room:
+Under the status bar, watch shows a small pixel-art scene (drawn with half-block characters, so it needs a terminal with colour support) that mirrors what the watcher is doing, so you can read the state of the loop from across the room:
 
 - a repo scan sends the deckhand walking the deck with a sweep beam ahead
 - an agent event (a read, a rule check, a write-back) has the deckhand hauling a crate to the hold, with a signal ripple

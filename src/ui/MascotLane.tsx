@@ -41,7 +41,13 @@ function Row({ runs }: { runs: DeckhandRun[] }) {
   return (
     <Text>
       {runs.map((run, index) => (
-        <Text key={index} color={run.color} dimColor={run.dim ?? false} bold={run.bold ?? false}>
+        <Text
+          key={index}
+          color={run.color}
+          backgroundColor={run.backgroundColor}
+          dimColor={run.dim ?? false}
+          bold={run.bold ?? false}
+        >
           {run.text}
         </Text>
       ))}

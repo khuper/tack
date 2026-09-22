@@ -56,6 +56,9 @@ describe("computeDrift", () => {
     const first = computeDrift(buildDiff());
     const item = first.state.items[0]!;
     const next = resolveDriftItem(item.id, "accepted", "ok");
-    expect(next.items.find((i) => i.id === item.id)!.status).toBe("accepted");
+    expect(next.persisted).toBe(true);
+    expect(next.error).toBeNull();
+    expect(next.state.items.find((i) => i.id === item.id)!.status).toBe("accepted");
+    expect(readDrift().items.find((i) => i.id === item.id)!.status).toBe("accepted");
   });
 });

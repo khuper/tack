@@ -166,12 +166,19 @@ describe("memory summaries", () => {
     expect(briefing.summary).toContain("call log_decision when you make or recommend a direction change");
     expect(briefing.summary).toContain("call checkpoint_work before finishing each meaningful task");
     expect(briefing.summary).toContain("check_rule mid-task before structural changes");
-    expect(briefing.rules_count).toBe(4);
+    expect(briefing.rules_count).toBe(5);
     expect(briefing.open_drift_count).toBe(1);
     expect(briefing.estimated_tokens).toBeGreaterThan(0);
   });
 
   it("checks explicit guardrails for a concrete architecture question", () => {
+    writeSpec({
+      project: "demo",
+      allowed_systems: ["framework", "auth"],
+      forbidden_systems: ["payments"],
+      constraints: { framework: "nextjs", auth: "clerk", db: "postgres" },
+    });
+
     const result = buildRuleCheckResult("Can I use sqlite for local storage here?");
 
     expect(result.status).toBe("discouraged");
@@ -276,8 +283,13 @@ describe("memory summaries", () => {
     ]);
 
     const patterns = analyzeSessionPatterns();
-    expect(patterns.repeated_blockers[0]).toContain("project root detection");
-    expect(patterns.rediscovered[0]).toContain("workspace snapshot compact");
+    expect(patterns.repeated_blockers[0]).toContain("[repeated blocker] 2 notes hit:");
+    expect(patterns.repeated_blockers[0]).toContain("project root");
+    expect(patterns.repeated_blockers[0]).toContain("files: src/engine/memory.ts, src/mcp.ts");
+    // Only alpha and gamma found the same thing; delta's note shares a file and the
+    // single word "stay" with them, which is not enough to join the group.
+    expect(patterns.rediscovered[0]).toContain("2 agents independently found: workspace snapshot compact");
+    expect(patterns.rediscovered.length).toBe(1);
     expect(patterns.stale_unfinished[0]).toContain("session pattern summaries");
     expect(patterns.read_write_ratio).toBe("2 of last 5 sessions read context without writing back.");
     expect(patterns.unused_tools).toContain("check_rule");
@@ -294,6 +306,42 @@ describe("memory summaries", () => {
     const briefing = buildBriefingResult();
     expect(briefing.summary).toContain("Patterns:");
     expect(briefing.summary).not.toContain("Patterns: none.");
+  });
+
+  it("does not merge notes that share a file but only one word", () => {
+    writeNotes([
+      {
+        ts: "2026-03-06T10:00:00.000Z",
+        type: "discovered",
+        message: "Workspace snapshot should stay compact so agents read it before facts",
+        actor: "agent:alpha",
+        related_files: ["src/engine/memory.ts"],
+      },
+      {
+        ts: "2026-03-07T10:00:00.000Z",
+        type: "discovered",
+        message: "Pattern summaries need to stay under five lines",
+        actor: "agent:delta",
+        related_files: ["src/engine/memory.ts"],
+      },
+      {
+        ts: "2026-03-08T10:00:00.000Z",
+        type: "discovered",
+        message: "Keep the workspace snapshot compact so agents actually read it before facts",
+        actor: "agent:gamma",
+        related_files: ["src/engine/memory.ts"],
+      },
+    ]);
+    writeLogs([
+      { ts: "2026-03-06T10:00:00.000Z", event: "mcp:resource", resource: "tack://session" },
+      { ts: "2026-03-07T10:00:00.000Z", event: "mcp:resource", resource: "tack://session" },
+      { ts: "2026-03-08T10:00:00.000Z", event: "mcp:resource", resource: "tack://session" },
+    ]);
+
+    const patterns = analyzeSessionPatterns();
+    expect(patterns.rediscovered.length).toBe(1);
+    expect(patterns.rediscovered[0]).toContain("2 agents independently found");
+    expect(patterns.rediscovered[0]).toContain("found: workspace snapshot compact agents read facts");
   });
 
   it("suppresses pattern output when there are fewer than three session starts", () => {

@@ -133,6 +133,14 @@ npm run test:publish
 npm run build
 ```
 
+The engine, lib, and detector unit tests under `tests/engine`, `tests/lib`, and `tests/detectors` run on Bun and import the TypeScript sources directly:
+
+```bash
+npm run test:unit
+```
+
+CI runs all three suites on every push and pull request.
+
 Optional:
 
 ```bash

@@ -81,6 +81,24 @@ describe("validateSpec", () => {
     );
 
     expect(data).not.toBeNull();
+    // Only the salvageable part survives: "badRoot" and "empty" are dropped, and the
+    // "mixed" domain keeps its one valid system while losing the bad label, the
+    // non-string system, and the unknown constraint key.
+    expect(data?.domains).toEqual({ mixed: { systems: ["db"] } });
+    expect(warnings).toContain('Domain "badRoot" must be an object and was skipped');
+    expect(warnings).toContain('Domain "empty" was empty after sanitization and removed');
+    expect(warnings).toContain(
+      'Unknown constraint key "unknown_key" in domains.mixed.constraints ignored'
+    );
+  });
+
+  it("drops the domains map entirely when nothing in it survives", () => {
+    const { data, warnings } = validateSpec(
+      { project: "demo", domains: { badRoot: "not-an-object", empty: {} } },
+      "/tmp/demo"
+    );
+
+    expect(data).not.toBeNull();
     expect(data?.domains).toBeUndefined();
     expect(warnings.length).toBeGreaterThan(0);
   });

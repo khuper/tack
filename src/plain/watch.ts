@@ -5,13 +5,14 @@ import {
   type McpActivityNotice,
   type McpSessionState,
 } from "../lib/logger.js";
+import { describeMissingSpec } from "../lib/files.js";
 import { getWatchScanSummary } from "../lib/watch.js";
 import { createWatchController } from "../lib/watchController.js";
 import { blue, checkBadge, gray, green, mcpBadge, red, yellow } from "./colors.js";
 
 function printSnapshot(reason: string, result = runStatusScan()): boolean {
   if (!result) {
-    console.error("No spec.yaml found. Run 'tack init' first.");
+    console.error(describeMissingSpec());
     return false;
   }
 
@@ -63,9 +64,9 @@ function getWatchErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export async function runWatchPlain(): Promise<void> {
+export async function runWatchPlain(): Promise<boolean> {
   const ok = printSnapshot("initial");
-  if (!ok) return;
+  if (!ok) return false;
 
   let sessionStates: McpSessionState[] = [];
   let errorMessage: string | null = null;
@@ -89,7 +90,7 @@ export async function runWatchPlain(): Promise<void> {
     onRepoScan: ({ event, filepath }) => {
       const result = runStatusScan();
       if (!result) {
-        errorMessage = "No spec.yaml found. Run 'tack init' first.";
+        errorMessage = describeMissingSpec();
         void controller.stop();
         return;
       }
@@ -122,4 +123,5 @@ export async function runWatchPlain(): Promise<void> {
   if (errorMessage) {
     throw new Error(getWatchErrorMessage(errorMessage));
   }
+  return true;
 }

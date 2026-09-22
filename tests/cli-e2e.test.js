@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -66,5 +66,75 @@ test("e2e: commands that need .tack fail cleanly before init", () => {
     const status = runCli(tmpDir, ["status"]);
     assert.notStrictEqual(status.code, 0, "status without .tack should exit non-zero");
     assert.match(`${status.stdout}${status.stderr}`, /\.tack|tack init/i, "the error should point at tack init");
+  });
+});
+
+test("e2e: diff rejects an unknown base ref with a non-zero exit", () => {
+  withTempRepo((tmpDir) => {
+    fs.rmSync(path.join(tmpDir, ".git"), { recursive: true, force: true });
+    const git = (...args) => execFileSync("git", args, { cwd: tmpDir, stdio: ["ignore", "pipe", "pipe"] });
+    git("init");
+    git("config", "user.email", "test@example.com");
+    git("config", "user.name", "Tack Test");
+    assert.strictEqual(runCli(tmpDir, ["init"]).code, 0);
+    git("add", ".");
+    git("commit", "-m", "init");
+
+    const result = runCli(tmpDir, ["diff", "nope"]);
+    assert.strictEqual(result.code, 1, "an unknown ref must not exit 0");
+    assert.match(result.stderr, /Unknown git ref "nope"/);
+  });
+});
+
+test("e2e: note command exit codes and numeric messages", () => {
+  withTempRepo((tmpDir) => {
+    assert.strictEqual(runCli(tmpDir, ["init"]).code, 0);
+
+    const bogus = runCli(tmpDir, ["note", "--type", "bogus"]);
+    assert.strictEqual(bogus.code, 1, "an unknown note type is an error");
+    assert.match(bogus.stderr, /Unknown note type/);
+
+    const numeric = runCli(tmpDir, ["note", "--message", "2024"]);
+    assert.strictEqual(numeric.code, 0, numeric.stderr);
+    assert.match(numeric.stdout, /Note added/);
+    const notes = fs.readFileSync(path.join(tmpDir, ".tack", "_notes.ndjson"), "utf-8");
+    assert.match(notes, /"message":"2024"/);
+  });
+});
+
+test("e2e: watch --plain exits non-zero when there is nothing to watch, and names a broken spec", () => {
+  withTempRepo((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    const noSpec = runCli(tmpDir, ["watch", "--plain"]);
+    assert.strictEqual(noSpec.code, 1);
+    assert.match(noSpec.stderr, /No spec\.yaml found/);
+
+    fs.writeFileSync(path.join(tmpDir, ".tack", "spec.yaml"), "- a\n- b\n", "utf-8");
+    const broken = runCli(tmpDir, ["status"]);
+    assert.strictEqual(broken.code, 1);
+    assert.match(broken.stderr, /spec\.yaml is present but invalid|Could not read \.tack\/spec\.yaml/);
+    assert.doesNotMatch(broken.stderr, /No spec\.yaml found/);
+  });
+});
+
+test("e2e: init from a package directory initializes that package, from a plain subdirectory the repo root", () => {
+  withTempRepo((tmpDir) => {
+    const pkgDir = path.join(tmpDir, "packages", "app");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(path.join(pkgDir, "package.json"), '{\n  "name": "app-package"\n}\n', "utf-8");
+
+    const inPackage = runCli(pkgDir, ["init"]);
+    assert.strictEqual(inPackage.code, 0, inPackage.stderr);
+    assert.ok(fs.existsSync(path.join(pkgDir, ".tack", "spec.yaml")), "the package gets its own .tack/");
+    assert.ok(!fs.existsSync(path.join(tmpDir, ".tack")), "the repository root is left alone");
+    assert.match(inPackage.stdout, /Project: app-package/);
+    assert.ok(inPackage.stdout.includes(path.join(pkgDir, ".tack")), "the absolute location is printed");
+
+    const plainDir = path.join(tmpDir, "docs");
+    fs.mkdirSync(plainDir, { recursive: true });
+    const inPlain = runCli(plainDir, ["init"]);
+    assert.strictEqual(inPlain.code, 0, inPlain.stderr);
+    assert.ok(fs.existsSync(path.join(tmpDir, ".tack", "spec.yaml")), "a directory with no manifest initializes the repo root");
+    assert.ok(!fs.existsSync(path.join(plainDir, ".tack")));
   });
 });

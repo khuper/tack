@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import {
   assumptionsPath,
   auditPath,
@@ -80,6 +80,23 @@ function readUntrustedString(value: unknown): string | null {
 
 function timestampIdFromIso(iso: string): string {
   return iso.replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+/**
+ * The id has second granularity, so two handoffs generated in the same second (a script
+ * targeting two agents, or a retry) would share a name and the second would silently
+ * replace the first. Keep the timestamp suffix, which archiving sorts on, and disambiguate
+ * with a counter before it.
+ */
+function uniqueHandoffBaseName(preferred: string): string {
+  const separator = preferred.lastIndexOf("_");
+  const label = separator === -1 ? preferred : preferred.slice(0, separator);
+  const suffix = separator === -1 ? "" : preferred.slice(separator);
+  let candidate = preferred;
+  for (let n = 2; existsSync(handoffMarkdownPath(candidate)) || existsSync(handoffJsonPath(candidate)); n += 1) {
+    candidate = `${label}-${n}${suffix}`;
+  }
+  return candidate;
 }
 
 function slugify(input: string, max = 40): string {
@@ -428,7 +445,9 @@ function toMarkdown(report: HandoffReport): string {
   lines.push("");
 
   lines.push("## Summary");
-  lines.push(sanitizeMd(report.summary));
+  // summaryText() is generated from counts, never from repo content, so it needs no
+  // markdown defanging; sanitizing it turned "system(s)" into "system_s_".
+  lines.push(report.summary);
   if (report.recent_work.length > 0) {
     lines.push("");
     lines.push("## Recent Work");
@@ -558,8 +577,11 @@ function toMarkdown(report: HandoffReport): string {
     renderList(
       lines,
       report.implementation_status.map((e) => {
-        const anchorText = e.anchors.length > 0 ? ` (${e.anchors.join(", ")})` : "";
-        return `${sanitizeMd(e.key)}: ${sanitizeMd(e.status)}${sanitizeMd(anchorText)} (${contextRefToString(e.source)})`;
+        // Sanitize the anchors, not the parentheses Tack puts around them: running the
+        // whole suffix through sanitizeMd rendered "implemented (src/a.ts)" as
+        // "implemented_src/a.ts_".
+        const anchorText = e.anchors.length > 0 ? ` (${sanitizeMdList(e.anchors).join(", ")})` : "";
+        return `${sanitizeMd(e.key)}: ${sanitizeMd(e.status)}${anchorText} (${contextRefToString(e.source)})`;
       }),
       12
     );
@@ -707,7 +729,7 @@ export function generateHandoff(options: { to?: string } = {}): {
   const generatedAt = new Date().toISOString();
   const branch = getCurrentBranch();
   const tsId = timestampIdFromIso(generatedAt);
-  const baseName = `${handoffLabel(branch)}_${tsId}`;
+  const baseName = uniqueHandoffBaseName(`${handoffLabel(branch)}_${tsId}`);
 
   const report: HandoffReport = {
     schema_version: "1.2.0",

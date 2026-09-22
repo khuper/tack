@@ -24,8 +24,16 @@ const MAX_UNTRUSTED_LINE_LENGTH = 500;
  *   currently the primary ASCII-smuggling carrier (this also strips emoji presentation
  *   selectors from untrusted text, which is an accepted cosmetic cost)
  * - U+E0000..U+E007F the Unicode Tags block, which mirrors printable ASCII 1:1 ("ASCII smuggling")
+ * - every other `Cf` (format) code point: the deprecated U+206A..U+206F controls, the
+ *   interlinear annotation characters U+FFF9..U+FFFB, the musical symbol controls
+ *   U+1D173..U+1D17A, and the Arabic/Syriac/Kaithi number signs, all of which render as
+ *   nothing and could otherwise sit inside a forged wrapper tag
+ * - U+034F COMBINING GRAPHEME JOINER (category Mn, survives NFC) and the U+115F/U+1160
+ *   Hangul choseong/jungseong fillers, invisible siblings of U+3164/U+FFA0
+ * - U+17B4/U+17B5 Khmer inherent vowels, which are invisible in every font
  */
-const INVISIBLE_CHARACTERS = /[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2065\u2066-\u2069\u3164\ufe00-\ufe0f\uffa0\ufeff]|[\u{e0000}-\u{e007f}]|[\u{e0100}-\u{e01ef}]/gu;
+const INVISIBLE_CHARACTERS =
+  /\p{Cf}|[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2065\u2066-\u2069\u3164\ufe00-\ufe0f\uffa0\ufeff]|[\u{e0000}-\u{e007f}]|[\u{e0100}-\u{e01ef}]/gu;
 
 /**
  * Line terminators that are not ASCII newlines: U+0085 NEL, U+2028 LINE SEPARATOR and
@@ -65,8 +73,29 @@ function escapeXmlAttr(value: string): string {
  * early and have the text after it read as trusted instructions.
  */
 export function neutralizeUntrustedBoundary(content: string): string {
-  return content.replace(/<(\s*\/?\s*)untrusted_project_context/gi, "&lt;$1untrusted_project_context");
+  return content.replace(UNTRUSTED_BOUNDARY_TAG, (_match, slash: string) => `&lt;${slash}${UNTRUSTED_TAG_NAME}`);
 }
+
+const UNTRUSTED_TAG_NAME = "untrusted_project_context";
+
+/**
+ * Matches the wrapper tag name however it is dressed up: ASCII or fullwidth letters
+ * (U+FF41..), an ASCII or fullwidth low line (U+FF3F), and any combining mark or format
+ * character between the letters. NFC does not fold fullwidth forms, and a combining
+ * mark or a stray format character a model may well read past would otherwise let a
+ * `.tack/` file close the wrapper early with a tag the literal regex never saw.
+ */
+function buildUntrustedBoundaryTag(): RegExp {
+  const gap = "[\\p{Cf}\\p{Mn}]*";
+  const alternatives = Array.from(UNTRUSTED_TAG_NAME, (ch) => {
+    if (ch === "_") return "[_\\uff3f]";
+    const fullwidth = String.fromCharCode(0xff41 + (ch.charCodeAt(0) - 0x61));
+    return `[${ch}${fullwidth}]`;
+  });
+  return new RegExp(`[<\\uff1c](\\s*\\/?\\s*)${gap}${alternatives.join(gap)}`, "giu");
+}
+
+const UNTRUSTED_BOUNDARY_TAG = buildUntrustedBoundaryTag();
 
 /**
  * Read-time sanitizer for a single untrusted line (note message, decision, context bullet).

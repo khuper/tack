@@ -18,7 +18,7 @@ import { runWatchPlain } from "./plain/watch.js";
 import { log, readRecentLogs } from "./lib/logger.js";
 import { appendDecision, normalizeDecisionActor, readDecisionsMarkdown } from "./engine/decisions.js";
 import { ensureTackIntegrity } from "./lib/files.js";
-import { readSpecWithError, specExists } from "./lib/files.js";
+import { describeMissingSpec, readSpecWithError, specExists } from "./lib/files.js";
 import { getDefaultCommand } from "./lib/cli.js";
 import { printNotes, addNotePlain } from "./plain/notes.js";
 import { compactNotes } from "./lib/notes.js";
@@ -43,7 +43,9 @@ const ASCII_LOGO = ASCII_LOGO_LINES.map(
 import updateNotifier from "update-notifier";
 
 const pkg = readPackageMeta();
-const args = minimist(process.argv.slice(2));
+// Values that must stay strings: minimist coerces `--message 2024` to a number, which
+// then fails the `typeof === "string"` checks and silently changes the command's meaning.
+const args = minimist(process.argv.slice(2), { string: ["message", "reason", "actor", "type", "to"] });
 const rawCommand = args._[0] as string | undefined;
 const shouldCheckForUpdates =
   rawCommand !== "mcp" &&
@@ -109,7 +111,8 @@ ${ASCII_LOGO}
 
   Project root:
     Existing Tack project: nearest ancestor directory that contains .tack/
-    New project: cd to the intended project root, then run "tack init"
+    New project: "tack init" uses the current directory when it has a project
+      manifest (package.json, pyproject.toml, go.mod, ...), otherwise the repository root
   `);
   process.exit(0);
 }
@@ -281,8 +284,7 @@ if (normalizedCommand === "note") {
   if (!hasMessage && !hasClear) {
     const limit = typeof args.limit === "number" ? args.limit : undefined;
     const type = typeof args.type === "string" ? args.type : undefined;
-    printNotes({ limit, type });
-    process.exit(0);
+    process.exit(printNotes({ limit, type }) ? 0 : 1);
   }
 
   if (hasMessage) {
@@ -329,7 +331,7 @@ if (!shouldUseInk) {
     const result = runStatusScan();
     if (!result) {
       // eslint-disable-next-line no-console
-      console.error("No spec.yaml found. Run 'tack init' first.");
+      console.error(describeMissingSpec());
       process.exit(1);
     }
     printStatusPlain(result.status);
@@ -358,8 +360,7 @@ if (!shouldUseInk) {
 
   if (normalizedCommand === "watch") {
     try {
-      await runWatchPlain();
-      process.exit(0);
+      process.exit((await runWatchPlain()) ? 0 : 1);
     } catch (err) {
       printFatal(err);
     }

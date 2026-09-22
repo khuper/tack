@@ -55,7 +55,12 @@ type GitResult = {
   value: string;
 };
 
-function gitExec(args: string[], trim = true): GitResult {
+/**
+ * `listing` marks a command whose output IS the answer (a path list): any failure of
+ * it, not only ENOBUFS, means the scan is incomplete and must be reported as such.
+ * Probes such as `rev-parse HEAD` fail legitimately (no commits) and stay silent.
+ */
+function gitExec(args: string[], trim = true, listing = false): GitResult {
   try {
     const output = execFileSync("git", args, {
       cwd: projectRoot(),
@@ -67,8 +72,29 @@ function gitExec(args: string[], trim = true): GitResult {
     return { ok: true, value: trim ? output.trim() : output };
   } catch (err) {
     reportDiscardedOutput(args, err);
+    if (listing) reportFailedListing(args, err);
     return { ok: false, value: "" };
   }
+}
+
+let warnedGitListingFailed = false;
+
+function reportFailedListing(args: string[], err: unknown): void {
+  const error = err as (NodeJS.ErrnoException & { signal?: string; status?: number }) | undefined;
+  if (error?.code === "ENOBUFS") return;
+  sawDiscardedOutput = true;
+  if (warnedGitListingFailed) return;
+  warnedGitListingFailed = true;
+  const why =
+    error?.code === "ETIMEDOUT" || error?.signal === "SIGTERM"
+      ? `timed out after ${GIT_TIMEOUT_MS / 1000}s`
+      : error?.signal
+        ? `was killed by ${error.signal}`
+        : typeof error?.status === "number"
+          ? `exited with status ${error.status}`
+          : `failed (${error?.code ?? "unknown error"})`;
+  // eslint-disable-next-line no-console
+  console.warn(`[tack] \`git ${args[0]}\` ${why}. Change detection is incomplete until it succeeds.`);
 }
 
 /**
@@ -87,17 +113,31 @@ function splitNulPaths(output: string): string[] {
 }
 
 function gitExecPaths(args: string[]): string[] {
-  const result = gitExec([...args, "-z"], false);
+  const result = gitExec([...args, "-z"], false, true);
   return result.ok ? splitNulPaths(result.value) : [];
 }
 
-/** The worktree's staged, unstaged and untracked paths, in that order. */
+/**
+ * The worktree's staged, unstaged and untracked paths, in that order.
+ *
+ * `--relative` matters when the project root is a subdirectory of the repository (a
+ * package in a monorepo): `git diff` prints paths from the repository root while
+ * `ls-files --others` prints them from the cwd, so without it one listing was
+ * root-relative and the other project-relative, the `.tack/` filter missed Tack's own
+ * files, and changes outside the project were reported as the project's.
+ */
 function worktreePaths(): string[] {
   return [
-    ...gitExecPaths(["diff", "--cached", "--name-only"]),
-    ...gitExecPaths(["diff", "--name-only"]),
+    ...gitExecPaths(["diff", "--cached", "--name-only", "--relative"]),
+    ...gitExecPaths(["diff", "--name-only", "--relative"]),
     ...gitExecPaths(["ls-files", "--others", "--exclude-standard"]),
   ];
+}
+
+/** True when `ref` names a commit git can resolve from the project root. */
+export function refExists(ref: string): boolean {
+  if (!ref || ref.startsWith("-")) return false;
+  return gitExec(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).ok;
 }
 
 export function isGitRepo(): boolean {
@@ -134,7 +174,9 @@ export function readFileAtRef(ref: string, filepath: string): string | null {
   // the caller asked for, which matters for any consumer that compares bytes or cares
   // about a trailing newline. `null` still means "not present at this ref"; an empty file
   // reads back as "".
-  const result = gitExec(["show", `${ref}:${normalizedPath}`], false);
+  // `ref:path` is resolved from the repository root; `ref:./path` from the cwd, which
+  // is the project root and may be a subdirectory of the repository.
+  const result = gitExec(["show", `${ref}:./${normalizedPath}`], false);
   return result.ok ? result.value : null;
 }
 
@@ -186,7 +228,7 @@ function collectChangedFiles(base?: string): string[] {
   if (!hasCommits()) return dedupeAndFilter(worktreePaths());
 
   if (base) {
-    const diff = gitExec(["diff", "--name-only", base, "-z"], false);
+    const diff = gitExec(["diff", "--name-only", "--relative", base, "-z"], false, true);
     if (diff.ok) return dedupeAndFilter(splitNulPaths(diff.value));
   }
 

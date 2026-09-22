@@ -52,10 +52,69 @@ describe("computeDrift", () => {
     expect(readDrift().items.length).toBe(2);
   });
 
+  it("appends one item per fingerprint even when a scan reports the signal twice", () => {
+    const diff = buildDiff();
+    diff.undeclared = [
+      createSignal("system", "db", "package.json (@prisma/client)", 1, "prisma"),
+      createSignal("system", "db", "package.json (pg)", 1, "postgres"),
+    ];
+    const result = computeDrift(diff);
+    const dbItems = result.state.items.filter((item) => item.type === "undeclared_system" && item.system === "db");
+    expect(dbItems.length).toBe(1);
+    expect(new Set(result.state.items.map((item) => item.id)).size).toBe(result.state.items.length);
+  });
+
+  it("does not alert again as forbidden after an undeclared system was denied", () => {
+    const diff: SpecDiff = {
+      aligned: [],
+      undeclared: [createSignal("system", "payments", "package.json (stripe)", 1, "stripe")],
+      missing: [],
+      risks: [],
+      violations: [],
+    };
+    const first = computeDrift(diff);
+    const item = first.newItems.find((i) => i.type === "undeclared_system")!;
+    expect(resolveDriftItem(item.id, "rejected", "not now").persisted).toBe(true);
+
+    // The verdict wrote payments to forbidden_systems; the next scan sees it as forbidden.
+    const afterDeny: SpecDiff = {
+      ...diff,
+      undeclared: [],
+      violations: [
+        {
+          type: "forbidden_system",
+          signal: createSignal("system", "payments", "package.json (stripe)", 1, "stripe"),
+          spec_rule: "forbidden",
+          severity: "error",
+        },
+      ],
+    };
+    const second = computeDrift(afterDeny);
+    expect(second.newItems).toEqual([]);
+    expect(readDrift().items.filter((i) => i.status === "unresolved")).toEqual([]);
+
+    // A system that was forbidden from the start still alerts.
+    const fresh: SpecDiff = {
+      ...afterDeny,
+      violations: [
+        {
+          type: "forbidden_system",
+          signal: createSignal("system", "cms", "package.json (contentful)", 1, "contentful"),
+          spec_rule: "forbidden",
+          severity: "error",
+        },
+      ],
+    };
+    expect(computeDrift(fresh).newItems.map((i) => i.system)).toEqual(["cms"]);
+  });
+
   it("resolves drift item", () => {
     const first = computeDrift(buildDiff());
     const item = first.state.items[0]!;
     const next = resolveDriftItem(item.id, "accepted", "ok");
-    expect(next.items.find((i) => i.id === item.id)!.status).toBe("accepted");
+    expect(next.persisted).toBe(true);
+    expect(next.error).toBeNull();
+    expect(next.state.items.find((i) => i.id === item.id)!.status).toBe("accepted");
+    expect(readDrift().items.find((i) => i.id === item.id)!.status).toBe("accepted");
   });
 });

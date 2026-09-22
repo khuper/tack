@@ -6,7 +6,7 @@ function isValidNoteType(value: string): value is AgentNoteType {
   return (AGENT_NOTE_TYPES as readonly string[]).includes(value);
 }
 
-export function printNotes(opts?: { limit?: number; type?: string }): void {
+export function printNotes(opts?: { limit?: number; type?: string }): boolean {
   const limit = opts?.limit;
   const rawType = opts?.type;
 
@@ -17,7 +17,7 @@ export function printNotes(opts?: { limit?: number; type?: string }): void {
       console.error(
         `Unknown note type: "${rawType}". Allowed types: ${AGENT_NOTE_TYPES.join(", ")}.`
       );
-      return;
+      return false;
     }
     typeFilter = rawType;
   }
@@ -26,7 +26,7 @@ export function printNotes(opts?: { limit?: number; type?: string }): void {
   if (!notes.length) {
     // eslint-disable-next-line no-console
     console.log("No agent notes recorded.");
-    return;
+    return true;
   }
 
   for (const note of notes) {
@@ -35,6 +35,7 @@ export function printNotes(opts?: { limit?: number; type?: string }): void {
     // eslint-disable-next-line no-console
     console.log(`[${note.type}] ${ago} — ${note.message} (${actor})`);
   }
+  return true;
 }
 
 export function addNotePlain(type: string, message: string, actor?: string): boolean {

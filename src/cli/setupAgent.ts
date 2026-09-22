@@ -136,19 +136,28 @@ function getPreferredLineEnding(content: string): string {
   return content.includes("\r\n") ? "\r\n" : "\n";
 }
 
+/**
+ * Appends the block after one blank line, in the file's own line endings, and ends the
+ * file with a newline so formatters and `end-of-file-fixer` have nothing to add.
+ */
 function appendWithBlankLine(content: string, block: string): string {
   const lineEnding = getPreferredLineEnding(content);
+  const blockWithEndings = `${block.replace(/\r?\n/g, lineEnding)}${lineEnding}`;
   if (content.length === 0) {
-    return block;
+    return blockWithEndings;
   }
 
   if (content.endsWith(`${lineEnding}${lineEnding}`)) {
-    return `${content}${block}`;
+    return `${content}${blockWithEndings}`;
   }
   if (content.endsWith(lineEnding)) {
-    return `${content}${lineEnding}${block}`;
+    return `${content}${lineEnding}${blockWithEndings}`;
   }
-  return `${content}${lineEnding}${lineEnding}${block}`;
+  return `${content}${lineEnding}${lineEnding}${blockWithEndings}`;
+}
+
+function freshFileContent(block: string): string {
+  return `${block}\n`;
 }
 
 function validateTargetBeforeWrite(target: AgentTarget, repoRoot: string, force = false): void {
@@ -193,7 +202,7 @@ function applyInstructionsToTarget(target: AgentTarget, repoRoot: string, block:
   fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
 
   if (!fs.existsSync(destinationPath)) {
-    fs.writeFileSync(destinationPath, block, "utf-8");
+    fs.writeFileSync(destinationPath, freshFileContent(block), "utf-8");
     return { target, destinationLabel, status: "installed" };
   }
 
@@ -206,7 +215,7 @@ function applyInstructionsToTarget(target: AgentTarget, repoRoot: string, block:
     const message = error instanceof Error ? error.message : String(error);
     if (message === "Malformed Tack instruction markers.") {
       if (force && !sharedFile) {
-        fs.writeFileSync(destinationPath, block, "utf-8");
+        fs.writeFileSync(destinationPath, freshFileContent(block), "utf-8");
         return { target, destinationLabel, status: "updated" };
       }
       throw new Error(formatMalformedMarkersMessage(destinationLabel));
@@ -224,7 +233,7 @@ function applyInstructionsToTarget(target: AgentTarget, repoRoot: string, block:
   }
 
   if (currentContent.trim().length === 0 || (force && !sharedFile)) {
-    fs.writeFileSync(destinationPath, block, "utf-8");
+    fs.writeFileSync(destinationPath, freshFileContent(block), "utf-8");
     return { target, destinationLabel, status: currentContent.trim().length === 0 ? "installed" : "updated" };
   }
 

@@ -171,10 +171,23 @@ export function recordTelemetryCounts(delta: Partial<TelemetryCounts>): void {
   };
 
   writeTelemetryStats(next);
-  void flushTelemetryIfDue();
+  // Fire-and-forget: a failed flush must never surface as an unhandled rejection and
+  // take the MCP server down after it has already returned a healthy tool result.
+  flushTelemetryIfDue().catch(() => false);
 }
 
 export async function flushTelemetryIfDue(): Promise<boolean> {
+  try {
+    return await flushTelemetryIfDueUnguarded();
+  } catch {
+    // Config/stats reads and writes go through the `.tack/` write boundary and can
+    // throw (blocked symlink, EACCES, ENOSPC). Telemetry is best-effort, so a failure
+    // here is dropped rather than propagated into whichever tool call triggered it.
+    return false;
+  }
+}
+
+async function flushTelemetryIfDueUnguarded(): Promise<boolean> {
   if (telemetryEnvDisabled()) {
     return false;
   }

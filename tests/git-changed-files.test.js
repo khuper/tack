@@ -257,3 +257,80 @@ test("filterChangedPaths keeps significant whitespace but drops split artifacts"
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test("getChangedFiles and readFileAtRef are project-relative when .tack lives in a subdirectory", () => {
+  const originalCwd = process.cwd();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tack-git-nested-"));
+
+  try {
+    git(tmpDir, "init");
+    git(tmpDir, "config", "user.email", "test@example.com");
+    git(tmpDir, "config", "user.name", "Tack Test");
+
+    const app = path.join(tmpDir, "packages", "app");
+    fs.mkdirSync(path.join(app, ".tack"), { recursive: true });
+    fs.mkdirSync(path.join(app, "src"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "other"), { recursive: true });
+    fs.writeFileSync(path.join(app, ".tack", "spec.yaml"), "project: app\nallowed_systems: []\nforbidden_systems: []\nconstraints: {}\n", "utf-8");
+    fs.writeFileSync(path.join(app, "src", "a.ts"), "one\n", "utf-8");
+    fs.writeFileSync(path.join(tmpDir, "other", "b.ts"), "one\n", "utf-8");
+    git(tmpDir, "add", ".");
+    git(tmpDir, "commit", "-m", "first");
+
+    fs.writeFileSync(path.join(app, "src", "a.ts"), "two\n", "utf-8");
+    fs.writeFileSync(path.join(app, "src", "new.ts"), "new\n", "utf-8");
+    fs.writeFileSync(path.join(tmpDir, "other", "b.ts"), "two\n", "utf-8");
+    fs.writeFileSync(path.join(app, ".tack", "_logs.ndjson"), "{}\n", "utf-8");
+
+    process.chdir(app);
+    assert.deepStrictEqual(getChangedFiles().sort(), ["src/a.ts", "src/new.ts"], "only the project's files, project-relative, never .tack/");
+    assert.strictEqual(readFileAtRef("HEAD", ".tack/spec.yaml")?.startsWith("project: app"), true, "committed .tack files resolve from the project root");
+    assert.strictEqual(readFileAtRef("HEAD", "src/a.ts"), "one\n");
+  } finally {
+    process.chdir(originalCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("a failing path listing is reported as an incomplete scan, not a clean one", { skip: process.platform === "win32" }, () => {
+  const originalCwd = process.cwd();
+  const originalPath = process.env.PATH;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tack-git-failing-"));
+
+  try {
+    git(tmpDir, "init");
+    git(tmpDir, "config", "user.email", "test@example.com");
+    git(tmpDir, "config", "user.name", "Tack Test");
+    fs.writeFileSync(path.join(tmpDir, "tracked.txt"), "one\n", "utf-8");
+    git(tmpDir, "add", "tracked.txt");
+    git(tmpDir, "commit", "-m", "first");
+    fs.writeFileSync(path.join(tmpDir, "pending.ts"), "new\n", "utf-8");
+
+    // A git shim that fails `ls-files` (an index.lock, a crash) and delegates everything else.
+    const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf-8" }).trim();
+    const shimDir = path.join(tmpDir, "shim");
+    fs.mkdirSync(shimDir);
+    fs.writeFileSync(
+      path.join(shimDir, "git"),
+      `#!/bin/sh\nif [ "$1" = "ls-files" ]; then exit 128; fi\nexec "${realGit}" "$@"\n`,
+      { encoding: "utf-8", mode: 0o755 }
+    );
+    process.env.PATH = `${shimDir}${path.delimiter}${originalPath}`;
+    process.chdir(tmpDir);
+
+    const originalWarn = console.warn;
+    const warnings = [];
+    console.warn = (message) => warnings.push(String(message));
+    try {
+      assert.deepStrictEqual(getChangedFiles(), [], "the failed listing contributes nothing");
+      assert.strictEqual(changeScanIncomplete(), true, "but the scan is flagged incomplete");
+      assert.ok(warnings.some((w) => /git ls-files.*exited with status 128/.test(w)), `expected a warning, got ${JSON.stringify(warnings)}`);
+    } finally {
+      console.warn = originalWarn;
+    }
+  } finally {
+    process.env.PATH = originalPath;
+    process.chdir(originalCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

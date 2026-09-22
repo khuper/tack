@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 export type SignalCategory = "system" | "scope" | "risk";
 
 export type Signal = {
@@ -103,7 +104,10 @@ export type DriftState = {
 export function createDriftId(): string {
   const now = new Date();
   const date = now.toISOString().split("T")[0]!.replace(/-/g, "");
-  const seq = String(Math.floor(Math.random() * 999)).padStart(3, "0");
+  // Six hex characters (16M values per day) from the CSPRNG. The old three-digit
+  // Math.random() sequence collided at ~1% with five items in a day, and every
+  // consumer looks drift items up by id, so a collision resolved the wrong item.
+  const seq = randomBytes(3).toString("hex");
   return `drift-${date}-${seq}`;
 }
 

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -100,6 +101,17 @@ describe("files", () => {
     expect(fs.existsSync(path.join(repoRoot, ".tack"))).toBeTrue();
   });
 
+  it("skips build output and virtualenvs but keeps source directories with the same names", () => {
+    for (const dir of ["build", "src/build", "src/env", "env", "tools/venv", "node_modules/x"]) {
+      fs.mkdirSync(path.join(tmpDir, dir), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, dir, "a.ts"), "x\n", "utf-8");
+    }
+    fs.writeFileSync(path.join(tmpDir, "env", "pyvenv.cfg"), "home = /usr\n", "utf-8");
+
+    const files = listProjectFiles().map((f) => f.replace(/\\/g, "/")).sort();
+    expect(files).toEqual(["src/build/a.ts", "src/env/a.ts"]);
+  });
+
   it("adds local telemetry files to git exclude without touching project gitignore", () => {
     fs.mkdirSync(path.join(tmpDir, ".git", "info"), { recursive: true });
 
@@ -108,6 +120,49 @@ describe("files", () => {
     const exclude = fs.readFileSync(path.join(tmpDir, ".git", "info", "exclude"), "utf-8");
     expect(exclude).toContain(".tack/_config.json");
     expect(exclude).toContain(".tack/_stats.json");
+    // Lock, claim journal and atomic-write temp files are one machine's, never the repo's.
+    expect(exclude).toContain(".tack/_drift.yaml.lock");
+    expect(exclude).toContain(".tack/_drift.claim.json");
+    expect(exclude).toContain(".tack/.*.tmp");
+    expect(exclude).toContain("*.tack-lock");
+    expect(fs.existsSync(path.join(tmpDir, ".gitignore"))).toBeFalse();
+  });
+
+  it("writes the exclude entries of a linked worktree into the shared git dir", () => {
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: tmpDir, stdio: ["ignore", "pipe", "pipe"] });
+    git("init");
+    git("config", "user.email", "test@example.com");
+    git("config", "user.name", "Tack Test");
+    fs.writeFileSync(path.join(tmpDir, "README.md"), "hi\n", "utf-8");
+    git("add", "README.md");
+    git("commit", "-m", "init");
+    const worktree = path.join(tmpDir, "feature-wt");
+    git("worktree", "add", "-b", "feature", worktree);
+
+    process.chdir(worktree);
+    ensureTackDir();
+
+    // `.git` is a file here, and info/exclude lives in the primary checkout's git dir.
+    expect(fs.statSync(path.join(worktree, ".git")).isFile()).toBeTrue();
+    const exclude = fs.readFileSync(path.join(tmpDir, ".git", "info", "exclude"), "utf-8");
+    expect(exclude).toContain(".tack/_config.json");
+    const status = execFileSync("git", ["status", "--porcelain", "-uall"], { cwd: worktree, encoding: "utf-8" });
+    expect(status).not.toContain("_config.json");
+  });
+
+  it("anchors the exclude entries of a project root nested inside the repository", () => {
+    fs.mkdirSync(path.join(tmpDir, ".git", "info"), { recursive: true });
+    const nested = path.join(tmpDir, "packages", "web");
+    fs.mkdirSync(path.join(nested, ".tack"), { recursive: true });
+    fs.writeFileSync(path.join(nested, ".tack", "spec.yaml"), "project: web\n", "utf-8");
+
+    process.chdir(nested);
+    ensureTackDir();
+
+    const exclude = fs.readFileSync(path.join(tmpDir, ".git", "info", "exclude"), "utf-8");
+    expect(exclude).toContain("packages/web/.tack/_config.json");
+    expect(exclude).not.toMatch(/^\.tack\/_config\.json$/m);
   });
 
   it("does not migrate an unrelated sibling directory named tack", () => {

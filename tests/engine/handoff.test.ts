@@ -42,6 +42,54 @@ describe("handoff", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it("never overwrites a handoff generated in the same second", () => {
+    const first = generateHandoff({ to: "alice" });
+    const second = generateHandoff({ to: "bob" });
+
+    expect(second.jsonPath).not.toBe(first.jsonPath);
+    expect(second.report.handoff.id).not.toBe(first.report.handoff.id);
+    expect(fs.existsSync(first.jsonPath)).toBeTrue();
+    expect(fs.existsSync(second.jsonPath)).toBeTrue();
+    expect(JSON.parse(fs.readFileSync(first.jsonPath, "utf-8")).handoff.to).toBe("alice");
+    expect(JSON.parse(fs.readFileSync(second.jsonPath, "utf-8")).handoff.to).toBe("bob");
+    // The timestamp stays the trailing segment so archiving still orders by age. When
+    // the two calls land in the same second the counter disambiguates; when they
+    // straddle a second boundary the timestamps already differ.
+    const stamp = (file: string) => path.basename(file).match(/_(\d{8}T\d{6}Z)\.json$/)?.[1];
+    expect(stamp(first.jsonPath)).toBeDefined();
+    if (stamp(first.jsonPath) === stamp(second.jsonPath)) {
+      expect(path.basename(second.jsonPath)).toMatch(/-2_\d{8}T\d{6}Z\.json$/);
+    }
+  });
+
+  it("renders generated parentheses verbatim and defangs only repo-provided text", () => {
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "implementation_status.md"),
+      [
+        "# Implementation Status",
+        "",
+        "- log_rotation: implemented (src/lib/logger.ts, src/lib/ndjson.ts)",
+        "- compaction: pending ([link](http://evil.example))",
+        "",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const result = generateHandoff();
+    const md = fs.readFileSync(result.markdownPath, "utf-8");
+
+    // Tack's own summary sentence is built from counts and must not be mangled.
+    expect(md).toContain("Detected 1 system(s), 1 open drift item(s), and 0 open question(s).");
+    expect(md).not.toContain("system_s_");
+
+    // Anchors keep the parentheses Tack puts around them...
+    expect(md).toContain("- log_rotation: implemented (src/lib/logger.ts, src/lib/ndjson.ts) (");
+    expect(md).not.toContain("implemented_src");
+    // ...while markdown syntax inside the anchor text itself is still neutralized.
+    expect(md).toContain("- compaction: pending (_link__http://evil.example_) (");
+    expect(md).not.toContain("[link](http://evil.example)");
+  });
+
   it("writes markdown and json handoff artifacts", () => {
     const result = generateHandoff();
 
@@ -80,7 +128,7 @@ describe("handoff", () => {
       json.agent_guide.mcp_tools.some(
         (tool: { name: string; description: string }) =>
           tool.name === "checkpoint_work" &&
-          tool.description.includes("default end-of-work write-back")
+          tool.description.includes("Default end-of-work write-back")
       )
     ).toBeTrue();
     expect(
@@ -339,7 +387,7 @@ describe("handoff", () => {
     expect(md).toContain("tack://context/workspace");
     expect(md).toContain("Fast start: read tack://session first, then tack://context/workspace");
     expect(md).toContain("checkpoint_work");
-    expect(md).toContain("default end-of-work write-back");
+    expect(md).toContain("Default end-of-work write-back");
     expect(md).toContain("check_rule");
     expect(md).toContain("Brief mid-task guardrail check");
     expect(md).toContain("Default to checkpoint_work before ending if you made a decision");

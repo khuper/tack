@@ -56,7 +56,14 @@ export function createNdjsonTailReader<T = Record<string, unknown>>(filepath: st
       return [];
     }
 
-    const start = stat.size < offset ? 0 : offset;
+    if (stat.size < offset) {
+      // The file was rotated (rewritten shorter). Whatever unterminated fragment the
+      // previous read left over belonged to the old file; prepending it to the first
+      // line of the new one would corrupt that entry.
+      offset = 0;
+      remainder = "";
+    }
+    const start = offset;
     const length = stat.size - start;
     if (length <= 0) {
       offset = stat.size;
@@ -67,10 +74,12 @@ export function createNdjsonTailReader<T = Record<string, unknown>>(filepath: st
     try {
       fd = fs.openSync(filepath, "r");
       const buffer = Buffer.alloc(length);
-      fs.readSync(fd, buffer, 0, length, start);
-      offset = stat.size;
+      // A concurrent rotation can shrink the file between stat and read; only the
+      // bytes actually read are data, the rest of the buffer is zero padding.
+      const bytesRead = fs.readSync(fd, buffer, 0, length, start);
+      offset = start + bytesRead;
 
-      const chunk = remainder + buffer.toString("utf-8");
+      const chunk = remainder + buffer.subarray(0, bytesRead).toString("utf-8");
       const endsWithNewline = chunk.endsWith("\n");
       const lines = chunk.split("\n");
       remainder = endsWithNewline ? "" : (lines.pop() ?? "");
@@ -127,7 +136,12 @@ export function rotateNdjsonFile(
   try {
     const raw = fs.readFileSync(filepath, "utf-8");
     const lines = raw.split("\n").filter((line) => line.trim().length > 0);
-    trimmed = lines.slice(-keepLines).join("\n");
+    // `slice(-0)` is `slice(0)`: a non-positive budget must keep nothing, not everything.
+    const kept = keepLines <= 0 ? [] : lines.slice(-keepLines);
+    // Over budget but already within the line budget (a few very long lines): a rewrite
+    // would change nothing and only race concurrent appenders, so leave it.
+    if (kept.length === lines.length) return;
+    trimmed = kept.join("\n");
   } catch {
     return;
   }

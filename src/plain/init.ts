@@ -5,6 +5,7 @@ import {
   ensureTackIntegrity,
   ensureContextTemplates,
   ensureTackDir,
+  prepareInitRoot,
   projectRoot,
   specExists,
   writeAudit,
@@ -60,6 +61,7 @@ export async function runInitPlain(): Promise<boolean> {
     return true;
   }
 
+  const root = prepareInitRoot();
   ensureTackDir();
   ensureContextTemplates();
   ensureTelemetryState();
@@ -83,7 +85,7 @@ export async function runInitPlain(): Promise<boolean> {
     systems_detected: signals.filter((s) => s.category === "system").length,
   });
 
-  console.log("✓ Initialized /.tack/");
+  console.log(`✓ Initialized ${path.join(root, ".tack")}${path.sep}`);
   console.log(`Project: ${projectName}`);
   if (inferredAllowed.length > 0) {
     console.log(`Allowed systems (seeded): ${inferredAllowed.join(", ")}`);

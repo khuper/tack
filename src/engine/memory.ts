@@ -298,7 +298,11 @@ function notesAreSimilar(a: AgentNote, b: AgentNote): boolean {
     }
   }
 
-  if (notesShareFiles(a, b) && overlap > 0) {
+  // Sharing a file lowers the bar, but one common word is not evidence of the same
+  // finding: related_files clusters on a repo's hot files, so a single token like
+  // "stay" would merge unrelated discoveries and report agents "independently
+  // finding" something none of them said.
+  if (notesShareFiles(a, b) && overlap >= 2) {
     return true;
   }
 
@@ -705,10 +709,12 @@ export function buildSessionLines(): string[] {
     .map((item) => `[${item.status}] ${item.text} (${contextRefToString(item.source)})`);
   pushBullets(lines, "Open Questions", openQuestions);
 
+  // decisions.md is append-only, so the file order is oldest first; "recent" means the
+  // tail of it, newest at the top (the handoff and briefing already take the tail).
   pushBullets(
     lines,
     "Recent Decisions",
-    pack.decisions.map((item) => `[${item.date}] ${item.decision} - ${item.reasoning}`)
+    [...pack.decisions].reverse().map((item) => `[${item.date}] ${item.decision} - ${item.reasoning}`)
   );
 
   pushBullets(lines, "Recent Work", recentWork.map((item) => formatRecentWorkLine(item)), 4);

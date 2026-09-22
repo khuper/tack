@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { appendSafe, notesPath, writeSafe } from "./files.js";
 import { safeReadNdjson } from "./ndjson.js";
 import { log } from "./logger.js";
@@ -120,23 +121,51 @@ export function compactNotes(maxAgeDays?: number): number {
   const days = maxAgeDays ?? 30;
   if (days <= 0) return 0;
 
-  const notes = safeReadNdjson<AgentNote>(notesPath());
-  if (!notes.length) return 0;
+  let raw: string;
+  try {
+    raw = readFileSync(notesPath(), "utf-8");
+  } catch {
+    return 0;
+  }
 
   const now = Date.now();
   const thresholdMs = days * 24 * 60 * 60 * 1000;
 
-  const recent: AgentNote[] = [];
-  let archivedCount = 0;
-
-  for (const note of notes) {
-    const ts = new Date(note.ts).getTime();
-    if (!Number.isFinite(ts) || now - ts < thresholdMs) {
-      recent.push(note);
+  // Work on the raw lines, not the parsed subset: a line that does not parse (a torn
+  // append from a concurrent writer, a hand edit) is kept verbatim rather than erased,
+  // and lines that stay are written back byte-for-byte.
+  const kept: string[] = [];
+  const archived: AgentNote[] = [];
+  for (const line of raw.split("\n")) {
+    if (line.trim().length === 0) continue;
+    let note: AgentNote | null = null;
+    try {
+      const parsed: unknown = JSON.parse(line);
+      if (parsed && typeof parsed === "object" && typeof (parsed as AgentNote).ts === "string") {
+        note = parsed as AgentNote;
+      }
+    } catch {
+      note = null;
+    }
+    const ts = note ? new Date(note.ts).getTime() : Number.NaN;
+    if (!note || !Number.isFinite(ts) || now - ts < thresholdMs) {
+      kept.push(line);
       continue;
     }
+    archived.push(note);
+  }
 
-    archivedCount += 1;
+  // Nothing to archive means nothing to rewrite: the file stays untouched.
+  if (archived.length === 0) return 0;
+
+  try {
+    writeSafe(notesPath(), kept.length === 0 ? "" : `${kept.join("\n")}\n`);
+  } catch {
+    // The rewrite failed, so nothing was archived; the file is as it was.
+    return 0;
+  }
+
+  for (const note of archived) {
     try {
       log({ event: "note:archived", type: note.type, actor: note.actor });
     } catch {
@@ -144,17 +173,6 @@ export function compactNotes(maxAgeDays?: number): number {
     }
   }
 
-  try {
-    if (recent.length === 0) {
-      writeSafe(notesPath(), "");
-    } else {
-      const content = recent.map((n) => JSON.stringify(n)).join("\n");
-      writeSafe(notesPath(), `${content}\n`);
-    }
-  } catch {
-    // If we fail to rewrite, we still return the archived count
-  }
-
-  return archivedCount;
+  return archived.length;
 }
 

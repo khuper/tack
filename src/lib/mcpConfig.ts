@@ -278,6 +278,74 @@ export function isMcpParseError(error: unknown): boolean {
   return error instanceof McpManualMergeError;
 }
 
+/**
+ * Tack owns the keys it writes (command, args, its env var); everything else in the
+ * entry belongs to the user. Replacing the whole entry threw away a `disabled` flag,
+ * a timeout, or an extra env var on every `setup-agent` rerun, with no signal.
+ */
+function mergeServerEntry(current: JsonValue | undefined, entry: JsonObject): JsonObject {
+  if (!isPlainObject(current)) return entry;
+  // An entry of another transport shape (`url`, a different `type`) is replaced whole:
+  // merging would produce a hybrid with both `url` and `command` that clients reject.
+  if ("url" in current || ("type" in current && "type" in entry && current["type"] !== entry["type"])) {
+    return entry;
+  }
+  const merged: JsonObject = { ...current };
+  for (const [key, value] of Object.entries(entry)) {
+    const existing = current[key];
+    merged[key] = isPlainObject(existing) && isPlainObject(value) ? { ...existing, ...value } : value;
+  }
+  return merged;
+}
+
+/**
+ * Returns the first member name that repeats inside one object, or null. A small
+ * tokenizer rather than a parser: it only needs to track string literals and the
+ * object/array nesting to know which object a name belongs to.
+ */
+export function findDuplicateJsonKey(text: string): string | null {
+  const scopes: Array<Set<string> | null> = [];
+  let expectKey = false;
+  let index = 0;
+  while (index < text.length) {
+    const char = text[index]!;
+    if (char === '"') {
+      let end = index + 1;
+      let escaped = false;
+      while (end < text.length) {
+        const c = text[end]!;
+        if (escaped) escaped = false;
+        else if (c === "\\") escaped = true;
+        else if (c === '"') break;
+        end += 1;
+      }
+      const literal = text.slice(index + 1, end);
+      if (expectKey) {
+        const keys = scopes[scopes.length - 1];
+        if (keys) {
+          if (keys.has(literal)) return literal;
+          keys.add(literal);
+        }
+        expectKey = false;
+      }
+      index = end + 1;
+      continue;
+    }
+    if (char === "{") {
+      scopes.push(new Set());
+      expectKey = true;
+    } else if (char === "[") {
+      scopes.push(null);
+    } else if (char === "}" || char === "]") {
+      scopes.pop();
+    } else if (char === ",") {
+      expectKey = scopes[scopes.length - 1] !== null && scopes.length > 0;
+    }
+    index += 1;
+  }
+  return null;
+}
+
 export function mergeJsonMcpConfig(
   client: McpClientKey,
   existingContent: string | null,
@@ -320,11 +388,22 @@ export function mergeJsonMcpConfig(
   }
 
   const currentServers: JsonObject = isPlainObject(container) ? container : {};
-  if (isDeepEqual(currentServers[serverName], entry)) {
+  const currentEntry = currentServers[serverName];
+  const nextEntry = mergeServerEntry(currentEntry, entry);
+  if (isDeepEqual(currentEntry, nextEntry)) {
     return { content: existingContent, changed: false };
   }
 
-  const nextServers: JsonObject = { ...currentServers, [serverName]: entry };
+  // Only a rewrite can lose a duplicate: JSON.parse keeps the last one and a post-parse
+  // comparison cannot see the one it dropped. An unchanged file is left alone above.
+  const duplicateKey = findDuplicateJsonKey(existingContent);
+  if (duplicateKey !== null) {
+    throw new McpManualMergeError(
+      `Could not update ${configLabel}: the key "${duplicateKey}" appears more than once. Remove the duplicate manually, then rerun.`
+    );
+  }
+
+  const nextServers: JsonObject = { ...currentServers, [serverName]: nextEntry };
   const next: JsonObject = { ...parsed, [containerKey]: nextServers };
   const trailingNewline = existingContent.endsWith("\n") ? "\n" : "";
   const serialized = `${JSON.stringify(next, null, detectJsonIndent(existingContent))}${trailingNewline}`;
@@ -1031,6 +1110,44 @@ function hasInlineTackDeclaration(nodes: TomlNode[], serverPath: string[]): bool
 }
 
 /** Runs the document through a conformant TOML 1.0 parser; failures become `manual`. */
+/**
+ * Rewriting `[mcp_servers.<name>]` replaces the whole table, so any key the user added
+ * (a timeout, an extra env var) would vanish. Report which keys those are, and whether
+ * the managed keys already match so the rewrite can be skipped instead.
+ */
+function unmanagedTomlServerKeys(
+  normalized: string,
+  serverName: string,
+  options: McpConfigOptions
+): { extraKeys: string[]; matchesCanonical: boolean } {
+  let parsed: unknown;
+  try {
+    parsed = parseToml(normalized);
+  } catch {
+    return { extraKeys: [], matchesCanonical: false };
+  }
+  const servers = isPlainObject(parsed) ? parsed["mcp_servers"] : undefined;
+  const table = isPlainObject(servers) ? servers[serverName] : undefined;
+  if (!isPlainObject(table)) return { extraKeys: [], matchesCanonical: false };
+
+  const env = isPlainObject(table["env"]) ? table["env"] : {};
+  const extraKeys = [
+    ...Object.keys(table).filter((key) => key !== "command" && key !== "args" && key !== "env"),
+    ...Object.keys(env)
+      .filter((key) => key !== "TACK_AGENT_NAME")
+      .map((key) => `env.${key}`),
+  ];
+  if (extraKeys.length === 0) return { extraKeys, matchesCanonical: false };
+
+  const definition = getMcpClientDefinition("codex");
+  const { command, args } = buildServerCommand(options);
+  const matchesCanonical =
+    table["command"] === command &&
+    isDeepEqual(table["args"] as JsonValue, args) &&
+    env["TACK_AGENT_NAME"] === definition.agentName;
+  return { extraKeys, matchesCanonical };
+}
+
 function assertParseableToml(normalized: string, configLabel: string): void {
   try {
     parseToml(normalized);
@@ -1097,6 +1214,20 @@ export function mergeTomlMcpConfig(
     throw new McpManualMergeError(
       `Could not parse ${configLabel} as TOML. Add the Tack server entry manually, then rerun.`
     );
+  }
+
+  {
+    const foreign = unmanagedTomlServerKeys(normalized, serverName, options);
+    if (foreign.matchesCanonical) {
+      // The keys Tack manages already hold the values it would write, so the user's
+      // additions are the only difference. Leave the table alone.
+      return { content: existingContent, changed: false };
+    }
+    if (foreign.extraKeys.length > 0) {
+      throw new McpManualMergeError(
+        `Could not update ${configLabel}: "${serverPath.join(".")}" carries keys Tack does not manage (${foreign.extraKeys.join(", ")}) and its command has changed. Update command, args and env.TACK_AGENT_NAME manually, then rerun.`
+      );
+    }
   }
 
   if (hasInlineTackDeclaration(nodes, serverPath)) {

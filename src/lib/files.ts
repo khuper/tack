@@ -32,7 +32,36 @@ const PROJECT_MARKERS = [
   "backlog",
   "dist",
 ] as const;
-const PRIVATE_LOCAL_TACK_FILES = [".tack/_config.json", ".tack/_stats.json"] as const;
+/**
+ * Files that mark the directory they sit in as a project of its own, as opposed to a
+ * mere subdirectory of one. Used only to decide where `tack init` creates `.tack/`.
+ */
+const PROJECT_MANIFESTS = [
+  "package.json",
+  "pyproject.toml",
+  "setup.py",
+  "requirements.txt",
+  "go.mod",
+  "Cargo.toml",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "Gemfile",
+  "composer.json",
+  "mix.exs",
+  "Package.swift",
+  "pubspec.yaml",
+] as const;
+
+/**
+ * Files under `.tack/` that belong to one machine, never to the repository: the local
+ * telemetry config and stats, the drift lock and its claim journal (a committed lock
+ * blocks every clone's scan until someone deletes it by hand, and a committed journal
+ * triggers crash recovery on every clone), and the atomic-write temp files.
+ */
+const PRIVATE_LOCAL_TACK_FILES = ["_config.json", "_stats.json", "_drift.yaml.lock", "_drift.claim.json", ".*.tmp"] as const;
+/** Repository-wide patterns: the per-config lock `setup-mcp` takes next to each client file. */
+const PRIVATE_LOCAL_REPO_PATTERNS = ["*.tack-lock"] as const;
 
 function looksLikeLegacyTackDir(dir: string): boolean {
   try {
@@ -140,6 +169,85 @@ export function projectRoot(): string {
   return findNearestProjectRootWithContext(start) ?? findGitRepoBoundary(start) ?? path.resolve(start);
 }
 
+/**
+ * Where `tack init` should create `.tack/`.
+ *
+ * An existing Tack project wins, as everywhere else. Otherwise a directory that carries
+ * its own manifest (a package in a monorepo) is the project, even inside a larger
+ * repository: an agent runs `tack init` where it works, and jumping to the repository
+ * root would name the project after the wrong directory and scan the whole monorepo.
+ * A plain subdirectory with no manifest of its own falls back to the repository root.
+ */
+export function resolveInitRoot(): string {
+  const start = process.cwd();
+  const existing = findNearestProjectRootWithContext(start);
+  if (existing) return existing;
+  const cwd = path.resolve(start);
+  const hasManifest = PROJECT_MANIFESTS.some((name) => {
+    try {
+      return fs.statSync(path.join(cwd, name)).isFile();
+    } catch {
+      return false;
+    }
+  });
+  if (hasManifest) return cwd;
+  return findGitRepoBoundary(start) ?? cwd;
+}
+
+/**
+ * Creates `.tack/` at the init root so every later `projectRoot()` lookup in this
+ * process resolves there. Returns the root it chose.
+ */
+export function prepareInitRoot(): string {
+  const root = resolveInitRoot();
+  const tackDir = path.join(root, TACK_DIRNAME);
+  assertNotSymlinkStrict(tackDir);
+  if (!fs.existsSync(tackDir)) {
+    fs.mkdirSync(tackDir, { recursive: true });
+  }
+  return root;
+}
+
+/** Directory names that are generated output or dependencies wherever they appear. */
+const IGNORED_DIRECTORIES_ANYWHERE = new Set([
+  "node_modules",
+  ".git",
+  "tack",
+  ".tack",
+  "dist",
+  ".next",
+  ".cache",
+  ".svelte-kit",
+  ".output",
+  ".nuxt",
+  ".vercel",
+  ".netlify",
+  "coverage",
+  "__pycache__",
+  "venv",
+  ".venv",
+  "site-packages",
+]);
+
+/**
+ * Whether a directory is skipped by scans and the watcher. `build/` is only build
+ * output at the project root (`src/build/` is source), and `env/` is only skipped
+ * when it is a Python virtualenv (it carries `pyvenv.cfg`), since `src/env/` is
+ * where plenty of projects keep their environment config.
+ */
+export function isIgnoredProjectDirectory(name: string, absolutePath: string, atProjectRoot: boolean): boolean {
+  if (IGNORED_DIRECTORIES_ANYWHERE.has(name)) return true;
+  if (name === "build") return atProjectRoot;
+  if (name === "env") {
+    try {
+      return fs.statSync(path.join(absolutePath, "pyvenv.cfg")).isFile();
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 export function findProjectRoot(): string {
   return projectRoot();
 }
@@ -200,28 +308,74 @@ function migrateMachineFilesIfNeeded(): void {
   }
 }
 
-function ensurePrivateLocalStateIgnored(): void {
-  const excludePath = path.join(projectRoot(), ".git", "info", "exclude");
-  const excludeDir = path.dirname(excludePath);
-
+/**
+ * Where git keeps `info/exclude` for the repository that contains `root`, and the
+ * directory the patterns in it are relative to.
+ *
+ * `<root>/.git` is a directory only in a primary checkout. In a linked worktree or a
+ * submodule it is a file (`gitdir: <path>`), and that gitdir may in turn name a
+ * `commondir` shared with the primary checkout, which is where `info/exclude` lives.
+ * A project root nested inside the repository has no `.git` of its own at all.
+ */
+function resolveGitExcludeLocation(root: string): { toplevel: string; excludePath: string } | null {
+  const toplevel = findGitRepoBoundary(root);
+  if (!toplevel) return null;
+  const dotGit = path.join(toplevel, ".git");
+  let gitDir: string;
   try {
+    const stat = fs.statSync(dotGit);
+    if (stat.isDirectory()) {
+      gitDir = dotGit;
+    } else if (stat.isFile()) {
+      const match = fs.readFileSync(dotGit, "utf-8").match(/^gitdir:\s*(.+?)\s*$/m);
+      if (!match) return null;
+      gitDir = path.resolve(toplevel, match[1]!);
+    } else {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  try {
+    const common = fs.readFileSync(path.join(gitDir, "commondir"), "utf-8").trim();
+    if (common) gitDir = path.resolve(gitDir, common);
+  } catch {
+    // No commondir: this is the primary checkout's git dir.
+  }
+  return { toplevel, excludePath: path.join(gitDir, "info", "exclude") };
+}
+
+function ensurePrivateLocalStateIgnored(): void {
+  try {
+    const location = resolveGitExcludeLocation(projectRoot());
+    if (!location) {
+      return;
+    }
+    const { toplevel, excludePath } = location;
+    const excludeDir = path.dirname(excludePath);
     if (!fs.existsSync(excludeDir)) {
       return;
     }
 
+    // Patterns with a slash are anchored at the exclude file's root, so a project root
+    // nested inside the repository needs its path from the toplevel in front.
+    const prefix = path.relative(toplevel, getTackDir()).split(path.sep).join("/");
+    const wanted = [
+      ...PRIVATE_LOCAL_TACK_FILES.map((name) => `${prefix}/${name}`),
+      ...PRIVATE_LOCAL_REPO_PATTERNS,
+    ];
+
     const current = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, "utf-8") : "";
     const normalized = current.replace(/\r\n/g, "\n");
-    const missingEntries = PRIVATE_LOCAL_TACK_FILES.filter(
-      (entry) => !normalized.split("\n").some((line) => line.trim() === entry)
-    );
+    const present = new Set(normalized.split("\n").map((line) => line.trim()));
+    const missingEntries = wanted.filter((entry) => !present.has(entry));
 
     if (missingEntries.length === 0) {
       return;
     }
 
-    const prefix = normalized.length > 0 && !normalized.endsWith("\n") ? "\n" : "";
-    const block = `${prefix}${missingEntries.join("\n")}\n`;
-    fs.appendFileSync(excludePath, block, "utf-8");
+    const separator = normalized.length > 0 && !normalized.endsWith("\n") ? "\n" : "";
+    fs.appendFileSync(excludePath, `${separator}${missingEntries.join("\n")}\n`, "utf-8");
   } catch {
     // Ignore exclude-file failures. Telemetry stays local even if exclude setup fails.
   }
@@ -716,27 +870,6 @@ export function listProjectFiles(dir?: string): string[] {
   const root = path.resolve(base, dir ?? ".");
   const pkg = readJson<{ name?: string }>("package.json");
   const isTackRepo = pkg?.name === "tack" || pkg?.name === "tack-cli";
-  const ignore = new Set([
-    "node_modules",
-    ".git",
-    "tack",
-    ".tack",
-    "dist",
-    "build",
-    ".next",
-    ".cache",
-    ".svelte-kit",
-    ".output",
-    ".nuxt",
-    ".vercel",
-    ".netlify",
-    "coverage",
-    "__pycache__",
-    "venv",
-    ".venv",
-    "env",
-    "site-packages",
-  ]);
   const results: string[] = [];
   const selfNoisePrefixes = [
     "src/detectors/",
@@ -764,9 +897,9 @@ export function listProjectFiles(dir?: string): string[] {
     }
 
     for (const entry of entries) {
-      if (ignore.has(entry.name)) continue;
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) {
+        if (isIgnoredProjectDirectory(entry.name, full, current === base)) continue;
         walk(full);
       } else if (entry.isFile()) {
         const rel = path.relative(base, full);
@@ -828,6 +961,22 @@ export function readSpecWithError(): { spec: Spec | null; error: string | null }
   const validated = validateSpec(data, projectRoot());
   emitValidationWarnings("spec.yaml", validated.warnings);
   return { spec: validated.data, error: null };
+}
+
+/**
+ * Why `readSpec()` returned null, for the user: a spec that exists but does not parse
+ * or validate is a different problem from one that was never created, and telling
+ * someone to run `tack init` over a file they have hand-edited sends them the wrong way.
+ */
+export function describeMissingSpec(): string {
+  if (!specExists()) {
+    return "No spec.yaml found. Run 'tack init' first.";
+  }
+  const { error } = readSpecWithError();
+  if (error) {
+    return `Could not read .tack/spec.yaml: ${error}. Fix the file, then rerun.`;
+  }
+  return ".tack/spec.yaml is present but invalid. Check the warnings above, fix the file, then rerun.";
 }
 
 export function writeSpec(spec: Spec): void {

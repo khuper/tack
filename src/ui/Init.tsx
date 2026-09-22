@@ -7,6 +7,7 @@ import { DetectorSweep } from "./DetectorSweep.js";
 import {
   ensureTackIntegrity,
   ensureTackDir,
+  prepareInitRoot,
   ensureContextTemplates,
   specExists,
   writeSpec,
@@ -50,6 +51,7 @@ export function Init() {
         exit();
         return;
       }
+      prepareInitRoot();
       ensureTackDir();
       ensureContextTemplates();
       ensureTelemetryState();

@@ -1,21 +1,6 @@
 import chokidar from "chokidar";
-import { logsPath } from "./files.js";
-
-export const WATCH_IGNORE_PATTERNS = [
-  "**/node_modules/**",
-  "**/.git/**",
-  "**/.tack/**",
-  "**/dist/**",
-  "**/build/**",
-  "**/.next/**",
-  "**/.cache/**",
-  "**/.svelte-kit/**",
-  "**/coverage/**",
-  "**/venv/**",
-  "**/.venv/**",
-  "**/env/**",
-  "**/site-packages/**",
-];
+import * as path from "node:path";
+import { isIgnoredProjectDirectory, logsPath, projectRoot } from "./files.js";
 
 export const WATCH_DEBOUNCE_MS = 300;
 
@@ -24,9 +9,28 @@ export function shouldIgnoreRepoWatchPath(filepath: string): boolean {
   return normalized === ".tack" || normalized.startsWith(".tack/") || normalized.includes("/.tack/");
 }
 
+/**
+ * The watcher's ignore rule, shared with the scanner so both agree on what counts as
+ * project source: any path with an ignored directory among its segments is skipped.
+ */
+export function shouldIgnoreWatchedPath(root: string, watchedPath: string): boolean {
+  const relative = path.isAbsolute(watchedPath) ? path.relative(root, watchedPath) : watchedPath;
+  if (relative === "" || relative.startsWith("..")) return false;
+  const segments = relative.split(/[\\/]/).filter((segment) => segment.length > 0);
+  for (let index = 0; index < segments.length; index += 1) {
+    const absolute = path.join(root, ...segments.slice(0, index + 1));
+    if (isIgnoredProjectDirectory(segments[index]!, absolute, index === 0)) return true;
+  }
+  return false;
+}
+
 export function createRepoWatcher(): chokidar.FSWatcher {
-  return chokidar.watch(".", {
-    ignored: WATCH_IGNORE_PATTERNS,
+  // Anchor on the project root, not the cwd: `tack watch` from a subdirectory should
+  // still see the whole project and report project-relative paths.
+  const root = projectRoot();
+  return chokidar.watch(root, {
+    cwd: root,
+    ignored: (watchedPath: string) => shouldIgnoreWatchedPath(root, watchedPath),
     persistent: true,
     ignoreInitial: true,
     awaitWriteFinish: {

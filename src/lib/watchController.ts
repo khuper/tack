@@ -183,6 +183,20 @@ export function createWatchController(options: WatchControllerOptions = {}): Wat
 
     debounceTimer = setTimeoutFn(() => {
       debounceTimer = null;
+      // A scan can throw (an unwritable _audit.yaml, a blocked symlink, ENOSPC). From a
+      // timer callback that is an uncaught exception: a raw stack trace, watchers never
+      // closed, no "Stopped watch mode". Route it through the same path a watcher error
+      // takes so the UI reports it and stop() runs.
+      try {
+        runDebouncedScan(event, filepath);
+      } catch (err) {
+        handleWatcherError("Watch scan error", err);
+      }
+    }, debounceMs);
+  }
+
+  function runDebouncedScan(event: string, filepath: string): void {
+    {
       const changedFiles = getChangedFilesOption();
       if (changedFiles.length > 0) {
         updateSessionStates(markMcpSessionsRepoChanged(sessionStates));
@@ -227,7 +241,7 @@ export function createWatchController(options: WatchControllerOptions = {}): Wat
         filepath,
         sessionStates: toSessionSnapshot(sessionStates),
       });
-    }, debounceMs);
+    }
   }
 
   function handleLogActivity(): void {

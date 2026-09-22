@@ -42,6 +42,9 @@ function parseRule(content: string): YamlDetectorRule | null {
   return rule;
 }
 
+const SOURCE_FILE_PATTERN =
+  /\.(?:[cm]?[jt]sx?|vue|svelte|astro|py|rb|go|rs|java|kt|kts|scala|swift|php|cs|ex|exs|dart|erb|hbs|ejs)$/i;
+
 /** Invalid regex in YAML (e.g. unescaped brackets) skips that pattern instead of throwing. */
 function safeRegex(patternStr: string): RegExp | null {
   try {
@@ -109,6 +112,9 @@ export function createDetectorFromYaml(yamlPath: string): {
         } catch {
           // non-node or no project root
         }
+        // Only code can contain a route or API identifier; docs, lockfiles and data
+        // files mention library names without using them.
+        const sourceFiles = projectFiles.filter((f) => SOURCE_FILE_PATTERN.test(f));
 
         for (const system of rule.systems) {
           if (!system?.id || typeof system.id !== "string") continue;
@@ -116,13 +122,20 @@ export function createDetectorFromYaml(yamlPath: string): {
           const foundPkgs = (system.packages ?? []).filter((p) => p in allDeps);
           const foundConfigs = (system.configFiles ?? []).filter((f) => fileExists(f));
           const foundDirs = (system.directories ?? []).filter((d) => fileExists(d));
+          const hasHardEvidence = foundPkgs.length > 0 || foundConfigs.length > 0 || foundDirs.length > 0;
 
+          // Route patterns are identifiers such as `useUser` or `getServerSession`. They
+          // add a source location to a system the package or config already proves, but
+          // they never detect one on their own: several providers share identifiers
+          // (clerk and auth0 both expose useUser) and a README sentence like "migrated
+          // from NextAuth" matches too, which put every Clerk project into permanent
+          // duplicate_auth drift.
           let routeMatch: string | undefined;
-          const routePatterns = system.routePatterns ?? [];
+          const routePatterns = hasHardEvidence ? (system.routePatterns ?? []) : [];
           for (const patternStr of routePatterns) {
             const pattern = safeRegex(patternStr);
             if (!pattern) continue;
-            const matches = grepFiles(projectFiles, pattern, 1);
+            const matches = grepFiles(sourceFiles, pattern, 1);
             if (matches.length > 0) {
               routeMatch = matches[0]!.file;
               break;

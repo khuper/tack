@@ -1,5 +1,6 @@
 import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { projectRoot } from "../lib/files.js";
 import type { Signal, DetectorResult } from "../lib/signals.js";
 import { createDetectorFromYaml, getRulesDir } from "./yamlRunner.js";
 import { detectMultiuser } from "./multiuser.js";
@@ -47,7 +48,7 @@ function loadYamlDetectors(): DetectorEntry[] {
     detectors.push(createDetectorFromYaml(file));
   }
 
-  const tackDetectorsDir = join(process.cwd(), ".tack", "detectors");
+  const tackDetectorsDir = join(projectRoot(), ".tack", "detectors");
   for (const file of listYamlFiles(tackDetectorsDir)) {
     const key = file.toLowerCase();
     if (seen.has(key)) continue;

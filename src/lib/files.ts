@@ -830,6 +830,22 @@ export function readSpecWithError(): { spec: Spec | null; error: string | null }
   return { spec: validated.data, error: null };
 }
 
+/**
+ * Why `readSpec()` returned null, for the user: a spec that exists but does not parse
+ * or validate is a different problem from one that was never created, and telling
+ * someone to run `tack init` over a file they have hand-edited sends them the wrong way.
+ */
+export function describeMissingSpec(): string {
+  if (!specExists()) {
+    return "No spec.yaml found. Run 'tack init' first.";
+  }
+  const { error } = readSpecWithError();
+  if (error) {
+    return `Could not read .tack/spec.yaml: ${error}. Fix the file, then rerun.`;
+  }
+  return ".tack/spec.yaml is present but invalid. Check the warnings above, fix the file, then rerun.";
+}
+
 export function writeSpec(spec: Spec): void {
   const content = yaml.dump(spec, {
     lineWidth: 120,

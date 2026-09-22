@@ -9,13 +9,7 @@ import {
 } from "../lib/signals.js";
 import { parseContextPack, parseDecisionsMarkdown } from "./contextPack.js";
 import { validateAudit, validateDriftState, validateSpec } from "../lib/validate.js";
-import {
-  getMergeBase,
-  getShortRef,
-  isGitRepo,
-  hasCommits,
-  readFileAtRef,
-} from "../lib/git.js";
+import { getMergeBase, getShortRef, isGitRepo, hasCommits, readFileAtRef, refExists } from "../lib/git.js";
 
 export type ArchSystem = {
   id: string;
@@ -157,6 +151,10 @@ export function computeArchDiff(baseBranch: string): ArchDiff {
     throw new Error(
       "tack diff requires a git repository with at least one commit.",
     );
+  }
+
+  if (!refExists(baseBranch)) {
+    throw new Error(`Unknown git ref "${baseBranch}". Pass a branch, tag, or commit that exists in this repository.`);
   }
 
   const headRef = "HEAD";

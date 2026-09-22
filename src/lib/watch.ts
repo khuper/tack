@@ -1,5 +1,5 @@
 import chokidar from "chokidar";
-import { logsPath } from "./files.js";
+import { logsPath, projectRoot } from "./files.js";
 
 export const WATCH_IGNORE_PATTERNS = [
   "**/node_modules/**",
@@ -25,7 +25,11 @@ export function shouldIgnoreRepoWatchPath(filepath: string): boolean {
 }
 
 export function createRepoWatcher(): chokidar.FSWatcher {
-  return chokidar.watch(".", {
+  // Anchor on the project root, not the cwd: `tack watch` from a subdirectory should
+  // still see the whole project and report project-relative paths.
+  const root = projectRoot();
+  return chokidar.watch(root, {
+    cwd: root,
     ignored: WATCH_IGNORE_PATTERNS,
     persistent: true,
     ignoreInitial: true,

@@ -456,3 +456,40 @@ test("watch controller announces an incomplete change scan once, and re-announce
   scan();
   assert.deepStrictEqual(repoWarnings, [INCOMPLETE_CHANGE_SCAN_WARNING, INCOMPLETE_CHANGE_SCAN_WARNING]);
 });
+
+test("watch controller reports a throwing scan through onError and stops instead of crashing", async () => {
+  const repoWatcher = new FakeWatcher();
+  const logsWatcher = new FakeWatcher();
+  let debounceFn = null;
+  const errors = [];
+
+  const controller = createWatchController({
+    createLogsWatcher: () => logsWatcher,
+    createMcpActivityMonitor: () => () => [],
+    createRepoWatcher: () => repoWatcher,
+    getChangedFiles: () => {
+      throw new Error("Failed to write .tack/_audit.yaml: EISDIR");
+    },
+    getRecentMcpSessionStates: () => [],
+    onError: (message) => {
+      errors.push(message);
+    },
+    setIntervalFn: () => 1,
+    clearIntervalFn: () => {},
+    setTimeoutFn: (fn) => {
+      debounceFn = fn;
+      return 1;
+    },
+    clearTimeoutFn: () => {},
+  });
+
+  controller.start();
+  repoWatcher.emit("all", "change", "src/index.ts");
+  assert.ok(debounceFn);
+  assert.doesNotThrow(() => debounceFn());
+  await controller.waitUntilStopped();
+
+  assert.deepStrictEqual(errors, ["Watch scan error: Failed to write .tack/_audit.yaml: EISDIR"]);
+  assert.strictEqual(repoWatcher.closed, true);
+  assert.strictEqual(logsWatcher.closed, true);
+});

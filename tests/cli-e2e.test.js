@@ -116,3 +116,25 @@ test("e2e: watch --plain exits non-zero when there is nothing to watch, and name
     assert.doesNotMatch(broken.stderr, /No spec\.yaml found/);
   });
 });
+
+test("e2e: init from a package directory initializes that package, from a plain subdirectory the repo root", () => {
+  withTempRepo((tmpDir) => {
+    const pkgDir = path.join(tmpDir, "packages", "app");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(path.join(pkgDir, "package.json"), '{\n  "name": "app-package"\n}\n', "utf-8");
+
+    const inPackage = runCli(pkgDir, ["init"]);
+    assert.strictEqual(inPackage.code, 0, inPackage.stderr);
+    assert.ok(fs.existsSync(path.join(pkgDir, ".tack", "spec.yaml")), "the package gets its own .tack/");
+    assert.ok(!fs.existsSync(path.join(tmpDir, ".tack")), "the repository root is left alone");
+    assert.match(inPackage.stdout, /Project: app-package/);
+    assert.ok(inPackage.stdout.includes(path.join(pkgDir, ".tack")), "the absolute location is printed");
+
+    const plainDir = path.join(tmpDir, "docs");
+    fs.mkdirSync(plainDir, { recursive: true });
+    const inPlain = runCli(plainDir, ["init"]);
+    assert.strictEqual(inPlain.code, 0, inPlain.stderr);
+    assert.ok(fs.existsSync(path.join(tmpDir, ".tack", "spec.yaml")), "a directory with no manifest initializes the repo root");
+    assert.ok(!fs.existsSync(path.join(plainDir, ".tack")));
+  });
+});

@@ -243,6 +243,15 @@ function computeDriftLocked(diff: SpecDiff): {
   const suppressedFingerprints = new Set(
     existing.items.filter((item) => !isDisappearedDriftItem(item)).map((item) => fingerprint(item))
   );
+  // Denying an undeclared system writes it to forbidden_systems, after which the very
+  // next scan classifies the same signal as a forbidden system: a different fingerprint,
+  // so it alerted again and the verdict had to be given twice. The rejection already
+  // records that the system is present and unwanted, so it covers that alert too.
+  for (const item of existing.items) {
+    if (item.status === "rejected" && item.type === "undeclared_system" && item.system) {
+      suppressedFingerprints.add(fingerprint({ ...item, type: "forbidden_system_detected" }));
+    }
+  }
   // Every id already in the file, plus the ones minted in this scan: a collision would
   // make accept/deny act on whichever item happens to sort first under that id.
   const takenIds = new Set(existing.items.map((item) => item.id));

@@ -111,7 +111,8 @@ ${ASCII_LOGO}
 
   Project root:
     Existing Tack project: nearest ancestor directory that contains .tack/
-    New project: cd to the intended project root, then run "tack init"
+    New project: "tack init" uses the current directory when it has a project
+      manifest (package.json, pyproject.toml, go.mod, ...), otherwise the repository root
   `);
   process.exit(0);
 }

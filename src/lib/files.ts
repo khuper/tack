@@ -33,6 +33,27 @@ const PROJECT_MARKERS = [
   "dist",
 ] as const;
 /**
+ * Files that mark the directory they sit in as a project of its own, as opposed to a
+ * mere subdirectory of one. Used only to decide where `tack init` creates `.tack/`.
+ */
+const PROJECT_MANIFESTS = [
+  "package.json",
+  "pyproject.toml",
+  "setup.py",
+  "requirements.txt",
+  "go.mod",
+  "Cargo.toml",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "Gemfile",
+  "composer.json",
+  "mix.exs",
+  "Package.swift",
+  "pubspec.yaml",
+] as const;
+
+/**
  * Files under `.tack/` that belong to one machine, never to the repository: the local
  * telemetry config and stats, the drift lock and its claim journal (a committed lock
  * blocks every clone's scan until someone deletes it by hand, and a committed journal
@@ -146,6 +167,85 @@ function findNearestProjectRootWithContext(start = process.cwd()): string | null
 export function projectRoot(): string {
   const start = process.cwd();
   return findNearestProjectRootWithContext(start) ?? findGitRepoBoundary(start) ?? path.resolve(start);
+}
+
+/**
+ * Where `tack init` should create `.tack/`.
+ *
+ * An existing Tack project wins, as everywhere else. Otherwise a directory that carries
+ * its own manifest (a package in a monorepo) is the project, even inside a larger
+ * repository: an agent runs `tack init` where it works, and jumping to the repository
+ * root would name the project after the wrong directory and scan the whole monorepo.
+ * A plain subdirectory with no manifest of its own falls back to the repository root.
+ */
+export function resolveInitRoot(): string {
+  const start = process.cwd();
+  const existing = findNearestProjectRootWithContext(start);
+  if (existing) return existing;
+  const cwd = path.resolve(start);
+  const hasManifest = PROJECT_MANIFESTS.some((name) => {
+    try {
+      return fs.statSync(path.join(cwd, name)).isFile();
+    } catch {
+      return false;
+    }
+  });
+  if (hasManifest) return cwd;
+  return findGitRepoBoundary(start) ?? cwd;
+}
+
+/**
+ * Creates `.tack/` at the init root so every later `projectRoot()` lookup in this
+ * process resolves there. Returns the root it chose.
+ */
+export function prepareInitRoot(): string {
+  const root = resolveInitRoot();
+  const tackDir = path.join(root, TACK_DIRNAME);
+  assertNotSymlinkStrict(tackDir);
+  if (!fs.existsSync(tackDir)) {
+    fs.mkdirSync(tackDir, { recursive: true });
+  }
+  return root;
+}
+
+/** Directory names that are generated output or dependencies wherever they appear. */
+const IGNORED_DIRECTORIES_ANYWHERE = new Set([
+  "node_modules",
+  ".git",
+  "tack",
+  ".tack",
+  "dist",
+  ".next",
+  ".cache",
+  ".svelte-kit",
+  ".output",
+  ".nuxt",
+  ".vercel",
+  ".netlify",
+  "coverage",
+  "__pycache__",
+  "venv",
+  ".venv",
+  "site-packages",
+]);
+
+/**
+ * Whether a directory is skipped by scans and the watcher. `build/` is only build
+ * output at the project root (`src/build/` is source), and `env/` is only skipped
+ * when it is a Python virtualenv (it carries `pyvenv.cfg`), since `src/env/` is
+ * where plenty of projects keep their environment config.
+ */
+export function isIgnoredProjectDirectory(name: string, absolutePath: string, atProjectRoot: boolean): boolean {
+  if (IGNORED_DIRECTORIES_ANYWHERE.has(name)) return true;
+  if (name === "build") return atProjectRoot;
+  if (name === "env") {
+    try {
+      return fs.statSync(path.join(absolutePath, "pyvenv.cfg")).isFile();
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 export function findProjectRoot(): string {
@@ -770,27 +870,6 @@ export function listProjectFiles(dir?: string): string[] {
   const root = path.resolve(base, dir ?? ".");
   const pkg = readJson<{ name?: string }>("package.json");
   const isTackRepo = pkg?.name === "tack" || pkg?.name === "tack-cli";
-  const ignore = new Set([
-    "node_modules",
-    ".git",
-    "tack",
-    ".tack",
-    "dist",
-    "build",
-    ".next",
-    ".cache",
-    ".svelte-kit",
-    ".output",
-    ".nuxt",
-    ".vercel",
-    ".netlify",
-    "coverage",
-    "__pycache__",
-    "venv",
-    ".venv",
-    "env",
-    "site-packages",
-  ]);
   const results: string[] = [];
   const selfNoisePrefixes = [
     "src/detectors/",
@@ -818,9 +897,9 @@ export function listProjectFiles(dir?: string): string[] {
     }
 
     for (const entry of entries) {
-      if (ignore.has(entry.name)) continue;
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) {
+        if (isIgnoredProjectDirectory(entry.name, full, current === base)) continue;
         walk(full);
       } else if (entry.isFile()) {
         const rel = path.relative(base, full);

@@ -101,6 +101,17 @@ describe("files", () => {
     expect(fs.existsSync(path.join(repoRoot, ".tack"))).toBeTrue();
   });
 
+  it("skips build output and virtualenvs but keeps source directories with the same names", () => {
+    for (const dir of ["build", "src/build", "src/env", "env", "tools/venv", "node_modules/x"]) {
+      fs.mkdirSync(path.join(tmpDir, dir), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, dir, "a.ts"), "x\n", "utf-8");
+    }
+    fs.writeFileSync(path.join(tmpDir, "env", "pyvenv.cfg"), "home = /usr\n", "utf-8");
+
+    const files = listProjectFiles().map((f) => f.replace(/\\/g, "/")).sort();
+    expect(files).toEqual(["src/build/a.ts", "src/env/a.ts"]);
+  });
+
   it("adds local telemetry files to git exclude without touching project gitignore", () => {
     fs.mkdirSync(path.join(tmpDir, ".git", "info"), { recursive: true });
 

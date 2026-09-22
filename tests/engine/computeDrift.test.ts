@@ -64,6 +64,50 @@ describe("computeDrift", () => {
     expect(new Set(result.state.items.map((item) => item.id)).size).toBe(result.state.items.length);
   });
 
+  it("does not alert again as forbidden after an undeclared system was denied", () => {
+    const diff: SpecDiff = {
+      aligned: [],
+      undeclared: [createSignal("system", "payments", "package.json (stripe)", 1, "stripe")],
+      missing: [],
+      risks: [],
+      violations: [],
+    };
+    const first = computeDrift(diff);
+    const item = first.newItems.find((i) => i.type === "undeclared_system")!;
+    expect(resolveDriftItem(item.id, "rejected", "not now").persisted).toBe(true);
+
+    // The verdict wrote payments to forbidden_systems; the next scan sees it as forbidden.
+    const afterDeny: SpecDiff = {
+      ...diff,
+      undeclared: [],
+      violations: [
+        {
+          type: "forbidden_system",
+          signal: createSignal("system", "payments", "package.json (stripe)", 1, "stripe"),
+          spec_rule: "forbidden",
+          severity: "error",
+        },
+      ],
+    };
+    const second = computeDrift(afterDeny);
+    expect(second.newItems).toEqual([]);
+    expect(readDrift().items.filter((i) => i.status === "unresolved")).toEqual([]);
+
+    // A system that was forbidden from the start still alerts.
+    const fresh: SpecDiff = {
+      ...afterDeny,
+      violations: [
+        {
+          type: "forbidden_system",
+          signal: createSignal("system", "cms", "package.json (contentful)", 1, "contentful"),
+          spec_rule: "forbidden",
+          severity: "error",
+        },
+      ],
+    };
+    expect(computeDrift(fresh).newItems.map((i) => i.system)).toEqual(["cms"]);
+  });
+
   it("resolves drift item", () => {
     const first = computeDrift(buildDiff());
     const item = first.state.items[0]!;

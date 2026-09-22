@@ -1,10 +1,14 @@
 import test from "node:test";
 import assert from "node:assert";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   attachMcpLogWatcher,
   getWatchScanSummary,
   shouldIgnoreRepoWatchPath,
+  shouldIgnoreWatchedPath,
 } from "../dist/lib/watch.js";
 import { formatRepoWriteBackWarning, INCOMPLETE_CHANGE_SCAN_WARNING } from "../dist/lib/watchController.js";
 import { createWatchController } from "../dist/lib/watchController.js";
@@ -492,4 +496,26 @@ test("watch controller reports a throwing scan through onError and stops instead
   assert.deepStrictEqual(errors, ["Watch scan error: Failed to write .tack/_audit.yaml: EISDIR"]);
   assert.strictEqual(repoWatcher.closed, true);
   assert.strictEqual(logsWatcher.closed, true);
+});
+
+test("watcher ignores generated directories but not source directories that share their names", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tack-watch-ignore-"));
+  try {
+    fs.mkdirSync(path.join(root, "env"), { recursive: true });
+    fs.writeFileSync(path.join(root, "env", "pyvenv.cfg"), "home = /usr\n", "utf-8");
+    fs.mkdirSync(path.join(root, "src", "env"), { recursive: true });
+
+    assert.strictEqual(shouldIgnoreWatchedPath(root, "node_modules/x/index.js"), true);
+    assert.strictEqual(shouldIgnoreWatchedPath(root, ".tack/_logs.ndjson"), true);
+    assert.strictEqual(shouldIgnoreWatchedPath(root, "build/out.js"), true);
+    assert.strictEqual(shouldIgnoreWatchedPath(root, "env/lib/site.py"), true);
+    assert.strictEqual(shouldIgnoreWatchedPath(root, path.join(root, "build", "out.js")), true);
+
+    assert.strictEqual(shouldIgnoreWatchedPath(root, "src/build/gen.ts"), false);
+    assert.strictEqual(shouldIgnoreWatchedPath(root, "src/env/config.ts"), false);
+    assert.strictEqual(shouldIgnoreWatchedPath(root, "package.json"), false);
+    assert.strictEqual(shouldIgnoreWatchedPath(root, ""), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

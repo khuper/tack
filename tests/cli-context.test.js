@@ -78,7 +78,7 @@ test("init inside a nested git repo ignores a parent .tack from outside the repo
     const result = runCli(["init"], nestedDir);
 
     assert.strictEqual(result.code, 0);
-    assert.match(result.stdout, /Initialized \/.tack\//);
+    assert.ok(result.stdout.includes(`Initialized ${path.join(repoRoot, ".tack")}`), result.stdout);
     assert.doesNotMatch(result.stderr, /already initialized/i);
     assert.ok(fs.existsSync(path.join(repoRoot, ".tack", "spec.yaml")));
   } finally {

@@ -792,3 +792,60 @@ test("a dry run neither locks nor creates the config directory", () => {
     assert.deepStrictEqual(fs.readdirSync(repoRoot), [], "a dry run leaves the repo untouched");
   });
 });
+
+test("JSON merge keeps the user's additions to the tack entry and reports unchanged on rerun", () => {
+  const merged = mergeJson("claude-code", null);
+  const customized = JSON.parse(merged.content);
+  customized.mcpServers.tack.env = { ...(customized.mcpServers.tack.env ?? {}), TACK_DEBUG: "1" };
+  customized.mcpServers.tack.disabled = true;
+  const existing = JSON.stringify(customized, null, 2) + "\n";
+
+  const rerun = mergeJson("claude-code", existing);
+  assert.strictEqual(rerun.changed, false, "nothing Tack manages has changed");
+
+  // A platform switch rewrites command/args but still keeps the user's keys.
+  const switched = mergeJson("claude-code", existing, WINDOWS);
+  assert.strictEqual(switched.changed, true);
+  const entry = JSON.parse(switched.content).mcpServers.tack;
+  assert.strictEqual(entry.disabled, true);
+  assert.strictEqual(entry.env.TACK_DEBUG, "1");
+  assert.strictEqual(entry.env.TACK_AGENT_NAME, "claude");
+  assert.strictEqual(entry.command, "cmd");
+});
+
+test("JSON merge refuses a file with duplicate keys instead of dropping one", () => {
+  const existing = '{\n  "mcpServers": { "a": { "command": "a" } },\n  "mcpServers": { "b": { "command": "b" } }\n}\n';
+  const error = captureManualError(() => mergeJson("cursor", existing));
+  assert.ok(isMcpParseError(error), "duplicate keys must downgrade to manual");
+  assert.match(error.message, /"mcpServers" appears more than once/);
+
+  // A repeated name in a different object is fine.
+  const nested = '{\n  "servers": { "x": { "command": "x" } },\n  "other": { "servers": 1 }\n}\n';
+  assert.doesNotThrow(() => mergeJson("vscode", nested));
+});
+
+test("TOML merge leaves a customized tack table alone when the managed keys already match", () => {
+  const canonical = mergeToml(null).content;
+  const customized = canonical
+    .replace('env = { TACK_AGENT_NAME = "codex" }', 'env = { TACK_AGENT_NAME = "codex", TACK_DEBUG = "1" }\nstartup_timeout_sec = 30');
+  const rerun = mergeToml(customized);
+  assert.strictEqual(rerun.changed, false);
+  assert.strictEqual(rerun.content, customized);
+});
+
+test("TOML merge downgrades to manual instead of dropping a customized tack table it must rewrite", () => {
+  const customized = [
+    "[mcp_servers.tack]",
+    'command = "tack"',
+    'args = ["mcp"]',
+    "startup_timeout_sec = 30",
+    "",
+    "[mcp_servers.tack.env]",
+    'TACK_AGENT_NAME = "codex"',
+    'TACK_DEBUG = "1"',
+    "",
+  ].join("\n");
+  const error = captureManualError(() => mergeToml(customized));
+  assert.ok(isMcpParseError(error));
+  assert.match(error.message, /startup_timeout_sec, env\.TACK_DEBUG/);
+});

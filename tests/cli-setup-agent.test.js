@@ -501,3 +501,103 @@ test("an unmanaged explicit target is reported even when another client is detec
     );
   });
 });
+
+test("setup-agent ends instruction files with a newline and stays unchanged after a formatter adds one", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    const first = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "claude", mcp: false }, pkg.version));
+    assert.strictEqual(first.code, 0, first.stderr);
+
+    const target = path.join(tmpDir, "CLAUDE.md");
+    const installed = fs.readFileSync(target, "utf-8");
+    assert.ok(installed.endsWith("-->\n"), "a fresh file must end with a newline");
+    assert.ok(!installed.endsWith("\n\n"), "but only one");
+
+    // What end-of-file-fixer, Prettier or an editor would do: nothing, the newline is there.
+    const second = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "claude", mcp: false }, pkg.version));
+    assert.match(second.stdout, /unchanged\s+CLAUDE\.md/);
+    assert.strictEqual(fs.readFileSync(target, "utf-8"), installed);
+
+    // An older install without the final newline is left exactly as it is: the block
+    // itself is current, and rewriting a file only to add a byte is churn too.
+    const legacy = installed.replace(/\n$/, "");
+    fs.writeFileSync(target, legacy, "utf-8");
+    const third = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "claude", mcp: false }, pkg.version));
+    assert.match(third.stdout, /unchanged\s+CLAUDE\.md/);
+    assert.strictEqual(fs.readFileSync(target, "utf-8"), legacy);
+  });
+});
+
+test("setup-agent writes and rewrites the block in the file's own CRLF line endings", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    const target = path.join(tmpDir, "AGENTS.md");
+    fs.writeFileSync(target, "# Existing\r\nKeep this.\r\n", "utf-8");
+
+    const first = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "codex", mcp: false }, pkg.version));
+    assert.strictEqual(first.code, 0, first.stderr);
+    const content = fs.readFileSync(target, "utf-8");
+    assert.strictEqual((content.match(/\r\n/g) ?? []).length, content.split("\n").length - 1, "every line ends in CRLF");
+    assert.ok(content.endsWith("-->\r\n"));
+
+    const second = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "codex", mcp: false }, pkg.version));
+    assert.match(second.stdout, /unchanged\s+AGENTS\.md/);
+    assert.strictEqual(fs.readFileSync(target, "utf-8"), content);
+  });
+});
+
+test("setup-agent tolerates a BOM and whitespace around its markers", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    const target = path.join(tmpDir, "CLAUDE.md");
+    captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "claude", mcp: false }, pkg.version));
+    const installed = fs.readFileSync(target, "utf-8");
+
+    // Saved by Notepad / PowerShell: a BOM in front of the BEGIN marker on line 1.
+    fs.writeFileSync(target, `﻿${installed}`, "utf-8");
+    const bom = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "claude", mcp: false }, pkg.version));
+    assert.strictEqual(bom.code, 0, bom.stderr);
+    assert.match(bom.stdout, /unchanged\s+CLAUDE\.md/);
+    assert.ok(fs.readFileSync(target, "utf-8").startsWith("﻿<!-- BEGIN"), "the BOM is kept");
+
+    // A trailing space on the END marker and an indented block.
+    const indented = installed
+      .replace(/\n$/, "")
+      .split("\n")
+      .map((line) => `  ${line}`)
+      .join("\n")
+      .replace("<!-- END TACK AGENT INSTRUCTIONS -->", "<!-- END TACK AGENT INSTRUCTIONS --> ");
+    fs.writeFileSync(target, `# Notes\n\n${indented}\n`, "utf-8");
+    const spaced = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "claude", mcp: false }, pkg.version));
+    assert.strictEqual(spaced.code, 0, spaced.stderr);
+    assert.match(spaced.stdout, /updated\s+CLAUDE\.md/);
+    const repaired = fs.readFileSync(target, "utf-8");
+    assert.strictEqual((repaired.match(/<!-- BEGIN TACK AGENT INSTRUCTIONS/g) ?? []).length, 1, "no second copy");
+    assert.ok(repaired.startsWith("# Notes\n\n<!-- BEGIN"), "the block is re-anchored at column 0");
+  });
+});
+
+test("setup-agent ignores markers shown inside a fenced code block", () => {
+  withTempProject((tmpDir) => {
+    fs.mkdirSync(path.join(tmpDir, ".tack"), { recursive: true });
+    const target = path.join(tmpDir, "CLAUDE.md");
+    const doc = [
+      "# How Tack installs itself",
+      "",
+      "```md",
+      "<!-- BEGIN TACK AGENT INSTRUCTIONS v0.0.0 -->",
+      "...",
+      "<!-- END TACK AGENT INSTRUCTIONS -->",
+      "```",
+      "",
+    ].join("\n");
+    fs.writeFileSync(target, doc, "utf-8");
+
+    const result = captureOutput(() => runSetupAgent({ _: ["setup-agent"], target: "claude", mcp: false }, pkg.version));
+    assert.strictEqual(result.code, 0, result.stderr);
+    assert.match(result.stdout, /installed\s+CLAUDE\.md/);
+    const content = fs.readFileSync(target, "utf-8");
+    assert.ok(content.startsWith(doc), "the fenced example is untouched");
+    assert.strictEqual((content.match(/<!-- BEGIN TACK AGENT INSTRUCTIONS/g) ?? []).length, 2, "a real block was appended after it");
+  });
+});

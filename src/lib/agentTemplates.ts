@@ -149,13 +149,58 @@ export function isSharedFile(target: AgentTarget): boolean {
   return getTargetDefinition(target).sharedFile;
 }
 
+const BOM = "\ufeff";
+
+/** Splits a leading UTF-8 byte order mark off so the scanner sees the first line's text. */
+function splitBom(content: string): { bom: string; body: string } {
+  return content.startsWith(BOM) ? { bom: BOM, body: content.slice(1) } : { bom: "", body: content };
+}
+
+const FENCE_OPEN = /^\s{0,3}(`{3,}|~{3,})/;
+
+/**
+ * Indices of the lines that sit inside a fenced code block. A README that documents
+ * the markers inside a fence is showing them, not installing them, so those lines
+ * never count as the managed block.
+ */
+function fencedLineIndices(lines: LineRange[]): Set<number> {
+  const fenced = new Set<number>();
+  let fence: string | null = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    const text = lines[index]!.text;
+    if (fence === null) {
+      const match = text.match(FENCE_OPEN);
+      if (match) fence = match[1]!;
+      continue;
+    }
+    fenced.add(index);
+    const match = text.match(FENCE_OPEN);
+    if (match && match[1]![0] === fence[0] && match[1]!.length >= fence.length && text.trim() === match[1]) {
+      fence = null;
+    }
+  }
+  return fenced;
+}
+
+function isBeginMarker(text: string): boolean {
+  return text.trim().startsWith(MARKER_BEGIN_PREFIX);
+}
+
+function isEndMarker(text: string): boolean {
+  return text.trim() === MARKER_END;
+}
+
 export function findExistingBlock(content: string): { start: number; end: number } | null {
-  const lines = getLineRanges(content);
+  const lines = getLineRanges(splitBom(content).body);
+  // Whitespace around a marker (an editor that trims or indents, a nested list) must
+  // not turn the block invisible: a missed BEGIN reads as "malformed", a missed pair
+  // appends a second copy on every run.
+  const fenced = fencedLineIndices(lines);
   const beginLines = lines
-    .map((line, index) => (line.text.startsWith(MARKER_BEGIN_PREFIX) ? index : -1))
+    .map((line, index) => (!fenced.has(index) && isBeginMarker(line.text) ? index : -1))
     .filter((index) => index !== -1);
   const endLines = lines
-    .map((line, index) => (line.text === MARKER_END ? index : -1))
+    .map((line, index) => (!fenced.has(index) && isEndMarker(line.text) ? index : -1))
     .filter((index) => index !== -1);
 
   if (beginLines.length === 0 && endLines.length === 0) {
@@ -181,11 +226,18 @@ export function replaceBlock(content: string, newBlock: string): string {
     throw new Error("No Tack instruction block found.");
   }
 
-  const lines = getLineRanges(content);
-  const before = block.start === 0 ? "" : content.slice(0, lines[block.start]!.start);
-  const after = content.slice(lines[block.end]!.end);
-  const separator = after.length > 0 ? lines[block.end]!.ending : "";
-  return `${before}${newBlock}${separator}${after}`;
+  const { bom, body } = splitBom(content);
+  const lines = getLineRanges(body);
+  // Slicing from the line start drops any indentation in front of the old markers, so
+  // an indented block is replaced rather than left in place and duplicated.
+  const before = body.slice(0, lines[block.start]!.start);
+  const after = body.slice(lines[block.end]!.end);
+  // The END marker's own terminator is kept whatever follows it: dropping it when the
+  // block was last in the file stripped the final newline every formatter re-adds,
+  // so each rerun after a formatter pass rewrote the file.
+  const separator = lines[block.end]!.ending;
+  const lineEnding = lines[block.start]!.ending || separator || "\n";
+  return `${bom}${before}${newBlock.replace(/\r?\n/g, lineEnding)}${separator}${after}`;
 }
 
 export function getAvailableTargets(): AgentTarget[] {

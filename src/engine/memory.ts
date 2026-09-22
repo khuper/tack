@@ -298,7 +298,11 @@ function notesAreSimilar(a: AgentNote, b: AgentNote): boolean {
     }
   }
 
-  if (notesShareFiles(a, b) && overlap > 0) {
+  // Sharing a file lowers the bar, but one common word is not evidence of the same
+  // finding: related_files clusters on a repo's hot files, so a single token like
+  // "stay" would merge unrelated discoveries and report agents "independently
+  // finding" something none of them said.
+  if (notesShareFiles(a, b) && overlap >= 2) {
     return true;
   }
 

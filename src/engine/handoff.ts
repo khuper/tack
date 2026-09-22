@@ -428,7 +428,9 @@ function toMarkdown(report: HandoffReport): string {
   lines.push("");
 
   lines.push("## Summary");
-  lines.push(sanitizeMd(report.summary));
+  // summaryText() is generated from counts, never from repo content, so it needs no
+  // markdown defanging; sanitizing it turned "system(s)" into "system_s_".
+  lines.push(report.summary);
   if (report.recent_work.length > 0) {
     lines.push("");
     lines.push("## Recent Work");
@@ -558,8 +560,11 @@ function toMarkdown(report: HandoffReport): string {
     renderList(
       lines,
       report.implementation_status.map((e) => {
-        const anchorText = e.anchors.length > 0 ? ` (${e.anchors.join(", ")})` : "";
-        return `${sanitizeMd(e.key)}: ${sanitizeMd(e.status)}${sanitizeMd(anchorText)} (${contextRefToString(e.source)})`;
+        // Sanitize the anchors, not the parentheses Tack puts around them: running the
+        // whole suffix through sanitizeMd rendered "implemented (src/a.ts)" as
+        // "implemented_src/a.ts_".
+        const anchorText = e.anchors.length > 0 ? ` (${sanitizeMdList(e.anchors).join(", ")})` : "";
+        return `${sanitizeMd(e.key)}: ${sanitizeMd(e.status)}${anchorText} (${contextRefToString(e.source)})`;
       }),
       12
     );

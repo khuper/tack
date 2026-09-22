@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { parseContextPack } from "../../src/engine/contextPack.js";
+import { parseContextPack, parseDecisionsMarkdown } from "../../src/engine/contextPack.js";
 
 let originalCwd = "";
 let tmpDir = "";
@@ -64,6 +64,36 @@ describe("contextPack", () => {
     expect(pack.open_questions[0]!.status).toBe("resolved");
     expect(pack.decisions.length).toBe(1);
     expect(pack.decisions[0]!.decision).toBe("Use Bun");
+  });
+
+  it("keeps hyphenated words inside the decision text", () => {
+    const cases: Array<[string, string, string]> = [
+      // A bare hyphen inside a word is not the separator.
+      ["- [2026-03-09] Prefer session-first MCP flow - improves agent startup", "Prefer session-first MCP flow", "improves agent startup"],
+      // Em dash, with or without surrounding spaces.
+      ["- [2026-03-09] Use built-in cache — avoids a new dependency", "Use built-in cache", "avoids a new dependency"],
+      ["- [2026-03-09] Use built-in cache—avoids a new dependency", "Use built-in cache", "avoids a new dependency"],
+      // The first spaced hyphen wins; later ones belong to the reasoning.
+      ["- [2026-03-09] Keep zod - it is small - and already installed", "Keep zod", "it is small - and already installed"],
+      // Hyphenated words on both sides of the separator.
+      ["- [2026-03-09] Ship read-only mode - long-running sessions need it", "Ship read-only mode", "long-running sessions need it"],
+      // Mojibake em dash from a file saved as latin-1 and read as UTF-8.
+      ["- [2026-03-09] Use Bun â€” fast runtime", "Use Bun", "fast runtime"],
+    ];
+
+    for (const [line, decision, reasoning] of cases) {
+      const parsed = parseDecisionsMarkdown(`# Decisions\n\n${line}\n`);
+      expect(parsed.length).toBe(1);
+      expect(parsed[0]!.decision).toBe(decision);
+      expect(parsed[0]!.reasoning).toBe(reasoning);
+      expect(parsed[0]!.date).toBe("2026-03-09");
+      expect(parsed[0]!.source.line).toBe(3);
+    }
+  });
+
+  it("skips decision lines without a reasoning separator", () => {
+    const parsed = parseDecisionsMarkdown("# Decisions\n\n- [2026-03-09] A decision with no-reasoning\n- not a decision\n");
+    expect(parsed).toEqual([]);
   });
 
   it("returns empty arrays when files are missing", () => {

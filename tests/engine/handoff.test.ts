@@ -42,6 +42,34 @@ describe("handoff", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it("renders generated parentheses verbatim and defangs only repo-provided text", () => {
+    fs.writeFileSync(
+      path.join(tmpDir, ".tack", "implementation_status.md"),
+      [
+        "# Implementation Status",
+        "",
+        "- log_rotation: implemented (src/lib/logger.ts, src/lib/ndjson.ts)",
+        "- compaction: pending ([link](http://evil.example))",
+        "",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const result = generateHandoff();
+    const md = fs.readFileSync(result.markdownPath, "utf-8");
+
+    // Tack's own summary sentence is built from counts and must not be mangled.
+    expect(md).toContain("Detected 1 system(s), 1 open drift item(s), and 0 open question(s).");
+    expect(md).not.toContain("system_s_");
+
+    // Anchors keep the parentheses Tack puts around them...
+    expect(md).toContain("- log_rotation: implemented (src/lib/logger.ts, src/lib/ndjson.ts) (");
+    expect(md).not.toContain("implemented_src");
+    // ...while markdown syntax inside the anchor text itself is still neutralized.
+    expect(md).toContain("- compaction: pending (_link__http://evil.example_) (");
+    expect(md).not.toContain("[link](http://evil.example)");
+  });
+
   it("writes markdown and json handoff artifacts", () => {
     const result = generateHandoff();
 
@@ -80,7 +108,7 @@ describe("handoff", () => {
       json.agent_guide.mcp_tools.some(
         (tool: { name: string; description: string }) =>
           tool.name === "checkpoint_work" &&
-          tool.description.includes("default end-of-work write-back")
+          tool.description.includes("Default end-of-work write-back")
       )
     ).toBeTrue();
     expect(
@@ -339,7 +367,7 @@ describe("handoff", () => {
     expect(md).toContain("tack://context/workspace");
     expect(md).toContain("Fast start: read tack://session first, then tack://context/workspace");
     expect(md).toContain("checkpoint_work");
-    expect(md).toContain("default end-of-work write-back");
+    expect(md).toContain("Default end-of-work write-back");
     expect(md).toContain("check_rule");
     expect(md).toContain("Brief mid-task guardrail check");
     expect(md).toContain("Default to checkpoint_work before ending if you made a decision");

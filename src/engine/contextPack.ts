@@ -98,7 +98,10 @@ export function parseDecisionsMarkdown(content: string, file = ".tack/decisions.
     if (!line.startsWith("- ")) continue;
 
     const normalized = line.replaceAll("â€”", "—");
-    const m = normalized.match(/^-\s*\[(\d{4}-\d{2}-\d{2})\]\s*(.+?)\s*(?:-|—)\s*(.+)$/);
+    // The decision/reasoning separator is a hyphen with whitespace on BOTH sides, or an
+    // em dash. A bare hyphen must not qualify: the lazy `(.+?)` would otherwise stop at
+    // the first hyphenated word ("session-first") and hand its tail to the reasoning.
+    const m = normalized.match(/^-\s*\[(\d{4}-\d{2}-\d{2})\]\s*(.+?)(?:\s+-\s+|\s*—\s*)(.+)$/);
     if (!m) continue;
 
     out.push({

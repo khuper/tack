@@ -15,7 +15,9 @@ describe("signals", () => {
 
   it("generates drift IDs with expected prefix", () => {
     const id = createDriftId();
-    expect(id.startsWith("drift-")).toBeTrue();
+    expect(id).toMatch(/^drift-\d{8}-[0-9a-f]{6}$/);
+    const ids = new Set(Array.from({ length: 200 }, () => createDriftId()));
+    expect(ids.size).toBe(200);
   });
 
   it("creates empty spec", () => {

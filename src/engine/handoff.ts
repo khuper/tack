@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import {
   assumptionsPath,
   auditPath,
@@ -80,6 +80,23 @@ function readUntrustedString(value: unknown): string | null {
 
 function timestampIdFromIso(iso: string): string {
   return iso.replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+/**
+ * The id has second granularity, so two handoffs generated in the same second (a script
+ * targeting two agents, or a retry) would share a name and the second would silently
+ * replace the first. Keep the timestamp suffix, which archiving sorts on, and disambiguate
+ * with a counter before it.
+ */
+function uniqueHandoffBaseName(preferred: string): string {
+  const separator = preferred.lastIndexOf("_");
+  const label = separator === -1 ? preferred : preferred.slice(0, separator);
+  const suffix = separator === -1 ? "" : preferred.slice(separator);
+  let candidate = preferred;
+  for (let n = 2; existsSync(handoffMarkdownPath(candidate)) || existsSync(handoffJsonPath(candidate)); n += 1) {
+    candidate = `${label}-${n}${suffix}`;
+  }
+  return candidate;
 }
 
 function slugify(input: string, max = 40): string {
@@ -712,7 +729,7 @@ export function generateHandoff(options: { to?: string } = {}): {
   const generatedAt = new Date().toISOString();
   const branch = getCurrentBranch();
   const tsId = timestampIdFromIso(generatedAt);
-  const baseName = `${handoffLabel(branch)}_${tsId}`;
+  const baseName = uniqueHandoffBaseName(`${handoffLabel(branch)}_${tsId}`);
 
   const report: HandoffReport = {
     schema_version: "1.2.0",

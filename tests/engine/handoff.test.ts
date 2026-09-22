@@ -42,6 +42,20 @@ describe("handoff", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it("never overwrites a handoff generated in the same second", () => {
+    const first = generateHandoff({ to: "alice" });
+    const second = generateHandoff({ to: "bob" });
+
+    expect(second.jsonPath).not.toBe(first.jsonPath);
+    expect(second.report.handoff.id).not.toBe(first.report.handoff.id);
+    expect(fs.existsSync(first.jsonPath)).toBeTrue();
+    expect(fs.existsSync(second.jsonPath)).toBeTrue();
+    expect(JSON.parse(fs.readFileSync(first.jsonPath, "utf-8")).handoff.to).toBe("alice");
+    expect(JSON.parse(fs.readFileSync(second.jsonPath, "utf-8")).handoff.to).toBe("bob");
+    // The timestamp stays the trailing segment so archiving still orders by age.
+    expect(path.basename(second.jsonPath)).toMatch(/-2_\d{8}T\d{6}Z\.json$/);
+  });
+
   it("renders generated parentheses verbatim and defangs only repo-provided text", () => {
     fs.writeFileSync(
       path.join(tmpDir, ".tack", "implementation_status.md"),

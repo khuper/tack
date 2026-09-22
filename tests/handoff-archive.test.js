@@ -56,3 +56,32 @@ test("archiving refuses a symlinked archive directory, even one pointing inside 
     );
   });
 });
+
+test("archiving keeps the newest handoffs by timestamp, not by branch label", () => {
+  withTempProject((tmpDir) => {
+    const handoffsDir = path.join(tmpDir, ".tack", "handoffs");
+    // Ten January handoffs on a branch that sorts last, two September ones on a branch
+    // that sorts first. A lexicographic sort would archive the two newest.
+    for (let i = 1; i <= 10; i += 1) {
+      const stem = `zeta-cleanup_202601${String(i).padStart(2, "0")}T000000Z`;
+      fs.writeFileSync(path.join(handoffsDir, `${stem}.json`), "{}\n", "utf-8");
+      fs.writeFileSync(path.join(handoffsDir, `${stem}.md`), "# handoff\n", "utf-8");
+    }
+    for (const stem of ["alpha-feature_20260901T000000Z", "alpha-feature-2_20260901T000000Z"]) {
+      fs.writeFileSync(path.join(handoffsDir, `${stem}.json`), "{}\n", "utf-8");
+      fs.writeFileSync(path.join(handoffsDir, `${stem}.md`), "# handoff\n", "utf-8");
+    }
+
+    archiveOldHandoffs(10);
+
+    const archived = fs.readdirSync(path.join(handoffsDir, "archive")).sort();
+    assert.deepStrictEqual(archived, [
+      "zeta-cleanup_20260101T000000Z.json",
+      "zeta-cleanup_20260101T000000Z.md",
+      "zeta-cleanup_20260102T000000Z.json",
+      "zeta-cleanup_20260102T000000Z.md",
+    ]);
+    assert.ok(fs.existsSync(path.join(handoffsDir, "alpha-feature_20260901T000000Z.json")));
+    assert.ok(fs.existsSync(path.join(handoffsDir, "alpha-feature-2_20260901T000000Z.json")));
+  });
+});

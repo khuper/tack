@@ -111,6 +111,22 @@ describe("memory summaries", () => {
     expect(text).toContain("Reduce agent prompting");
   });
 
+  it("lists the newest decisions first and never hides the latest one", () => {
+    const lines = ["# Decisions", ""];
+    for (let i = 1; i <= 7; i += 1) {
+      lines.push(`- [2026-03-${String(i).padStart(2, "0")}] Decision ${i} - reason ${i}`);
+    }
+    fs.writeFileSync(path.join(tmpDir, ".tack", "decisions.md"), lines.join("\n") + "\n", "utf-8");
+
+    const text = buildSessionLines().join("\n");
+    const section = text.slice(text.indexOf("## Recent Decisions"), text.indexOf("## Recent Work"));
+    expect(section).toContain("[2026-03-07] Decision 7 - reason 7");
+    expect(section).toContain("[2026-03-03] Decision 3 - reason 3");
+    expect(section).not.toContain("Decision 2 -");
+    expect(section).toContain("...and 2 more");
+    expect(section.indexOf("Decision 7")).toBeLessThan(section.indexOf("Decision 6"));
+  });
+
   it("surfaces changed files and recent notes in the session summary", () => {
     execFileSync("git", ["init"], { cwd: tmpDir, stdio: ["ignore", "pipe", "pipe"] });
     execFileSync("git", ["config", "user.email", "test@example.com"], {

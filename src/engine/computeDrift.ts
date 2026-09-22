@@ -243,6 +243,22 @@ function computeDriftLocked(diff: SpecDiff): {
   const suppressedFingerprints = new Set(
     existing.items.filter((item) => !isDisappearedDriftItem(item)).map((item) => fingerprint(item))
   );
+  // Every id already in the file, plus the ones minted in this scan: a collision would
+  // make accept/deny act on whichever item happens to sort first under that id.
+  const takenIds = new Set(existing.items.map((item) => item.id));
+  const appendIfNew = (item: DriftItem): void => {
+    const fp = fingerprint(item);
+    // The same signal can be reported more than once in one sweep (two detectors, or one
+    // detector matching several packages under one system id). Adding the fingerprint
+    // as we go keeps a single scan from appending duplicate items for it.
+    if (suppressedFingerprints.has(fp)) return;
+    suppressedFingerprints.add(fp);
+    while (takenIds.has(item.id)) {
+      item.id = createDriftId();
+    }
+    takenIds.add(item.id);
+    appendedItems.push(item);
+  };
 
   for (const violation of diff.violations) {
     const item: DriftItem = {
@@ -254,9 +270,7 @@ function computeDriftLocked(diff: SpecDiff): {
       status: "unresolved",
     };
 
-    if (!suppressedFingerprints.has(fingerprint(item))) {
-      appendedItems.push(item);
-    }
+    appendIfNew(item);
   }
 
   for (const risk of diff.risks) {
@@ -269,9 +283,7 @@ function computeDriftLocked(diff: SpecDiff): {
       status: "unresolved",
     };
 
-    if (!suppressedFingerprints.has(fingerprint(item))) {
-      appendedItems.push(item);
-    }
+    appendIfNew(item);
   }
 
   for (const sig of diff.undeclared) {
@@ -284,9 +296,7 @@ function computeDriftLocked(diff: SpecDiff): {
       status: "unresolved",
     };
 
-    if (!suppressedFingerprints.has(fingerprint(item))) {
-      appendedItems.push(item);
-    }
+    appendIfNew(item);
   }
 
   const state: DriftState = {

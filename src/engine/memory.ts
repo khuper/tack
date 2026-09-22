@@ -709,10 +709,12 @@ export function buildSessionLines(): string[] {
     .map((item) => `[${item.status}] ${item.text} (${contextRefToString(item.source)})`);
   pushBullets(lines, "Open Questions", openQuestions);
 
+  // decisions.md is append-only, so the file order is oldest first; "recent" means the
+  // tail of it, newest at the top (the handoff and briefing already take the tail).
   pushBullets(
     lines,
     "Recent Decisions",
-    pack.decisions.map((item) => `[${item.date}] ${item.decision} - ${item.reasoning}`)
+    [...pack.decisions].reverse().map((item) => `[${item.date}] ${item.decision} - ${item.reasoning}`)
   );
 
   pushBullets(lines, "Recent Work", recentWork.map((item) => formatRecentWorkLine(item)), 4);

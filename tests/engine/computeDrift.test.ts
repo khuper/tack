@@ -52,6 +52,18 @@ describe("computeDrift", () => {
     expect(readDrift().items.length).toBe(2);
   });
 
+  it("appends one item per fingerprint even when a scan reports the signal twice", () => {
+    const diff = buildDiff();
+    diff.undeclared = [
+      createSignal("system", "db", "package.json (@prisma/client)", 1, "prisma"),
+      createSignal("system", "db", "package.json (pg)", 1, "postgres"),
+    ];
+    const result = computeDrift(diff);
+    const dbItems = result.state.items.filter((item) => item.type === "undeclared_system" && item.system === "db");
+    expect(dbItems.length).toBe(1);
+    expect(new Set(result.state.items.map((item) => item.id)).size).toBe(result.state.items.length);
+  });
+
   it("resolves drift item", () => {
     const first = computeDrift(buildDiff());
     const item = first.state.items[0]!;
